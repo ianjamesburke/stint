@@ -65,6 +65,8 @@ struct RawFrontmatter {
     status: Option<String>,
     estimate: Option<String>,
     actual: Option<String>,
+    started_at: Option<String>,
+    completed_at: Option<String>,
     sprint: Option<String>,
     #[serde(default)]
     blocked_by: Option<OneOrMany<String>>,
@@ -156,6 +158,8 @@ pub fn parse_task(content: &str, filename: &str) -> Result<Task, ParseError> {
         status,
         estimate,
         actual,
+        started_at: raw.started_at.filter(|s| !s.is_empty()),
+        completed_at: raw.completed_at.filter(|s| !s.is_empty()),
         sprint: raw.sprint.filter(|s| !s.is_empty()),
         blocked_by,
         blocked_by_gh,
@@ -262,6 +266,8 @@ title: "Auth middleware"
 status: in-progress
 estimate: "4h"
 actual: "30m"
+started_at: "2026-06-10T12:00:00Z"
+completed_at: "2026-06-10T12:30:00Z"
 sprint: "s12"
 blocked_by:
   - "0002"
@@ -289,6 +295,8 @@ So users can authenticate.
         assert_eq!(fm.status, TaskStatus::InProgress);
         assert_eq!(fm.estimate, Some(Duration::from_minutes(240)));
         assert_eq!(fm.actual, Some(Duration::from_minutes(30)));
+        assert_eq!(fm.started_at.as_deref(), Some("2026-06-10T12:00:00Z"));
+        assert_eq!(fm.completed_at.as_deref(), Some("2026-06-10T12:30:00Z"));
         assert_eq!(fm.sprint.as_deref(), Some("s12"));
         assert_eq!(fm.blocked_by, vec!["0002"]);
         assert_eq!(fm.blocked_by_gh, vec!["acme/api#7"]);

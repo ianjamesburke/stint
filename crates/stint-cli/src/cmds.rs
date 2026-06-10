@@ -6,11 +6,12 @@ use std::path::PathBuf;
 use std::process::Command;
 
 use anyhow::{bail, Context};
+use chrono::{DateTime, SecondsFormat, Utc};
 use stint_core::check::check;
 use stint_core::duration::Duration;
 use stint_core::mutate::{
-    add_actual, new_sprint_content, new_task_content, next_task_id, resolve_id, set_status,
-    title_to_slug,
+    add_actual, new_sprint_content, new_task_content, next_task_id, resolve_id, restart_task,
+    set_actual, set_completed_at, set_started_at_if_absent, set_status, title_to_slug,
 };
 use stint_core::next::{compute_next, NextOptions, NextReport, NextTask};
 use stint_core::schema::TaskStatus;
@@ -120,6 +121,12 @@ pub fn cmd_show(repo: &StintRepo, id_input: &str) -> anyhow::Result<()> {
     if let Some(a) = &fm.actual {
         println!("Actual:      {}", a);
     }
+    if let Some(started_at) = &fm.started_at {
+        println!("Started at:  {}", started_at);
+    }
+    if let Some(completed_at) = &fm.completed_at {
+        println!("Completed at:{}", completed_at);
+    }
     if let Some(s) = &fm.sprint {
         println!("Sprint:      {}", s);
     }
@@ -152,40 +159,159 @@ pub fn cmd_edit(repo: &StintRepo, id_input: &str) -> anyhow::Result<PathBuf> {
     Ok(path)
 }
 
+/// Set a task's status to `in-progress` and record `started_at`.
+pub fn cmd_start(
+    repo: &StintRepo,
+    id_input: &str,
+    restart: bool,
+    started_at_override: Option<&str>,
+) -> anyhow::Result<PathBuf> {
+    let path = repo.resolve_task_path(id_input)?;
+    let mut task = repo.read_task(&path)?;
+    let started_at = timestamp_or_now(started_at_override)?;
+
+    set_status(&mut task, TaskStatus::InProgress);
+    if restart {
+        restart_task(&mut task, started_at);
+    } else if task.frontmatter.started_at.is_some() {
+        bail!(
+            "task {} already has started_at; use --restart to replace it",
+            task.id()
+        );
+    } else {
+        set_started_at_if_absent(&mut task, started_at);
+    }
+
+    let content = serialize_task(&task);
+    repo.write_task(&path, &content)?;
+    Ok(path)
+}
+
 /// Set a task's status to `done`.  If the task has no `actual` time set,
 /// prompt on stdin; pass `actual_override` to skip the prompt (e.g. in tests).
 pub fn cmd_done(
     repo: &StintRepo,
     id_input: &str,
     actual_override: Option<&str>,
+    started_at_override: Option<&str>,
+    completed_at_override: Option<&str>,
 ) -> anyhow::Result<PathBuf> {
     let path = repo.resolve_task_path(id_input)?;
     let mut task = repo.read_task(&path)?;
+    let completed_at = timestamp_or_now(completed_at_override)?;
 
     set_status(&mut task, TaskStatus::Done);
+    set_completed_at(&mut task, completed_at.clone());
 
-    if task.frontmatter.actual.is_none() {
-        let duration_str = match actual_override {
-            Some(s) => s.to_owned(),
-            None => {
-                let mut buf = String::new();
-                eprint!("Actual time spent (e.g. 2h, 30m) [skip]: ");
-                io::stderr().flush().ok();
-                io::stdin().read_line(&mut buf).context("read stdin")?;
-                buf.trim().to_owned()
+    if let Some(duration_str) = actual_override {
+        if task.frontmatter.started_at.is_none() {
+            if let Some(override_value) = started_at_override {
+                task.frontmatter.started_at = Some(normalize_timestamp(override_value)?);
             }
+        }
+        let d: Duration = duration_str
+            .parse()
+            .with_context(|| format!("invalid duration {:?}", duration_str))?;
+        set_actual(&mut task, d);
+    } else if task.frontmatter.actual.is_none() {
+        let started_at = if let Some(existing) = task.frontmatter.started_at.clone() {
+            Some(existing)
+        } else if let Some(override_value) = started_at_override {
+            let normalized = normalize_timestamp(override_value)?;
+            task.frontmatter.started_at = Some(normalized.clone());
+            Some(normalized)
+        } else {
+            prompt_started_at()?
         };
-        if !duration_str.is_empty() {
-            let d: Duration = duration_str
-                .parse()
-                .with_context(|| format!("invalid duration {:?}", duration_str))?;
-            add_actual(&mut task, d);
+
+        if let Some(started_at) = started_at {
+            let elapsed = elapsed_duration(&started_at, &completed_at)?;
+            set_actual(&mut task, elapsed);
+        } else {
+            let duration_str = prompt_actual()?;
+            if !duration_str.is_empty() {
+                let d: Duration = duration_str
+                    .parse()
+                    .with_context(|| format!("invalid duration {:?}", duration_str))?;
+                add_actual(&mut task, d);
+            }
         }
     }
+
+    warn_if_variance_large(&task);
 
     let content = serialize_task(&task);
     repo.write_task(&path, &content)?;
     Ok(path)
+}
+
+fn prompt_actual() -> anyhow::Result<String> {
+    let mut buf = String::new();
+    eprint!("Actual time spent (e.g. 2h, 30m) [skip]: ");
+    io::stderr().flush().ok();
+    io::stdin().read_line(&mut buf).context("read stdin")?;
+    Ok(buf.trim().to_owned())
+}
+
+fn prompt_started_at() -> anyhow::Result<Option<String>> {
+    let mut buf = String::new();
+    eprint!("Started at (UTC RFC3339, e.g. 2026-06-10T12:00:00Z) [skip]: ");
+    io::stderr().flush().ok();
+    io::stdin().read_line(&mut buf).context("read stdin")?;
+    let trimmed = buf.trim();
+    if trimmed.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(normalize_timestamp(trimmed)?))
+    }
+}
+
+fn timestamp_or_now(override_value: Option<&str>) -> anyhow::Result<String> {
+    match override_value {
+        Some(value) => normalize_timestamp(value),
+        None => Ok(Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true)),
+    }
+}
+
+fn normalize_timestamp(value: &str) -> anyhow::Result<String> {
+    let parsed = DateTime::parse_from_rfc3339(value)
+        .with_context(|| format!("invalid timestamp {:?}", value))?;
+    Ok(parsed
+        .with_timezone(&Utc)
+        .to_rfc3339_opts(SecondsFormat::Secs, true))
+}
+
+fn elapsed_duration(started_at: &str, completed_at: &str) -> anyhow::Result<Duration> {
+    let started = DateTime::parse_from_rfc3339(started_at)
+        .with_context(|| format!("invalid started_at {:?}", started_at))?;
+    let completed = DateTime::parse_from_rfc3339(completed_at)
+        .with_context(|| format!("invalid completed_at {:?}", completed_at))?;
+    let elapsed = completed.signed_duration_since(started);
+    if elapsed.num_seconds() < 0 {
+        bail!("completed_at is before started_at");
+    }
+    let minutes = ((elapsed.num_seconds() + 59) / 60) as u32;
+    Ok(Duration::from_minutes(minutes))
+}
+
+fn warn_if_variance_large(task: &stint_core::schema::Task) {
+    let Some(estimate) = task.frontmatter.estimate else {
+        return;
+    };
+    let Some(actual) = task.frontmatter.actual else {
+        return;
+    };
+    let estimate_minutes = estimate.minutes();
+    let actual_minutes = actual.minutes();
+    if estimate_minutes == 0 || actual_minutes == 0 {
+        return;
+    }
+    if actual_minutes > estimate_minutes * 2 || estimate_minutes > actual_minutes * 2 {
+        eprintln!(
+            "note: actual ({}) differs from estimate ({}) by more than 2x; add a variance note",
+            actual, estimate
+        );
+    }
 }
 
 /// Add `duration` to a task's `actual` field.
@@ -236,6 +362,7 @@ pub fn cmd_next(
         let path = repo.resolve_task_path(&task.id)?;
         let mut task = repo.read_task(&path)?;
         set_status(&mut task, TaskStatus::InProgress);
+        set_started_at_if_absent(&mut task, timestamp_or_now(None)?);
         let content = serialize_task(&task);
         repo.write_task(&path, &content)?;
     }

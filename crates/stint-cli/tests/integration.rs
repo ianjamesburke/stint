@@ -239,7 +239,7 @@ fn done_sets_status() {
         "0001-task.md",
         &task_content("0001", "Task", "in-progress"),
     );
-    cmds::cmd_done(&repo, "0001", Some("2h")).unwrap();
+    cmds::cmd_done(&repo, "0001", Some("2h"), None, None).unwrap();
     let path = repo.resolve_task_path("0001").unwrap();
     let content = fs::read_to_string(&path).unwrap();
     assert!(content.contains("status: done"));
@@ -253,7 +253,7 @@ fn done_records_actual_time() {
         "0001-task.md",
         &task_content("0001", "Task", "backlog"),
     );
-    cmds::cmd_done(&repo, "0001", Some("3h")).unwrap();
+    cmds::cmd_done(&repo, "0001", Some("3h"), None, None).unwrap();
     let path = repo.resolve_task_path("0001").unwrap();
     let content = fs::read_to_string(&path).unwrap();
     assert!(content.contains("actual: \"3h\""));
@@ -265,11 +265,134 @@ fn done_skips_actual_when_already_set() {
     let t = "---\nid: \"0001\"\ntitle: \"T\"\nstatus: in-progress\nactual: \"1h\"\n---\n";
     write_task_file(&repo, "0001-task.md", t);
     // Pass no actual override — should NOT prompt when actual already set.
-    cmds::cmd_done(&repo, "0001", None).unwrap();
+    cmds::cmd_done(&repo, "0001", None, None, None).unwrap();
     let path = repo.resolve_task_path("0001").unwrap();
     let content = fs::read_to_string(&path).unwrap();
     assert!(content.contains("actual: \"1h\""));
     assert!(content.contains("status: done"));
+}
+
+#[test]
+fn start_sets_status_and_started_at() {
+    let (_tmp, repo) = setup();
+    write_task_file(&repo, "0001-task.md", &task_content("0001", "Task", "todo"));
+    cmds::cmd_start(&repo, "0001", false, Some("2026-06-10T12:00:00Z")).unwrap();
+    let path = repo.resolve_task_path("0001").unwrap();
+    let content = fs::read_to_string(&path).unwrap();
+    assert!(content.contains("status: in-progress"));
+    assert!(content.contains("started_at: \"2026-06-10T12:00:00Z\""));
+}
+
+#[test]
+fn start_refuses_to_overwrite_started_at_without_restart() {
+    let (_tmp, repo) = setup();
+    write_task_file(
+        &repo,
+        "0001-task.md",
+        "---\nid: \"0001\"\ntitle: \"Task\"\nstatus: in-progress\nstarted_at: \"2026-06-10T12:00:00Z\"\n---\n",
+    );
+    let err = cmds::cmd_start(&repo, "0001", false, Some("2026-06-10T13:00:00Z")).unwrap_err();
+    assert!(err.to_string().contains("--restart"));
+}
+
+#[test]
+fn start_restart_replaces_started_at_and_clears_completion() {
+    let (_tmp, repo) = setup();
+    write_task_file(
+        &repo,
+        "0001-task.md",
+        "---\nid: \"0001\"\ntitle: \"Task\"\nstatus: done\nactual: \"1h\"\nstarted_at: \"2026-06-10T12:00:00Z\"\ncompleted_at: \"2026-06-10T13:00:00Z\"\n---\n",
+    );
+    cmds::cmd_start(&repo, "0001", true, Some("2026-06-10T14:00:00Z")).unwrap();
+    let path = repo.resolve_task_path("0001").unwrap();
+    let task = repo.read_task(&path).unwrap();
+    assert_eq!(
+        task.frontmatter.status,
+        stint_core::schema::TaskStatus::InProgress
+    );
+    assert_eq!(
+        task.frontmatter.started_at.as_deref(),
+        Some("2026-06-10T14:00:00Z")
+    );
+    assert!(task.frontmatter.completed_at.is_none());
+    assert!(task.frontmatter.actual.is_none());
+}
+
+#[test]
+fn done_computes_actual_from_started_at() {
+    let (_tmp, repo) = setup();
+    write_task_file(
+        &repo,
+        "0001-task.md",
+        "---\nid: \"0001\"\ntitle: \"Task\"\nstatus: in-progress\nstarted_at: \"2026-06-10T12:00:00Z\"\n---\n",
+    );
+    cmds::cmd_done(&repo, "0001", None, None, Some("2026-06-10T13:30:00Z")).unwrap();
+    let path = repo.resolve_task_path("0001").unwrap();
+    let task = repo.read_task(&path).unwrap();
+    assert_eq!(
+        task.frontmatter.actual,
+        Some(stint_core::duration::Duration::from_minutes(90))
+    );
+    assert_eq!(
+        task.frontmatter.completed_at.as_deref(),
+        Some("2026-06-10T13:30:00Z")
+    );
+}
+
+#[test]
+fn done_uses_started_at_override_when_missing() {
+    let (_tmp, repo) = setup();
+    write_task_file(
+        &repo,
+        "0001-task.md",
+        &task_content("0001", "Task", "in-progress"),
+    );
+    cmds::cmd_done(
+        &repo,
+        "0001",
+        None,
+        Some("2026-06-10T12:00:00Z"),
+        Some("2026-06-10T12:45:00Z"),
+    )
+    .unwrap();
+    let path = repo.resolve_task_path("0001").unwrap();
+    let task = repo.read_task(&path).unwrap();
+    assert_eq!(
+        task.frontmatter.actual,
+        Some(stint_core::duration::Duration::from_minutes(45))
+    );
+    assert_eq!(
+        task.frontmatter.started_at.as_deref(),
+        Some("2026-06-10T12:00:00Z")
+    );
+}
+
+#[test]
+fn done_with_actual_records_started_at_override() {
+    let (_tmp, repo) = setup();
+    write_task_file(
+        &repo,
+        "0001-task.md",
+        &task_content("0001", "Task", "in-progress"),
+    );
+    cmds::cmd_done(
+        &repo,
+        "0001",
+        Some("30m"),
+        Some("2026-06-10T12:00:00Z"),
+        Some("2026-06-10T12:45:00Z"),
+    )
+    .unwrap();
+    let path = repo.resolve_task_path("0001").unwrap();
+    let task = repo.read_task(&path).unwrap();
+    assert_eq!(
+        task.frontmatter.actual,
+        Some(stint_core::duration::Duration::from_minutes(30))
+    );
+    assert_eq!(
+        task.frontmatter.started_at.as_deref(),
+        Some("2026-06-10T12:00:00Z")
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -381,6 +504,7 @@ fn next_claim_sets_first_ready_task_in_progress() {
         claimed.frontmatter.status,
         stint_core::schema::TaskStatus::InProgress
     );
+    assert!(claimed.frontmatter.started_at.is_some());
     assert_eq!(
         untouched.frontmatter.status,
         stint_core::schema::TaskStatus::Todo
@@ -517,8 +641,8 @@ fn done_then_log_round_trips_cleanly() {
     );
     // Log 1h of work.
     cmds::cmd_log(&repo, "0001", "1h").unwrap();
-    // Mark done — actual_override is ignored because actual is already set from the log.
-    cmds::cmd_done(&repo, "0001", Some("2h")).unwrap();
+    // Mark done with a manual override.
+    cmds::cmd_done(&repo, "0001", Some("2h"), None, None).unwrap();
 
     let path = repo.resolve_task_path("0001").unwrap();
     let task = repo.read_task(&path).unwrap();
@@ -526,10 +650,9 @@ fn done_then_log_round_trips_cleanly() {
         task.frontmatter.status,
         stint_core::schema::TaskStatus::Done
     );
-    // actual stays at 1h (60m) — done does not overwrite an existing actual value.
     assert_eq!(
         task.frontmatter.actual,
-        Some(stint_core::duration::Duration::from_minutes(60))
+        Some(stint_core::duration::Duration::from_minutes(120))
     );
     assert!(task.body.contains("Body text."));
 }
@@ -543,7 +666,7 @@ fn done_without_prior_log_records_actual() {
         "---\nid: \"0001\"\ntitle: \"Work\"\nstatus: in-progress\nestimate: \"4h\"\n---\n",
     );
     // No prior log — done should record the provided actual.
-    cmds::cmd_done(&repo, "0001", Some("3h")).unwrap();
+    cmds::cmd_done(&repo, "0001", Some("3h"), None, None).unwrap();
     let path = repo.resolve_task_path("0001").unwrap();
     let task = repo.read_task(&path).unwrap();
     assert_eq!(

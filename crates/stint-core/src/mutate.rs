@@ -21,6 +21,30 @@ pub fn add_actual(task: &mut Task, duration: Duration) {
     task.frontmatter.actual = Some(existing + duration);
 }
 
+/// Replace the task's `actual` field.
+pub fn set_actual(task: &mut Task, duration: Duration) {
+    task.frontmatter.actual = Some(duration);
+}
+
+/// Set `started_at` unless it is already present.
+pub fn set_started_at_if_absent(task: &mut Task, timestamp: String) {
+    if task.frontmatter.started_at.is_none() {
+        task.frontmatter.started_at = Some(timestamp);
+    }
+}
+
+/// Replace `started_at` and clear completion fields for a fresh run.
+pub fn restart_task(task: &mut Task, timestamp: String) {
+    task.frontmatter.started_at = Some(timestamp);
+    task.frontmatter.completed_at = None;
+    task.frontmatter.actual = None;
+}
+
+/// Set `completed_at`.
+pub fn set_completed_at(task: &mut Task, timestamp: String) {
+    task.frontmatter.completed_at = Some(timestamp);
+}
+
 // ---------------------------------------------------------------------------
 // ID helpers
 // ---------------------------------------------------------------------------
@@ -101,6 +125,8 @@ pub fn minimal_frontmatter(id: &str, title: &str) -> TaskFrontmatter {
         status: TaskStatus::Backlog,
         estimate: None,
         actual: None,
+        started_at: None,
+        completed_at: None,
         sprint: None,
         blocked_by: vec![],
         blocked_by_gh: vec![],

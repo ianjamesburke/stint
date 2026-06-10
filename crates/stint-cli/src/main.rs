@@ -60,6 +60,18 @@ enum Commands {
         id: String,
     },
 
+    /// Mark a task in-progress and record started_at.
+    Start {
+        /// Task ID.
+        id: String,
+        /// Replace an existing started_at and clear completion fields.
+        #[arg(long)]
+        restart: bool,
+        /// Start timestamp, UTC RFC3339 preferred. Defaults to now.
+        #[arg(long)]
+        started_at: Option<String>,
+    },
+
     /// Mark a task done and optionally record actual time.
     Done {
         /// Task ID.
@@ -67,6 +79,12 @@ enum Commands {
         /// Actual time spent (e.g. 2h, 30m). Skips the prompt when provided.
         #[arg(long)]
         actual: Option<String>,
+        /// Start timestamp to use if started_at is missing.
+        #[arg(long)]
+        started_at: Option<String>,
+        /// Completion timestamp. Defaults to now.
+        #[arg(long)]
+        completed_at: Option<String>,
     },
 
     /// Add time to a task's actual field (accumulates).
@@ -205,9 +223,30 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             cmds::cmd_edit(&repo, &id)?;
         }
 
-        Commands::Done { id, actual } => {
+        Commands::Start {
+            id,
+            restart,
+            started_at,
+        } => {
             let repo = find_repo()?;
-            let path = cmds::cmd_done(&repo, &id, actual.as_deref())?;
+            let path = cmds::cmd_start(&repo, &id, restart, started_at.as_deref())?;
+            println!("started: {}", path.display());
+        }
+
+        Commands::Done {
+            id,
+            actual,
+            started_at,
+            completed_at,
+        } => {
+            let repo = find_repo()?;
+            let path = cmds::cmd_done(
+                &repo,
+                &id,
+                actual.as_deref(),
+                started_at.as_deref(),
+                completed_at.as_deref(),
+            )?;
             println!("done: {}", path.display());
         }
 

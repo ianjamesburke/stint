@@ -171,6 +171,8 @@ mod tests {
                 status,
                 estimate: estimate.map(|s| s.parse().unwrap()),
                 actual: actual.map(|s| s.parse().unwrap()),
+                started_at: None,
+                completed_at: None,
                 sprint: Some(sprint.to_owned()),
                 blocked_by: vec![],
                 blocked_by_gh: vec![],

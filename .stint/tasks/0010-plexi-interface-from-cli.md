@@ -10,8 +10,8 @@ area:
 tags:
   - "plexi"
   - "ui"
-blocked_by: []
-blocked_by_gh: []
+blocked_by:
+  - "../PLEXI:0146"
 gh_issue: []
 ---
 

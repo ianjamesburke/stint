@@ -129,8 +129,6 @@ pub fn minimal_frontmatter(id: &str, title: &str) -> TaskFrontmatter {
         completed_at: None,
         sprint: None,
         blocked_by: vec![],
-        blocked_by_gh: vec![],
-        blocked_by_note: None,
         gh_issue: vec![],
         area: vec![],
         tags: vec![],

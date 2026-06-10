@@ -51,16 +51,14 @@ status: backlog                   # required, enum: backlog|todo|in-progress|don
 estimate: "4h"                    # optional, string (e.g. "2h", "30m", "1.5h")
 actual: "0h"                      # optional, string, time logged so far
 sprint: "s12"                     # optional, string, sprint ID this task belongs to
-blocked_by: []                    # optional, list OR string of task IDs (e.g. ["0004"])
-blocked_by_gh: []                 # optional, list OR string of "owner/repo#123" refs
-blocked_by_note: ""               # optional, string, free-text blocker description
+blocked_by: []                    # optional, unified blocker list (see Blocker Model)
 gh_issue: []                      # optional, list OR single int/string of GH issue numbers
 area: []                          # optional, list OR string of area labels
 tags: []                          # optional, list OR string of arbitrary tags
 ---
 ```
 
-**Coercion rule:** `blocked_by`, `blocked_by_gh`, `gh_issue`, `area`, `tags` accept either a single scalar value or a list. `stint-core` normalizes all of these to `Vec<T>` internally at parse time. `stint check` validates types after coercion.
+**Coercion rule:** `blocked_by`, `gh_issue`, `area`, `tags` accept either a single scalar value or a list. `stint-core` normalizes all of these internally at parse time. `stint check` validates types after coercion.
 
 ### Body
 
@@ -150,8 +148,8 @@ Non-obvious constraints, prior attempts, things that will bite you.
 1. All required fields present (`id`, `title`, `status`)
 2. `status` is a valid enum value
 3. `estimate` and `actual` are valid duration strings if present
-4. `blocked_by` IDs resolve to existing task files
-5. `blocked_by_gh` entries match `owner/repo#N` format
+4. `blocked_by` local task refs resolve to existing task files
+5. `blocked_by` external refs are structurally valid (format check only)
 6. `sprint` field references an existing sprint file if present
 7. Sprint index files reference only existing task IDs
 8. No circular `blocked_by` references
@@ -162,15 +160,19 @@ Non-obvious constraints, prior attempts, things that will bite you.
 
 ## Blocker Model
 
-Three orthogonal blocker types, validated independently:
+`blocked_by` is a single unified field. Type is inferred by syntax at parse time:
 
-| Field | Type | Validated |
+| Syntax | Meaning | Validated |
 |---|---|---|
-| `blocked_by` | local task IDs | yes — must resolve to existing files |
-| `blocked_by_gh` | `owner/repo#N` strings | format only — no API call |
-| `blocked_by_note` | free text string | no — human narrative |
+| bare integer or all-digit string | local stint task (zero-padded) | yes — must resolve to existing task |
+| `@N` | local GitHub issue | no |
+| `owner/repo@N` | external GitHub issue | format only |
+| `owner/repo:NNNN` | task in external GitHub repo | format only |
+| `../path:NNNN` | task in sibling local directory | format only |
+| `../path@N` | issue in sibling local directory | format only |
+| quoted string | free-text note | no |
 
-`stint status` renders all three in a unified blocked list. `stint check --cross-repo` walks sibling repos with `.stint/` directories to resolve cross-repo `blocked_by` refs.
+`stint status` renders all blocker types in a unified list. `stint check --cross-repo` walks sibling repos with `.stint/` directories to resolve local-dir and external task refs.
 
 ---
 

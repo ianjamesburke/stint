@@ -68,38 +68,125 @@ impl std::fmt::Display for TaskStatus {
     }
 }
 
-/// Parsed `owner/repo#N` GitHub issue reference used in `blocked_by_gh`.
+/// A unified blocker reference. One field, many types, inferred by syntax.
+///
+/// Syntax rules (in parse order):
+/// - YAML integer or all-digit string → `LocalTask` (zero-padded to 4 digits)
+/// - `@N`                             → `LocalIssue`
+/// - `../path:NNNN` or `./path:NNNN` → `LocalDirTask`
+/// - `../path@N`   or `./path@N`     → `LocalDirIssue`
+/// - `owner/repo:NNNN`               → `ExternalTask`
+/// - `owner/repo@N`                  → `ExternalIssue`
+/// - anything else                   → `Note` (free-text)
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BlockerRef {
-    /// Repository owner (user or org).
-    pub owner: String,
-    /// Repository name.
-    pub repo: String,
-    /// Issue or PR number.
-    pub number: u64,
+pub enum BlockedByRef {
+    /// Local stint task (zero-padded 4-digit ID).
+    LocalTask(String),
+    /// Local GitHub issue number.
+    LocalIssue(u64),
+    /// Stint task in a sibling directory.
+    LocalDirTask { path: String, task_id: String },
+    /// GitHub issue resolved via a sibling directory.
+    LocalDirIssue { path: String, number: u64 },
+    /// Stint task in an external GitHub repo (`owner/repo`).
+    ExternalTask { repo: String, task_id: String },
+    /// GitHub issue in an external repo.
+    ExternalIssue { repo: String, number: u64 },
+    /// Free-text blocker note.
+    Note(String),
 }
 
-impl BlockerRef {
-    /// Attempt to parse a `owner/repo#N` string.
-    pub fn parse(s: &str) -> Option<Self> {
-        // Expected: "owner/repo#123"
-        let (repo_part, number_str) = s.split_once('#')?;
-        let (owner, repo) = repo_part.split_once('/')?;
-        let number: u64 = number_str.parse().ok()?;
-        if owner.is_empty() || repo.is_empty() {
-            return None;
+impl BlockedByRef {
+    /// Parse from a YAML string value.
+    pub fn from_str(s: &str) -> Self {
+        // All-digits: local task
+        if !s.is_empty() && s.chars().all(|c| c.is_ascii_digit()) {
+            let n: u64 = s.parse().unwrap_or(0);
+            return BlockedByRef::LocalTask(format!("{:0>4}", n));
         }
-        Some(BlockerRef {
-            owner: owner.to_owned(),
-            repo: repo.to_owned(),
-            number,
-        })
+
+        // @N: local issue
+        if let Some(rest) = s.strip_prefix('@') {
+            if let Ok(n) = rest.parse::<u64>() {
+                return BlockedByRef::LocalIssue(n);
+            }
+        }
+
+        // Relative path (starts with ./ or ../)
+        if s.starts_with("./") || s.starts_with("../") {
+            if let Some((path, task_id)) = s.split_once(':') {
+                if !task_id.is_empty() && task_id.chars().all(|c| c.is_ascii_digit()) {
+                    let n: u64 = task_id.parse().unwrap_or(0);
+                    return BlockedByRef::LocalDirTask {
+                        path: path.to_owned(),
+                        task_id: format!("{:0>4}", n),
+                    };
+                }
+            }
+            if let Some((path, issue_str)) = s.split_once('@') {
+                if let Ok(n) = issue_str.parse::<u64>() {
+                    return BlockedByRef::LocalDirIssue {
+                        path: path.to_owned(),
+                        number: n,
+                    };
+                }
+            }
+        }
+
+        // owner/repo:task or owner/repo@issue (must contain / not at start)
+        if let Some(slash) = s.find('/') {
+            if slash > 0 {
+                if let Some((repo_part, task_id)) = s.split_once(':') {
+                    if repo_part.contains('/')
+                        && !task_id.is_empty()
+                        && task_id.chars().all(|c| c.is_ascii_digit())
+                    {
+                        let n: u64 = task_id.parse().unwrap_or(0);
+                        return BlockedByRef::ExternalTask {
+                            repo: repo_part.to_owned(),
+                            task_id: format!("{:0>4}", n),
+                        };
+                    }
+                }
+                if let Some((repo_part, issue_str)) = s.split_once('@') {
+                    if repo_part.contains('/') {
+                        if let Ok(n) = issue_str.parse::<u64>() {
+                            return BlockedByRef::ExternalIssue {
+                                repo: repo_part.to_owned(),
+                                number: n,
+                            };
+                        }
+                    }
+                }
+            }
+        }
+
+        BlockedByRef::Note(s.to_owned())
+    }
+
+    /// Parse from a YAML integer value.
+    pub fn from_int(n: u64) -> Self {
+        BlockedByRef::LocalTask(format!("{:0>4}", n))
+    }
+
+    /// The on-disk string representation. `LocalTask` serializes as a bare
+    /// integer (no quotes); all other variants serialize as quoted strings.
+    pub fn is_integer_form(&self) -> bool {
+        matches!(self, BlockedByRef::LocalTask(_))
     }
 }
 
-impl std::fmt::Display for BlockerRef {
+impl std::fmt::Display for BlockedByRef {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}/{}#{}", self.owner, self.repo, self.number)
+        match self {
+            BlockedByRef::LocalTask(id) => write!(f, "{}", id),
+            BlockedByRef::LocalIssue(n) => write!(f, "@{}", n),
+            BlockedByRef::LocalDirTask { path, task_id } => write!(f, "{}:{}", path, task_id),
+            BlockedByRef::LocalDirIssue { path, number } => write!(f, "{}@{}", path, number),
+            BlockedByRef::ExternalTask { repo, task_id } => write!(f, "{}:{}", repo, task_id),
+            BlockedByRef::ExternalIssue { repo, number } => write!(f, "{}@{}", repo, number),
+            BlockedByRef::Note(s) => write!(f, "{}", s),
+        }
     }
 }
 
@@ -122,12 +209,8 @@ pub struct TaskFrontmatter {
     pub completed_at: Option<String>,
     /// Sprint this task belongs to (e.g. "s12").
     pub sprint: Option<String>,
-    /// Local task IDs that must complete before this one.
-    pub blocked_by: Vec<String>,
-    /// Cross-repo GitHub issue blockers in `owner/repo#N` format.
-    pub blocked_by_gh: Vec<String>,
-    /// Free-text description of any additional blockers.
-    pub blocked_by_note: Option<String>,
+    /// Unified blocker references (local tasks, issues, external refs, notes).
+    pub blocked_by: Vec<BlockedByRef>,
     /// Linked GitHub issue numbers (as strings for uniformity).
     pub gh_issue: Vec<String>,
     /// Area/component labels.
@@ -199,28 +282,132 @@ mod tests {
     }
 
     #[test]
-    fn blocker_ref_parse_valid() {
-        let r = BlockerRef::parse("owner/repo#123").unwrap();
-        assert_eq!(r.owner, "owner");
-        assert_eq!(r.repo, "repo");
-        assert_eq!(r.number, 123);
+    fn blocked_by_ref_local_task_from_int() {
+        assert_eq!(
+            BlockedByRef::from_int(146),
+            BlockedByRef::LocalTask("0146".to_owned())
+        );
+        assert_eq!(
+            BlockedByRef::from_int(10),
+            BlockedByRef::LocalTask("0010".to_owned())
+        );
     }
 
     #[test]
-    fn blocker_ref_parse_invalid() {
-        assert!(BlockerRef::parse("owner/repo").is_none());
-        assert!(BlockerRef::parse("owner#123").is_none());
-        assert!(BlockerRef::parse("/repo#123").is_none());
-        assert!(BlockerRef::parse("owner/repo#abc").is_none());
+    fn blocked_by_ref_local_task_from_str() {
+        assert_eq!(
+            BlockedByRef::from_str("0146"),
+            BlockedByRef::LocalTask("0146".to_owned())
+        );
+        assert_eq!(
+            BlockedByRef::from_str("146"),
+            BlockedByRef::LocalTask("0146".to_owned())
+        );
+        assert_eq!(
+            BlockedByRef::from_str("8"),
+            BlockedByRef::LocalTask("0008".to_owned())
+        );
     }
 
     #[test]
-    fn blocker_ref_display() {
-        let r = BlockerRef {
-            owner: "acme".to_owned(),
-            repo: "widget".to_owned(),
-            number: 42,
-        };
-        assert_eq!(r.to_string(), "acme/widget#42");
+    fn blocked_by_ref_local_issue() {
+        assert_eq!(
+            BlockedByRef::from_str("@123"),
+            BlockedByRef::LocalIssue(123)
+        );
+    }
+
+    #[test]
+    fn blocked_by_ref_local_dir_task() {
+        assert_eq!(
+            BlockedByRef::from_str("../plexi:0146"),
+            BlockedByRef::LocalDirTask {
+                path: "../plexi".to_owned(),
+                task_id: "0146".to_owned()
+            }
+        );
+        assert_eq!(
+            BlockedByRef::from_str("../plexi:146"),
+            BlockedByRef::LocalDirTask {
+                path: "../plexi".to_owned(),
+                task_id: "0146".to_owned()
+            }
+        );
+    }
+
+    #[test]
+    fn blocked_by_ref_local_dir_issue() {
+        assert_eq!(
+            BlockedByRef::from_str("../plexi@99"),
+            BlockedByRef::LocalDirIssue {
+                path: "../plexi".to_owned(),
+                number: 99
+            }
+        );
+    }
+
+    #[test]
+    fn blocked_by_ref_external_task() {
+        assert_eq!(
+            BlockedByRef::from_str("ianjamesburke/PLEXI:0146"),
+            BlockedByRef::ExternalTask {
+                repo: "ianjamesburke/PLEXI".to_owned(),
+                task_id: "0146".to_owned()
+            }
+        );
+    }
+
+    #[test]
+    fn blocked_by_ref_external_issue() {
+        assert_eq!(
+            BlockedByRef::from_str("acme/api@7"),
+            BlockedByRef::ExternalIssue {
+                repo: "acme/api".to_owned(),
+                number: 7
+            }
+        );
+    }
+
+    #[test]
+    fn blocked_by_ref_note() {
+        assert_eq!(
+            BlockedByRef::from_str("waiting for upstream fix"),
+            BlockedByRef::Note("waiting for upstream fix".to_owned())
+        );
+        assert_eq!(
+            BlockedByRef::from_str("blocked on design review"),
+            BlockedByRef::Note("blocked on design review".to_owned())
+        );
+    }
+
+    #[test]
+    fn blocked_by_ref_display_round_trips() {
+        let cases = [
+            BlockedByRef::LocalTask("0146".to_owned()),
+            BlockedByRef::LocalIssue(7),
+            BlockedByRef::LocalDirTask {
+                path: "../plexi".to_owned(),
+                task_id: "0146".to_owned(),
+            },
+            BlockedByRef::LocalDirIssue {
+                path: "../plexi".to_owned(),
+                number: 99,
+            },
+            BlockedByRef::ExternalTask {
+                repo: "acme/api".to_owned(),
+                task_id: "0012".to_owned(),
+            },
+            BlockedByRef::ExternalIssue {
+                repo: "acme/api".to_owned(),
+                number: 7,
+            },
+            BlockedByRef::Note("waiting for fix".to_owned()),
+        ];
+        for r in &cases {
+            // Display → from_str should round-trip (except LocalTask int form)
+            if !matches!(r, BlockedByRef::LocalTask(_)) {
+                assert_eq!(BlockedByRef::from_str(&r.to_string()), *r);
+            }
+        }
     }
 }

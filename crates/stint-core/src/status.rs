@@ -1,5 +1,5 @@
 /// Compute the `stint status` summary from a task graph.
-use crate::schema::{Sprint, Task, TaskStatus};
+use crate::schema::{BlockedByRef, Sprint, Task, TaskStatus};
 
 /// A task that has at least one blocker set.
 #[derive(Debug, Clone)]
@@ -8,12 +8,8 @@ pub struct BlockedTask {
     pub id: String,
     /// Task title.
     pub title: String,
-    /// Local task IDs listed in `blocked_by`.
-    pub blocked_by: Vec<String>,
-    /// Cross-repo refs listed in `blocked_by_gh`.
-    pub blocked_by_gh: Vec<String>,
-    /// Free-text blocker note.
-    pub blocked_by_note: Option<String>,
+    /// All blocker references for this task.
+    pub blocked_by: Vec<BlockedByRef>,
 }
 
 /// Sprint-level time progress.
@@ -71,30 +67,21 @@ pub fn compute_status(
                 TaskStatus::Done | TaskStatus::Archived
             )
         })
-        .filter(|t| {
-            !t.frontmatter.blocked_by.is_empty()
-                || !t.frontmatter.blocked_by_gh.is_empty()
-                || t.frontmatter.blocked_by_note.is_some()
-        })
+        .filter(|t| !t.frontmatter.blocked_by.is_empty())
         .map(|t| BlockedTask {
             id: t.frontmatter.id.clone(),
             title: t.frontmatter.title.clone(),
             blocked_by: t.frontmatter.blocked_by.clone(),
-            blocked_by_gh: t.frontmatter.blocked_by_gh.clone(),
-            blocked_by_note: t.frontmatter.blocked_by_note.clone(),
         })
         .collect();
 
-    // Determine which sprint to show progress for.
     let sprint_id: Option<&str> = current_sprint.or_else(|| {
         sprints.iter().map(|s| s.header.id.as_str()).max_by(|a, b| {
-            // Sort by numeric sprint number for correct "latest" ordering.
             sprint_number(a).cmp(&sprint_number(b))
         })
     });
 
     let sprint_progress = sprint_id.and_then(|sid| {
-        // Verify the sprint actually exists.
         if !sprints.iter().any(|s| s.header.id == sid) {
             return None;
         }
@@ -140,7 +127,6 @@ pub fn compute_status(
     }
 }
 
-/// Extract the numeric part of a sprint ID (`"s12"` → `12`).
 fn sprint_number(id: &str) -> u64 {
     id.trim_start_matches('s').parse().unwrap_or(0)
 }
@@ -175,8 +161,6 @@ mod tests {
                 completed_at: None,
                 sprint: Some(sprint.to_owned()),
                 blocked_by: vec![],
-                blocked_by_gh: vec![],
-                blocked_by_note: None,
                 gh_issue: vec![],
                 area: vec![],
                 tags: vec![],
@@ -231,9 +215,9 @@ mod tests {
         ];
         let report = compute_status(&tasks, &[sprint], Some("s1"));
         let progress = report.sprint_progress.unwrap();
-        assert_eq!(progress.committed_minutes, 360); // 4h + 2h
-        assert_eq!(progress.logged_minutes, 120); // 2h
-        assert_eq!(progress.remaining_minutes, 240); // 6h - 2h
+        assert_eq!(progress.committed_minutes, 360);
+        assert_eq!(progress.logged_minutes, 120);
+        assert_eq!(progress.remaining_minutes, 240);
         assert_eq!(progress.done_count, 1);
         assert_eq!(progress.task_count, 2);
     }

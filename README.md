@@ -52,8 +52,8 @@ stint status
 separate parallel-work list.
 
 - tasks must be `backlog` or `todo`
-- local `blocked_by` tasks must be `done`
-- `blocked_by_gh` and `blocked_by_note` make a task blocked
+- local task blockers must be `done`
+- all other blocker types (issues, external tasks, notes) make a task blocked
 - sprint order is priority order
 - tasks whose `area` overlaps with `in-progress` work are hidden by default
 - `stint next --claim` marks the top ready task `in-progress`
@@ -71,9 +71,13 @@ status: in-progress
 estimate: 4h
 actual: 2h
 sprint: s1
-blocked_by: []
-blocked_by_gh: [anthropics/sdk#847]
-blocked_by_note: ""
+blocked_by:
+  - 2                          # local task 0002
+  - @847                       # local GitHub issue #847
+  - acme/sdk@847               # external GitHub issue
+  - ianjamesburke/PLEXI:0146   # task in another GitHub repo
+  - ../PLEXI:0146              # task in a sibling directory
+  - "waiting for design"       # free-text note
 gh_issue: [123]
 area: [backend]
 tags: []
@@ -88,7 +92,17 @@ Why this task exists and what problem it solves.
 Non-obvious constraints, prior attempts, things that will bite you.
 ```
 
-`blocked_by`, `blocked_by_gh`, `gh_issue`, `area`, and `tags` all accept a single value or a list.
+`blocked_by` is a unified field — type is inferred by syntax. `gh_issue`, `area`, and `tags` all accept a single value or a list.
+
+| Syntax | Meaning |
+|---|---|
+| bare integer | local stint task (auto-padded to 4 digits) |
+| `@N` | local GitHub issue |
+| `owner/repo@N` | external GitHub issue |
+| `owner/repo:NNNN` | task in an external GitHub repo |
+| `../path:NNNN` | task in a sibling local directory |
+| `../path@N` | issue in a sibling local directory |
+| quoted string | free-text blocker note |
 
 ## Sprint format
 
@@ -108,8 +122,8 @@ Line order is priority order. Edit directly or use `stint sprint reorder`.
 - Required fields present
 - Status is a valid enum value
 - Duration strings are valid (`4h`, `30m`, `1.5h`)
-- `blocked_by` IDs resolve to real tasks
-- `blocked_by_gh` entries match `owner/repo#N` format
+- `blocked_by` local task refs resolve to real tasks
+- `blocked_by` external refs are format-validated
 - `sprint` field references an existing sprint
 - Sprint index entries resolve to real tasks
 - No circular blocker dependencies

@@ -1,5 +1,5 @@
 /// Serialize `Task` and `Sprint` values back to their on-disk string formats.
-use crate::schema::{Sprint, Task};
+use crate::schema::{BlockedByRef, Sprint, Task};
 
 /// Render a `Task` back to a markdown file string (frontmatter + body).
 ///
@@ -10,7 +10,6 @@ pub fn serialize_task(task: &Task) -> String {
     let mut out = String::from("---\n");
 
     out.push_str(&format!("id: \"{}\"\n", fm.id));
-    // Use debug formatting for strings to produce YAML-safe quoted output.
     out.push_str(&format!("title: {}\n", yaml_quote(&fm.title)));
     out.push_str(&format!("status: {}\n", fm.status));
 
@@ -30,12 +29,7 @@ pub fn serialize_task(task: &Task) -> String {
         out.push_str(&format!("sprint: \"{}\"\n", s));
     }
 
-    write_string_list(&mut out, "blocked_by", &fm.blocked_by);
-    write_string_list(&mut out, "blocked_by_gh", &fm.blocked_by_gh);
-
-    if let Some(note) = &fm.blocked_by_note {
-        out.push_str(&format!("blocked_by_note: {}\n", yaml_quote(note)));
-    }
+    write_blocker_list(&mut out, "blocked_by", &fm.blocked_by);
 
     write_string_list(&mut out, "gh_issue", &fm.gh_issue);
     write_string_list(&mut out, "area", &fm.area);
@@ -55,11 +49,7 @@ pub fn serialize_task(task: &Task) -> String {
 }
 
 /// Render a `Sprint` back to its markdown file string.
-///
-/// Produces the canonical `# Sprint N · <range> · goal: <goal>` header
-/// followed by the ordered task list.
 pub fn serialize_sprint(sprint: &Sprint) -> String {
-    // Strip leading "s" to get the numeric part for the header.
     let number = sprint.header.id.trim_start_matches('s');
     let mut header = format!("# Sprint {}", number);
     if !sprint.header.date_range.is_empty() {
@@ -85,6 +75,29 @@ pub fn serialize_sprint(sprint: &Sprint) -> String {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// Write the `blocked_by` YAML sequence. `LocalTask` items are emitted as bare
+/// integers; all other variants are emitted as quoted strings.
+fn write_blocker_list(out: &mut String, key: &str, values: &[BlockedByRef]) {
+    if values.is_empty() {
+        out.push_str(&format!("{}: []\n", key));
+        return;
+    }
+    out.push_str(&format!("{}:\n", key));
+    for v in values {
+        match v {
+            // LocalTask serializes as a bare integer so it round-trips
+            // through the YAML integer parse path.
+            BlockedByRef::LocalTask(id) => {
+                let n: u64 = id.parse().unwrap_or(0);
+                out.push_str(&format!("  - {}\n", n));
+            }
+            other => {
+                out.push_str(&format!("  - {}\n", yaml_quote(&other.to_string())));
+            }
+        }
+    }
+}
 
 /// Write a YAML sequence field. Emits `[]` for empty lists.
 fn write_string_list(out: &mut String, key: &str, values: &[String]) {
@@ -113,6 +126,7 @@ fn yaml_quote(s: &str) -> String {
 mod tests {
     use super::*;
     use crate::parse::parse_task;
+    use crate::schema::BlockedByRef;
     use crate::sprint::parse_sprint;
 
     const FULL_TASK: &str = r#"---
@@ -125,10 +139,9 @@ started_at: "2026-06-10T12:00:00Z"
 completed_at: "2026-06-10T12:30:00Z"
 sprint: "s12"
 blocked_by:
-  - "0002"
-blocked_by_gh:
-  - "acme/api#7"
-blocked_by_note: "waiting for upstream fix"
+  - 2
+  - "@7"
+  - "acme/api@42"
 gh_issue:
   - "42"
 area:
@@ -155,12 +168,30 @@ So users can authenticate.
         assert_eq!(fm.started_at.as_deref(), Some("2026-06-10T12:00:00Z"));
         assert_eq!(fm.completed_at.as_deref(), Some("2026-06-10T12:30:00Z"));
         assert_eq!(fm.sprint.as_deref(), Some("s12"));
-        assert_eq!(fm.blocked_by, vec!["0002"]);
-        assert_eq!(fm.blocked_by_gh, vec!["acme/api#7"]);
+        assert_eq!(
+            fm.blocked_by,
+            vec![
+                BlockedByRef::LocalTask("0002".to_owned()),
+                BlockedByRef::LocalIssue(7),
+                BlockedByRef::ExternalIssue {
+                    repo: "acme/api".to_owned(),
+                    number: 42
+                },
+            ]
+        );
         assert_eq!(fm.gh_issue, vec!["42"]);
         assert_eq!(fm.area, vec!["backend"]);
         assert_eq!(fm.tags, vec!["security", "auth"]);
         assert!(reparsed.body.contains("## Why"));
+    }
+
+    #[test]
+    fn round_trip_all_blocker_variants() {
+        let content = "---\nid: \"0001\"\ntitle: \"T\"\nstatus: backlog\nblocked_by:\n  - 2\n  - \"@5\"\n  - \"../plexi:0003\"\n  - \"../plexi@9\"\n  - \"owner/repo:0004\"\n  - \"owner/repo@10\"\n  - \"waiting for fix\"\n---\n";
+        let task = parse_task(content, "0001-t.md").unwrap();
+        let serialized = serialize_task(&task);
+        let reparsed = parse_task(&serialized, "0001-t.md").unwrap();
+        assert_eq!(task.frontmatter.blocked_by, reparsed.frontmatter.blocked_by);
     }
 
     #[test]

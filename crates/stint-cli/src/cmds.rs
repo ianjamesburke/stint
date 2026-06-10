@@ -141,13 +141,8 @@ pub fn cmd_show(repo: &StintRepo, id_input: &str) -> anyhow::Result<()> {
         println!("Sprint:      {}", s);
     }
     if !fm.blocked_by.is_empty() {
-        println!("Blocked by:  {}", fm.blocked_by.join(", "));
-    }
-    if !fm.blocked_by_gh.is_empty() {
-        println!("Blocked (GH):{}", fm.blocked_by_gh.join(", "));
-    }
-    if let Some(note) = &fm.blocked_by_note {
-        println!("Blocked note:{}", note);
+        let refs: Vec<String> = fm.blocked_by.iter().map(|r| r.to_string()).collect();
+        println!("Blocked by:  {}", refs.join(", "));
     }
     if !fm.area.is_empty() {
         println!("Area:        {}", fm.area.join(", "));
@@ -611,17 +606,8 @@ pub fn cmd_status(repo: &StintRepo) -> anyhow::Result<()> {
     } else {
         println!("Blocked ({}):", report.blocked_tasks.len());
         for bt in &report.blocked_tasks {
-            let mut reasons = Vec::new();
-            if !bt.blocked_by.is_empty() {
-                reasons.push(format!("tasks: {}", bt.blocked_by.join(", ")));
-            }
-            if !bt.blocked_by_gh.is_empty() {
-                reasons.push(format!("gh: {}", bt.blocked_by_gh.join(", ")));
-            }
-            if let Some(note) = &bt.blocked_by_note {
-                reasons.push(format!("note: {}", note));
-            }
-            println!("  {} {} — {}", bt.id, bt.title, reasons.join("; "));
+            let refs: Vec<String> = bt.blocked_by.iter().map(|r| r.to_string()).collect();
+            println!("  {} {} — {}", bt.id, bt.title, refs.join(", "));
         }
     }
 

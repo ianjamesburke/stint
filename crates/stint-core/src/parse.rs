@@ -3,7 +3,7 @@ use serde::Deserialize;
 use thiserror::Error;
 
 use crate::duration::Duration;
-use crate::schema::{Task, TaskFrontmatter, TaskStatus};
+use crate::schema::{BlockedByRef, Task, TaskFrontmatter, TaskStatus};
 
 /// Errors that can occur while parsing a task file.
 #[derive(Debug, Error, PartialEq)]
@@ -68,11 +68,9 @@ struct RawFrontmatter {
     started_at: Option<String>,
     completed_at: Option<String>,
     sprint: Option<String>,
+    /// Unified blocker field: integers, strings, or mixed lists.
     #[serde(default)]
-    blocked_by: Option<OneOrMany<String>>,
-    #[serde(default)]
-    blocked_by_gh: Option<OneOrMany<String>>,
-    blocked_by_note: Option<String>,
+    blocked_by: Option<serde_yaml::Value>,
     #[serde(default)]
     gh_issue: Option<serde_yaml::Value>,
     #[serde(default)]
@@ -139,9 +137,11 @@ pub fn parse_task(content: &str, filename: &str) -> Result<Task, ParseError> {
         })
         .transpose()?;
 
-    let blocked_by = raw.blocked_by.map(|x| x.into_vec()).unwrap_or_default();
-
-    let blocked_by_gh = raw.blocked_by_gh.map(|x| x.into_vec()).unwrap_or_default();
+    let blocked_by = raw
+        .blocked_by
+        .map(parse_blocked_by_value)
+        .transpose()?
+        .unwrap_or_default();
 
     let gh_issue = raw
         .gh_issue
@@ -162,8 +162,6 @@ pub fn parse_task(content: &str, filename: &str) -> Result<Task, ParseError> {
         completed_at: raw.completed_at.filter(|s| !s.is_empty()),
         sprint: raw.sprint.filter(|s| !s.is_empty()),
         blocked_by,
-        blocked_by_gh,
-        blocked_by_note: raw.blocked_by_note.filter(|s| !s.is_empty()),
         gh_issue,
         area,
         tags,
@@ -179,6 +177,42 @@ pub fn parse_task(content: &str, filename: &str) -> Result<Task, ParseError> {
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
+
+/// Parse a YAML value (scalar or sequence) into a `Vec<BlockedByRef>`.
+fn parse_blocked_by_value(v: serde_yaml::Value) -> Result<Vec<BlockedByRef>, ParseError> {
+    match v {
+        serde_yaml::Value::Null => Ok(vec![]),
+        serde_yaml::Value::Number(n) => {
+            let n = n.as_u64().ok_or_else(|| ParseError::InvalidField {
+                field: "blocked_by",
+                reason: format!("expected non-negative integer, got {}", n),
+            })?;
+            Ok(vec![BlockedByRef::from_int(n)])
+        }
+        serde_yaml::Value::String(s) => Ok(vec![BlockedByRef::from_str(&s)]),
+        serde_yaml::Value::Sequence(items) => items
+            .into_iter()
+            .map(|item| match item {
+                serde_yaml::Value::Number(n) => {
+                    let n = n.as_u64().ok_or_else(|| ParseError::InvalidField {
+                        field: "blocked_by",
+                        reason: format!("expected non-negative integer, got {}", n),
+                    })?;
+                    Ok(BlockedByRef::from_int(n))
+                }
+                serde_yaml::Value::String(s) => Ok(BlockedByRef::from_str(&s)),
+                other => Err(ParseError::InvalidField {
+                    field: "blocked_by",
+                    reason: format!("expected integer or string, got {:?}", other),
+                }),
+            })
+            .collect(),
+        other => Err(ParseError::InvalidField {
+            field: "blocked_by",
+            reason: format!("expected integer, string, or list; got {:?}", other),
+        }),
+    }
+}
 
 /// Split `content` into `(frontmatter_str, body_str)`.
 ///
@@ -271,8 +305,11 @@ completed_at: "2026-06-10T12:30:00Z"
 sprint: "s12"
 blocked_by:
   - "0002"
-blocked_by_gh: "acme/api#7"
-blocked_by_note: "waiting for upstream fix"
+  - "@7"
+  - "acme/api@42"
+  - "ianjamesburke/PLEXI:0146"
+  - "../plexi:0010"
+  - "waiting for upstream fix"
 gh_issue: 42
 area:
   - backend
@@ -298,11 +335,25 @@ So users can authenticate.
         assert_eq!(fm.started_at.as_deref(), Some("2026-06-10T12:00:00Z"));
         assert_eq!(fm.completed_at.as_deref(), Some("2026-06-10T12:30:00Z"));
         assert_eq!(fm.sprint.as_deref(), Some("s12"));
-        assert_eq!(fm.blocked_by, vec!["0002"]);
-        assert_eq!(fm.blocked_by_gh, vec!["acme/api#7"]);
         assert_eq!(
-            fm.blocked_by_note.as_deref(),
-            Some("waiting for upstream fix")
+            fm.blocked_by,
+            vec![
+                BlockedByRef::LocalTask("0002".to_owned()),
+                BlockedByRef::LocalIssue(7),
+                BlockedByRef::ExternalIssue {
+                    repo: "acme/api".to_owned(),
+                    number: 42
+                },
+                BlockedByRef::ExternalTask {
+                    repo: "ianjamesburke/PLEXI".to_owned(),
+                    task_id: "0146".to_owned()
+                },
+                BlockedByRef::LocalDirTask {
+                    path: "../plexi".to_owned(),
+                    task_id: "0010".to_owned()
+                },
+                BlockedByRef::Note("waiting for upstream fix".to_owned()),
+            ]
         );
         assert_eq!(fm.gh_issue, vec!["42"]);
         assert_eq!(fm.area, vec!["backend"]);
@@ -311,11 +362,39 @@ So users can authenticate.
     }
 
     #[test]
-    fn coerce_scalar_blocked_by() {
+    fn blocked_by_bare_integer_in_yaml() {
+        let content =
+            "---\nid: \"0001\"\ntitle: \"T\"\nstatus: backlog\nblocked_by: 146\n---\n";
+        let task = parse_task(content, "0001-t.md").unwrap();
+        assert_eq!(
+            task.frontmatter.blocked_by,
+            vec![BlockedByRef::LocalTask("0146".to_owned())]
+        );
+    }
+
+    #[test]
+    fn blocked_by_mixed_list() {
+        let content = "---\nid: \"0001\"\ntitle: \"T\"\nstatus: backlog\nblocked_by:\n  - 2\n  - \"@5\"\n  - \"waiting on design\"\n---\n";
+        let task = parse_task(content, "0001-t.md").unwrap();
+        assert_eq!(
+            task.frontmatter.blocked_by,
+            vec![
+                BlockedByRef::LocalTask("0002".to_owned()),
+                BlockedByRef::LocalIssue(5),
+                BlockedByRef::Note("waiting on design".to_owned()),
+            ]
+        );
+    }
+
+    #[test]
+    fn coerce_scalar_blocked_by_string() {
         let content =
             "---\nid: \"0001\"\ntitle: \"T\"\nstatus: backlog\nblocked_by: \"0002\"\n---\n";
         let task = parse_task(content, "0001-t.md").unwrap();
-        assert_eq!(task.frontmatter.blocked_by, vec!["0002"]);
+        assert_eq!(
+            task.frontmatter.blocked_by,
+            vec![BlockedByRef::LocalTask("0002".to_owned())]
+        );
     }
 
     #[test]

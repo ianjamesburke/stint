@@ -116,15 +116,18 @@ fn is_candidate(task: &Task, sprint_task_ids: Option<&HashSet<String>>) -> bool 
 }
 
 fn blockers(task: &Task, done_ids: &HashSet<&str>) -> Vec<String> {
+    use crate::schema::BlockedByRef;
     let mut blockers = Vec::new();
-    for id in &task.frontmatter.blocked_by {
-        if !done_ids.contains(id.as_str()) {
-            blockers.push(id.clone());
+    for r in &task.frontmatter.blocked_by {
+        match r {
+            BlockedByRef::LocalTask(id) => {
+                if !done_ids.contains(id.as_str()) {
+                    blockers.push(r.to_string());
+                }
+            }
+            // Non-local refs are always active blockers (can't resolve locally).
+            other => blockers.push(other.to_string()),
         }
-    }
-    blockers.extend(task.frontmatter.blocked_by_gh.iter().cloned());
-    if let Some(note) = &task.frontmatter.blocked_by_note {
-        blockers.push(note.clone());
     }
     blockers
 }
@@ -205,6 +208,7 @@ fn sprint_number(id: &str) -> u64 {
 }
 
 fn bottleneck(tasks: &[Task], task_by_id: &HashMap<&str, &Task>) -> Option<Bottleneck> {
+    use crate::schema::BlockedByRef;
     let mut counts: HashMap<&str, usize> = HashMap::new();
     for task in tasks {
         if matches!(
@@ -214,7 +218,9 @@ fn bottleneck(tasks: &[Task], task_by_id: &HashMap<&str, &Task>) -> Option<Bottl
             continue;
         }
         for blocker in &task.frontmatter.blocked_by {
-            *counts.entry(blocker.as_str()).or_default() += 1;
+            if let BlockedByRef::LocalTask(id) = blocker {
+                *counts.entry(id.as_str()).or_default() += 1;
+            }
         }
     }
 

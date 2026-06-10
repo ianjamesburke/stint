@@ -33,6 +33,7 @@ enum Commands {
     },
 
     /// List tasks, optionally filtered.
+    #[command(alias = "ls")]
     List {
         /// Filter by status (backlog|todo|in-progress|done|archived).
         #[arg(long)]
@@ -61,6 +62,14 @@ enum Commands {
     Edit {
         /// Task ID.
         id: String,
+    },
+
+    /// Remove one or more task files.
+    #[command(alias = "rm")]
+    Remove {
+        /// Task IDs.
+        #[arg(required = true)]
+        ids: Vec<String>,
     },
 
     /// Mark a task in-progress and record started_at.
@@ -226,6 +235,14 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Commands::Edit { id } => {
             let repo = find_repo()?;
             cmds::cmd_edit(&repo, &id)?;
+        }
+
+        Commands::Remove { ids } => {
+            let repo = find_repo()?;
+            let paths = cmds::cmd_remove(&repo, &ids)?;
+            for path in paths {
+                println!("removed: {}", path.display());
+            }
         }
 
         Commands::Start {

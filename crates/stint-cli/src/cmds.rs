@@ -1,6 +1,7 @@
 /// All command implementations.  Each function takes a `&StintRepo` and
 /// whatever arguments the command needs.  No `std::process::exit` here —
 /// callers handle exit codes.
+use std::fs;
 use std::io::{self, Write};
 use std::path::PathBuf;
 use std::process::Command;
@@ -166,6 +167,24 @@ pub fn cmd_edit(repo: &StintRepo, id_input: &str) -> anyhow::Result<PathBuf> {
     let path = repo.resolve_task_path(id_input)?;
     open_editor(&path)?;
     Ok(path)
+}
+
+/// Remove one or more task files.
+pub fn cmd_remove(repo: &StintRepo, id_inputs: &[String]) -> anyhow::Result<Vec<PathBuf>> {
+    if id_inputs.is_empty() {
+        bail!("at least one task id is required");
+    }
+
+    let mut paths = Vec::with_capacity(id_inputs.len());
+    for id in id_inputs {
+        paths.push(repo.resolve_task_path(id)?);
+    }
+
+    for path in &paths {
+        fs::remove_file(path).with_context(|| format!("remove {}", path.display()))?;
+    }
+
+    Ok(paths)
 }
 
 /// Set a task's status to `in-progress` and record `started_at`.

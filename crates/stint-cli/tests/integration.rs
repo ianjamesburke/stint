@@ -740,6 +740,53 @@ fn show_errors_on_missing_task() {
 }
 
 // ---------------------------------------------------------------------------
+// cmd_remove
+// ---------------------------------------------------------------------------
+
+#[test]
+fn remove_deletes_task_file() {
+    let (_tmp, repo) = setup();
+    write_task_file(
+        &repo,
+        "0001-task.md",
+        &task_content("0001", "Task", "backlog"),
+    );
+    let path = repo.resolve_task_path("0001").unwrap();
+    assert!(path.exists());
+
+    let removed = cmds::cmd_remove(&repo, &[String::from("0001")]).unwrap();
+    assert_eq!(removed, vec![path.clone()]);
+    assert!(!path.exists());
+}
+
+#[test]
+fn remove_accepts_multiple_task_ids() {
+    let (_tmp, repo) = setup();
+    write_task_file(
+        &repo,
+        "0001-a.md",
+        &task_content("0001", "Task A", "backlog"),
+    );
+    write_task_file(
+        &repo,
+        "0002-b.md",
+        &task_content("0002", "Task B", "backlog"),
+    );
+
+    let removed = cmds::cmd_remove(&repo, &[String::from("0001"), String::from("2")]).unwrap();
+    assert_eq!(removed.len(), 2);
+    assert!(repo.resolve_task_path("0001").is_err());
+    assert!(repo.resolve_task_path("0002").is_err());
+}
+
+#[test]
+fn remove_requires_at_least_one_id() {
+    let (_tmp, repo) = setup();
+    let err = cmds::cmd_remove(&repo, &[]).unwrap_err();
+    assert!(err.to_string().contains("at least one task id"));
+}
+
+// ---------------------------------------------------------------------------
 // cmd_status
 // ---------------------------------------------------------------------------
 

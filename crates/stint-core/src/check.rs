@@ -146,6 +146,33 @@ pub fn check(tasks: &[Task], sprints: &[Sprint]) -> Vec<CheckError> {
     for task in tasks {
         let id = task.frontmatter.id.as_str();
 
+        // Rule 1 — required fields: id and title must be non-empty.
+        // `status` is a typed enum so it cannot be absent after construction.
+        if task.frontmatter.id.is_empty() {
+            errors.push(CheckError::MissingRequiredField {
+                task_id: task.filename.clone(),
+                field: "id",
+            });
+        }
+        if task.frontmatter.title.is_empty() {
+            errors.push(CheckError::MissingRequiredField {
+                task_id: id.to_owned(),
+                field: "title",
+            });
+        }
+
+        // Rule 2 — status enum: enforced at parse time by `TaskStatus::from_str`,
+        // which rejects unknown values with `ParseError::InvalidField`.  A `Task`
+        // that reaches `check()` already holds a valid `TaskStatus` variant; the
+        // type system makes an invalid status impossible to represent.
+
+        // Rule 3 — duration validity: `estimate` and `actual` are stored as
+        // `Option<Duration>` (already parsed and validated).  Invalid duration
+        // strings are rejected by `parse_task` before a `Task` is produced, so
+        // this constraint is also enforced at parse time and cannot be violated
+        // in a well-formed `Task`.  See `parse::tests::invalid_estimate_duration`
+        // for the test that confirms this.
+
         // Rule 9 — id matches filename prefix
         check_id_filename_match(task, &mut errors);
 
@@ -321,6 +348,64 @@ mod tests {
             .collect();
         let content = format!("# Sprint {} · Jan 1–15 · goal: test\n\n{}", number, entries);
         parse_sprint(&content).unwrap()
+    }
+
+    // Rule 1 tests
+
+    #[test]
+    fn empty_id_is_missing_required_field() {
+        // Construct a Task directly, bypassing the parser, to simulate a
+        // task with an empty id (which parse_task would reject).
+        use crate::schema::{TaskFrontmatter, TaskStatus};
+        let task = Task {
+            frontmatter: TaskFrontmatter {
+                id: String::new(),
+                title: "Some title".to_owned(),
+                status: TaskStatus::Backlog,
+                estimate: None,
+                actual: None,
+                sprint: None,
+                blocked_by: vec![],
+                blocked_by_gh: vec![],
+                blocked_by_note: None,
+                gh_issue: vec![],
+                area: vec![],
+                tags: vec![],
+            },
+            body: String::new(),
+            filename: "0001-slug.md".to_owned(),
+        };
+        let errors = check(&[task], &[]);
+        assert!(errors
+            .iter()
+            .any(|e| matches!(e, CheckError::MissingRequiredField { field: "id", .. })));
+    }
+
+    #[test]
+    fn empty_title_is_missing_required_field() {
+        use crate::schema::{TaskFrontmatter, TaskStatus};
+        let task = Task {
+            frontmatter: TaskFrontmatter {
+                id: "0001".to_owned(),
+                title: String::new(),
+                status: TaskStatus::Backlog,
+                estimate: None,
+                actual: None,
+                sprint: None,
+                blocked_by: vec![],
+                blocked_by_gh: vec![],
+                blocked_by_note: None,
+                gh_issue: vec![],
+                area: vec![],
+                tags: vec![],
+            },
+            body: String::new(),
+            filename: "0001-slug.md".to_owned(),
+        };
+        let errors = check(&[task], &[]);
+        assert!(errors
+            .iter()
+            .any(|e| matches!(e, CheckError::MissingRequiredField { field: "title", .. })));
     }
 
     #[test]

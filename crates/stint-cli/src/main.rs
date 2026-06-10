@@ -37,6 +37,9 @@ enum Commands {
         /// Filter by status (backlog|todo|in-progress|done|archived).
         #[arg(long)]
         status: Option<String>,
+        /// Include done and archived tasks when no explicit status filter is set.
+        #[arg(long)]
+        all: bool,
         /// Filter by sprint ID (e.g. s12).
         #[arg(long)]
         sprint: Option<String>,
@@ -198,6 +201,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
 
         Commands::List {
             status,
+            all,
             sprint,
             area,
             tag,
@@ -206,6 +210,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             let rows = cmds::cmd_list(
                 &repo,
                 status.as_deref(),
+                all,
                 sprint.as_deref(),
                 area.as_deref(),
                 tag.as_deref(),

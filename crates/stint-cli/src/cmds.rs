@@ -49,6 +49,7 @@ pub fn cmd_add(repo: &StintRepo, title: &str) -> anyhow::Result<PathBuf> {
 pub fn cmd_list(
     repo: &StintRepo,
     status_filter: Option<&str>,
+    include_all: bool,
     sprint_filter: Option<&str>,
     area_filter: Option<&str>,
     tag_filter: Option<&str>,
@@ -63,6 +64,14 @@ pub fn cmd_list(
         tag_filter,
     )
     .into_iter()
+    .filter(|t| {
+        status_filter.is_some()
+            || include_all
+            || !matches!(
+                t.frontmatter.status,
+                TaskStatus::Done | TaskStatus::Archived
+            )
+    })
     .map(|t| TaskRow {
         id: t.frontmatter.id.clone(),
         title: t.frontmatter.title.clone(),

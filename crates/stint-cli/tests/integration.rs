@@ -158,7 +158,7 @@ fn add_filename_includes_slug() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn list_returns_all_tasks() {
+fn list_defaults_to_active_tasks() {
     let (_tmp, repo) = setup();
     write_task_file(
         &repo,
@@ -166,8 +166,32 @@ fn list_returns_all_tasks() {
         &task_content("0001", "Task A", "backlog"),
     );
     write_task_file(&repo, "0002-b.md", &task_content("0002", "Task B", "done"));
-    let rows = cmds::cmd_list(&repo, None, None, None, None).unwrap();
-    assert_eq!(rows.len(), 2);
+    write_task_file(
+        &repo,
+        "0003-c.md",
+        &task_content("0003", "Task C", "archived"),
+    );
+    let rows = cmds::cmd_list(&repo, None, false, None, None, None).unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].id, "0001");
+}
+
+#[test]
+fn list_all_includes_done_and_archived_tasks() {
+    let (_tmp, repo) = setup();
+    write_task_file(
+        &repo,
+        "0001-a.md",
+        &task_content("0001", "Task A", "backlog"),
+    );
+    write_task_file(&repo, "0002-b.md", &task_content("0002", "Task B", "done"));
+    write_task_file(
+        &repo,
+        "0003-c.md",
+        &task_content("0003", "Task C", "archived"),
+    );
+    let rows = cmds::cmd_list(&repo, None, true, None, None, None).unwrap();
+    assert_eq!(rows.len(), 3);
 }
 
 #[test]
@@ -179,9 +203,23 @@ fn list_filters_by_status() {
         &task_content("0001", "Task A", "backlog"),
     );
     write_task_file(&repo, "0002-b.md", &task_content("0002", "Task B", "done"));
-    let rows = cmds::cmd_list(&repo, Some("backlog"), None, None, None).unwrap();
+    let rows = cmds::cmd_list(&repo, Some("backlog"), false, None, None, None).unwrap();
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].id, "0001");
+}
+
+#[test]
+fn list_explicit_status_can_show_done_tasks() {
+    let (_tmp, repo) = setup();
+    write_task_file(
+        &repo,
+        "0001-a.md",
+        &task_content("0001", "Task A", "backlog"),
+    );
+    write_task_file(&repo, "0002-b.md", &task_content("0002", "Task B", "done"));
+    let rows = cmds::cmd_list(&repo, Some("done"), false, None, None, None).unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].id, "0002");
 }
 
 #[test]
@@ -191,7 +229,7 @@ fn list_filters_by_sprint() {
     let t2 = "---\nid: \"0002\"\ntitle: \"B\"\nstatus: todo\nsprint: \"s2\"\n---\n";
     write_task_file(&repo, "0001-a.md", t1);
     write_task_file(&repo, "0002-b.md", t2);
-    let rows = cmds::cmd_list(&repo, None, Some("s1"), None, None).unwrap();
+    let rows = cmds::cmd_list(&repo, None, false, Some("s1"), None, None).unwrap();
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].id, "0001");
 }
@@ -203,7 +241,7 @@ fn list_filters_by_area() {
     let t2 = "---\nid: \"0002\"\ntitle: \"B\"\nstatus: backlog\narea:\n  - frontend\n---\n";
     write_task_file(&repo, "0001-a.md", t1);
     write_task_file(&repo, "0002-b.md", t2);
-    let rows = cmds::cmd_list(&repo, None, None, Some("backend"), None).unwrap();
+    let rows = cmds::cmd_list(&repo, None, false, None, Some("backend"), None).unwrap();
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].id, "0001");
 }
@@ -215,7 +253,7 @@ fn list_filters_by_tag() {
     let t2 = "---\nid: \"0002\"\ntitle: \"B\"\nstatus: backlog\ntags:\n  - perf\n---\n";
     write_task_file(&repo, "0001-a.md", t1);
     write_task_file(&repo, "0002-b.md", t2);
-    let rows = cmds::cmd_list(&repo, None, None, None, Some("security")).unwrap();
+    let rows = cmds::cmd_list(&repo, None, false, None, None, Some("security")).unwrap();
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].id, "0001");
 }
@@ -223,7 +261,7 @@ fn list_filters_by_tag() {
 #[test]
 fn list_empty_returns_empty_vec() {
     let (_tmp, repo) = setup();
-    let rows = cmds::cmd_list(&repo, None, None, None, None).unwrap();
+    let rows = cmds::cmd_list(&repo, None, false, None, None, None).unwrap();
     assert!(rows.is_empty());
 }
 

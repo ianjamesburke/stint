@@ -360,12 +360,33 @@ pub fn cmd_archive(repo: &StintRepo, id_input: &str) -> anyhow::Result<PathBuf> 
     Ok(path)
 }
 
-/// Show or claim the next ready task.
+/// Show or claim the next ready task(s).
+///
+/// When `claim` is true the operation is protected by an advisory lock at
+/// `.stint/claim.lock` so that parallel callers each receive a distinct task.
+/// Up to `count` tasks are claimed; defaults to 1 when count is None.
 pub fn cmd_next(
     repo: &StintRepo,
     sprint: Option<&str>,
     include_area_conflicts: bool,
     claim: bool,
+    count: Option<usize>,
+) -> anyhow::Result<NextReport> {
+    if claim {
+        with_claim_lock(repo, || {
+            cmd_next_inner(repo, sprint, include_area_conflicts, true, count)
+        })
+    } else {
+        cmd_next_inner(repo, sprint, include_area_conflicts, false, count)
+    }
+}
+
+fn cmd_next_inner(
+    repo: &StintRepo,
+    sprint: Option<&str>,
+    include_area_conflicts: bool,
+    claim: bool,
+    count: Option<usize>,
 ) -> anyhow::Result<NextReport> {
     let tasks = repo.load_tasks()?;
     let sprints = repo.load_sprints()?;
@@ -379,33 +400,73 @@ pub fn cmd_next(
     );
 
     if claim {
-        let Some(task) = report.ready.first() else {
-            return Ok(report);
-        };
-        let path = repo.resolve_task_path(&task.id)?;
-        let mut task = repo.read_task(&path)?;
-        set_status(&mut task, TaskStatus::InProgress);
-        set_started_at_if_absent(&mut task, timestamp_or_now(None)?);
-        let content = serialize_task(&task);
-        repo.write_task(&path, &content)?;
+        let n = count.unwrap_or(1);
+        for next_task in report.ready.iter().take(n) {
+            let path = repo.resolve_task_path(&next_task.id)?;
+            let mut task = repo.read_task(&path)?;
+            set_status(&mut task, TaskStatus::InProgress);
+            set_started_at_if_absent(&mut task, timestamp_or_now(None)?);
+            let content = serialize_task(&task);
+            repo.write_task(&path, &content)?;
+        }
     }
 
     Ok(report)
 }
 
-pub fn print_next(report: &NextReport, claimed: bool) {
-    if claimed {
-        match report.ready.first() {
-            Some(task) => println!("claimed: {} {}", task.id, task.title),
-            None => println!("nothing claimable"),
+/// Acquire `.stint/claim.lock` (mkdir-based advisory lock), run `f`, then
+/// release. Retries up to 20 times at 50 ms intervals before giving up.
+fn with_claim_lock<T, F: FnOnce() -> anyhow::Result<T>>(
+    repo: &StintRepo,
+    f: F,
+) -> anyhow::Result<T> {
+    let lock = repo.stint_dir.join("claim.lock");
+    let mut attempts = 0u32;
+    loop {
+        match std::fs::create_dir(&lock) {
+            Ok(()) => break,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                attempts += 1;
+                if attempts > 20 {
+                    anyhow::bail!(
+                        "claim lock held after {} retries; remove .stint/claim.lock to reset",
+                        attempts
+                    );
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            Err(e) => return Err(e).context("create .stint/claim.lock"),
         }
     }
+    let result = f();
+    let _ = std::fs::remove_dir(&lock);
+    result
+}
 
-    if report.ready.is_empty() {
+pub fn print_next(report: &NextReport, claimed: bool, count: Option<usize>) {
+    let n = count.unwrap_or(usize::MAX);
+    let claimed_ids: Vec<&str> = if claimed {
+        report.ready.iter().take(count.unwrap_or(1)).map(|t| t.id.as_str()).collect()
+    } else {
+        vec![]
+    };
+
+    if !claimed_ids.is_empty() {
+        for id in &claimed_ids {
+            if let Some(t) = report.ready.iter().find(|t| t.id.as_str() == *id) {
+                println!("claimed: {} {}", t.id, t.title);
+            }
+        }
+    } else if claimed {
+        println!("nothing claimable");
+    }
+
+    let visible: Vec<&NextTask> = report.ready.iter().take(n).collect();
+    if visible.is_empty() {
         println!("Ready: none");
     } else {
         println!("Ready:");
-        for task in &report.ready {
+        for task in &visible {
             print_next_task(task);
         }
     }
@@ -417,6 +478,47 @@ pub fn print_next(report: &NextReport, claimed: bool) {
             bottleneck.id, bottleneck.title, bottleneck.blocked_count
         );
     }
+}
+
+pub fn print_next_json(repo: &StintRepo, report: &NextReport, claimed: bool, count: Option<usize>) {
+    use serde_json::{json, Value};
+
+    let n = count.unwrap_or(usize::MAX);
+    let tasks_dir = repo.tasks_dir();
+
+    let task_to_json = |t: &NextTask| -> Value {
+        let path = tasks_dir
+            .join(&t.filename)
+            .strip_prefix(repo.stint_dir.parent().unwrap_or(&repo.stint_dir))
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_else(|_| t.filename.clone());
+        json!({
+            "id": t.id,
+            "title": t.title,
+            "status": t.status.as_str(),
+            "sprint": t.sprint,
+            "area": t.area,
+            "gh_issue": t.gh_issue,
+            "path": path,
+        })
+    };
+
+    let ready: Vec<Value> = report.ready.iter().take(n).map(task_to_json).collect();
+
+    let claimed_ids: Vec<&str> = if claimed {
+        report.ready.iter().take(count.unwrap_or(1)).map(|t| t.id.as_str()).collect()
+    } else {
+        vec![]
+    };
+
+    let mut obj = json!({ "ready": ready });
+    if !claimed_ids.is_empty() {
+        obj["claimed"] = json!(claimed_ids);
+    } else if claimed {
+        obj["claimed"] = json!(Vec::<String>::new());
+    }
+
+    println!("{}", serde_json::to_string_pretty(&obj).unwrap());
 }
 
 fn print_next_task(task: &NextTask) {

@@ -14,6 +14,7 @@ repository = "https://github.com/ianjamesburke/stint"
 
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 serde_yaml = "0.9"
 thiserror = "1"
 anyhow = "1"

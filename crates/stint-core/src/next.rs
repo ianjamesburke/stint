@@ -16,6 +16,8 @@ pub struct NextTask {
     pub status: TaskStatus,
     pub sprint: Option<String>,
     pub area: Vec<String>,
+    pub gh_issue: Vec<String>,
+    pub filename: String,
     pub blockers: Vec<String>,
     pub area_conflicts: Vec<String>,
 }
@@ -68,6 +70,8 @@ pub fn compute_next(tasks: &[Task], sprints: &[Sprint], options: NextOptions<'_>
             status: task.frontmatter.status.clone(),
             sprint: task.frontmatter.sprint.clone(),
             area: task.frontmatter.area.clone(),
+            gh_issue: task.frontmatter.gh_issue.clone(),
+            filename: task.filename.clone(),
             blockers: blockers.clone(),
             area_conflicts: area_conflicts.clone(),
         };

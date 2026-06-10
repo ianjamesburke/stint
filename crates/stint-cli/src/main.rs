@@ -121,9 +121,15 @@ enum Commands {
         /// Include tasks whose area conflicts with in-progress work.
         #[arg(long)]
         include_area_conflicts: bool,
-        /// Mark the top ready task as in-progress.
+        /// Mark the top ready task(s) as in-progress (atomic with count).
         #[arg(long)]
         claim: bool,
+        /// Maximum number of ready tasks to return (default: all).
+        #[arg(long)]
+        count: Option<usize>,
+        /// Output as JSON for agent/orchestrator consumption.
+        #[arg(long)]
+        json: bool,
     },
 
     /// Sprint management sub-commands.
@@ -288,10 +294,17 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             sprint,
             include_area_conflicts,
             claim,
+            count,
+            json,
         } => {
             let repo = find_repo()?;
-            let report = cmds::cmd_next(&repo, sprint.as_deref(), include_area_conflicts, claim)?;
-            cmds::print_next(&report, claim);
+            let report =
+                cmds::cmd_next(&repo, sprint.as_deref(), include_area_conflicts, claim, count)?;
+            if json {
+                cmds::print_next_json(&repo, &report, claim, count);
+            } else {
+                cmds::print_next(&report, claim, count);
+            }
         }
 
         Commands::Sprint { command } => match command {

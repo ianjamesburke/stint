@@ -319,6 +319,21 @@ pub fn cmd_sprint_add(
     Ok(path)
 }
 
+/// Open a sprint file in `$EDITOR` for manual reordering.
+///
+/// The sprint file is an ordered list of task IDs — the user moves lines to
+/// change priority order.  After the editor exits, the file is re-parsed to
+/// ensure it is still valid.
+pub fn cmd_sprint_reorder(repo: &StintRepo, id_input: &str) -> anyhow::Result<PathBuf> {
+    let path = repo.resolve_sprint_path(id_input)?;
+    open_editor(&path)?;
+    // Validate the file is still parseable after manual edits.
+    let content = repo.read_sprint_raw(&path)?;
+    stint_core::sprint::parse_sprint(&content)
+        .with_context(|| format!("sprint file is no longer valid after reorder: {}", path.display()))?;
+    Ok(path)
+}
+
 /// Remove a task from a sprint file.
 pub fn cmd_sprint_remove(
     repo: &StintRepo,
@@ -338,7 +353,16 @@ pub fn cmd_sprint_remove(
 // ---------------------------------------------------------------------------
 
 /// Run `stint check` and return all error strings.  Empty = valid.
-pub fn cmd_check(repo: &StintRepo) -> anyhow::Result<Vec<String>> {
+///
+/// `cross_repo`: when true, cross-repo reference resolution would walk sibling
+/// repositories to validate external task IDs.  This is a stub — the feature
+/// is out of scope for v1.  The flag is accepted and acknowledged so the CLI
+/// surface matches the spec, but only the local check runs.
+pub fn cmd_check(repo: &StintRepo, cross_repo: bool) -> anyhow::Result<Vec<String>> {
+    if cross_repo {
+        // STUB: cross-repo resolution not yet implemented.
+        eprintln!("cross-repo resolution not yet implemented");
+    }
     let tasks = repo.load_tasks()?;
     let sprints = repo.load_sprints()?;
     let errors = check(&tasks, &sprints);

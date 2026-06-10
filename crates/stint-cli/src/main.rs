@@ -86,7 +86,11 @@ enum Commands {
     },
 
     /// Validate the entire task graph; exit 1 if any errors are found.
-    Check,
+    Check {
+        /// Walk sibling repositories and validate cross-repo references (stub; not yet implemented).
+        #[arg(long)]
+        cross_repo: bool,
+    },
 
     /// Show a summary: open tasks, blocked tasks, current sprint progress.
     Status,
@@ -128,6 +132,12 @@ enum SprintCommands {
         sprint_id: String,
         /// Task ID.
         task_id: String,
+    },
+
+    /// Open a sprint file in $EDITOR for manual reordering.
+    Reorder {
+        /// Sprint ID.
+        id: String,
     },
 }
 
@@ -215,11 +225,16 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 let path = cmds::cmd_sprint_remove(&repo, &sprint_id, &task_id)?;
                 println!("removed from {}", path.display());
             }
+            SprintCommands::Reorder { id } => {
+                let repo = find_repo()?;
+                let path = cmds::cmd_sprint_reorder(&repo, &id)?;
+                println!("reordered {}", path.display());
+            }
         },
 
-        Commands::Check => {
+        Commands::Check { cross_repo } => {
             let repo = find_repo()?;
-            let errors = cmds::cmd_check(&repo)?;
+            let errors = cmds::cmd_check(&repo, cross_repo)?;
             if errors.is_empty() {
                 println!("ok");
             } else {

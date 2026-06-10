@@ -330,7 +330,7 @@ fn check_passes_clean_graph() {
     let (_tmp, repo) = setup();
     write_task_file(&repo, "0001-a.md", &task_content("0001", "Task A", "backlog"));
     write_task_file(&repo, "0002-b.md", &task_content("0002", "Task B", "done"));
-    let errors = cmds::cmd_check(&repo).unwrap();
+    let errors = cmds::cmd_check(&repo, false).unwrap();
     assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
 }
 
@@ -339,7 +339,7 @@ fn check_detects_unresolved_blocked_by() {
     let (_tmp, repo) = setup();
     let content = "---\nid: \"0001\"\ntitle: \"T\"\nstatus: backlog\nblocked_by:\n  - \"9999\"\n---\n";
     write_task_file(&repo, "0001-t.md", content);
-    let errors = cmds::cmd_check(&repo).unwrap();
+    let errors = cmds::cmd_check(&repo, false).unwrap();
     assert!(!errors.is_empty(), "expected at least one error");
     assert!(errors.iter().any(|e| e.contains("9999")));
 }
@@ -350,7 +350,7 @@ fn check_detects_duplicate_ids() {
     write_task_file(&repo, "0001-a.md", &task_content("0001", "Task A", "backlog"));
     // Different filename, same id field — triggers duplicate check.
     write_task_file(&repo, "0001-b.md", &task_content("0001", "Task B", "backlog"));
-    let errors = cmds::cmd_check(&repo).unwrap();
+    let errors = cmds::cmd_check(&repo, false).unwrap();
     assert!(errors.iter().any(|e| e.contains("duplicate")));
 }
 
@@ -360,14 +360,14 @@ fn check_detects_id_filename_mismatch() {
     // id field says 0099 but filename prefix is 0001.
     let content = "---\nid: \"0099\"\ntitle: \"T\"\nstatus: backlog\n---\n";
     write_task_file(&repo, "0001-t.md", content);
-    let errors = cmds::cmd_check(&repo).unwrap();
+    let errors = cmds::cmd_check(&repo, false).unwrap();
     assert!(errors.iter().any(|e| e.contains("filename")));
 }
 
 #[test]
 fn check_empty_repo_passes() {
     let (_tmp, repo) = setup();
-    let errors = cmds::cmd_check(&repo).unwrap();
+    let errors = cmds::cmd_check(&repo, false).unwrap();
     assert!(errors.is_empty());
 }
 

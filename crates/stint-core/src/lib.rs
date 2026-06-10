@@ -6,3 +6,4 @@ pub mod duration;
 pub mod serialize;
 pub mod mutate;
 pub mod status;
+pub mod filter;

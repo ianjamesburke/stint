@@ -14,7 +14,7 @@ use stint_core::mutate::{
 };
 use stint_core::schema::TaskStatus;
 use stint_core::serialize::serialize_task;
-use stint_core::sprint::{numeric_prefix, sprint_add_task, sprint_remove_task};
+use stint_core::sprint::{numeric_prefix, sprint_add_task, sprint_remove_task, normalize_sprint_id};
 use stint_core::status::compute_status;
 
 use crate::repo::StintRepo;
@@ -51,32 +51,8 @@ pub fn cmd_list(
 ) -> anyhow::Result<Vec<TaskRow>> {
     let tasks = repo.load_tasks()?;
 
-    let rows = tasks
-        .iter()
-        .filter(|t| {
-            if let Some(s) = status_filter {
-                if t.frontmatter.status.as_str() != s {
-                    return false;
-                }
-            }
-            if let Some(sp) = sprint_filter {
-                match &t.frontmatter.sprint {
-                    Some(ts) if ts == sp => {}
-                    _ => return false,
-                }
-            }
-            if let Some(a) = area_filter {
-                if !t.frontmatter.area.iter().any(|x| x == a) {
-                    return false;
-                }
-            }
-            if let Some(tag) = tag_filter {
-                if !t.frontmatter.tags.iter().any(|x| x == tag) {
-                    return false;
-                }
-            }
-            true
-        })
+    let rows = stint_core::filter::filter_tasks(&tasks, status_filter, sprint_filter, area_filter, tag_filter)
+        .into_iter()
         .map(|t| TaskRow {
             id: t.frontmatter.id.clone(),
             title: t.frontmatter.title.clone(),
@@ -235,7 +211,7 @@ pub fn cmd_sprint_new(
     goal: Option<&str>,
 ) -> anyhow::Result<PathBuf> {
     repo.ensure_dirs()?;
-    let id = crate::repo::normalize_sprint_id(id_input);
+    let id = normalize_sprint_id(id_input);
     let path = repo.sprints_dir().join(format!("{}.md", id));
     if path.exists() {
         bail!("sprint {:?} already exists at {}", id, path.display());
@@ -314,7 +290,8 @@ pub fn cmd_sprint_add(
     let task_id = resolve_id(task_id);
     let path = repo.resolve_sprint_path(sprint_id)?;
     let content = repo.read_sprint_raw(&path)?;
-    let updated = sprint_add_task(&content, &task_id);
+    let updated = sprint_add_task(&content, &task_id)
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
     repo.write_sprint(&path, &updated)?;
     Ok(path)
 }
@@ -343,7 +320,8 @@ pub fn cmd_sprint_remove(
     let task_id = resolve_id(task_id);
     let path = repo.resolve_sprint_path(sprint_id)?;
     let content = repo.read_sprint_raw(&path)?;
-    let updated = sprint_remove_task(&content, &task_id);
+    let updated = sprint_remove_task(&content, &task_id)
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
     repo.write_sprint(&path, &updated)?;
     Ok(path)
 }
@@ -446,9 +424,11 @@ pub fn open_editor(path: &std::path::Path) -> anyhow::Result<()> {
 
 fn truncate(s: &str, max: usize) -> &str {
     if s.len() <= max {
-        s
-    } else {
-        &s[..max]
+        return s;
+    }
+    match s.char_indices().nth(max) {
+        Some((i, _)) => &s[..i],
+        None => s,
     }
 }
 

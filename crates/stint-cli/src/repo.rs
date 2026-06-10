@@ -66,7 +66,7 @@ impl StintRepo {
             }
             let filename = path
                 .file_name()
-                .unwrap()
+                .ok_or_else(|| anyhow::anyhow!("path has no filename: {}", path.display()))?
                 .to_string_lossy()
                 .into_owned();
             let content = fs::read_to_string(&path)
@@ -138,7 +138,7 @@ impl StintRepo {
     ///
     /// The sprint ID may omit the leading `s` (e.g. `"12"` → `"s12"`).
     pub fn resolve_sprint_path(&self, id_input: &str) -> anyhow::Result<PathBuf> {
-        let id = normalize_sprint_id(id_input);
+        let id = stint_core::sprint::normalize_sprint_id(id_input);
         let path = self.sprints_dir().join(format!("{}.md", id));
         if path.exists() {
             Ok(path)
@@ -151,7 +151,11 @@ impl StintRepo {
     pub fn read_task(&self, path: &Path) -> anyhow::Result<Task> {
         let content = fs::read_to_string(path)
             .with_context(|| format!("read {}", path.display()))?;
-        let filename = path.file_name().unwrap().to_string_lossy().into_owned();
+        let filename = path
+            .file_name()
+            .ok_or_else(|| anyhow::anyhow!("path has no filename: {}", path.display()))?
+            .to_string_lossy()
+            .into_owned();
         parse_task(&content, &filename)
             .with_context(|| format!("parse {}", path.display()))
     }
@@ -175,11 +179,3 @@ impl StintRepo {
     }
 }
 
-/// Normalise sprint ID: `"12"` → `"s12"`, `"s12"` → `"s12"`.
-pub fn normalize_sprint_id(id: &str) -> String {
-    if id.starts_with('s') {
-        id.to_owned()
-    } else {
-        format!("s{}", id)
-    }
-}

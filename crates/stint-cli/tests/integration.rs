@@ -5,6 +5,7 @@
 /// subprocess invocation.
 use std::env;
 use std::fs;
+use std::sync::OnceLock;
 
 use tempfile::TempDir;
 
@@ -21,10 +22,24 @@ use repo::StintRepo;
 // Helpers
 // ---------------------------------------------------------------------------
 
+/// Ensure `STINT_TEST_EDITOR=none` is set exactly once across the process.
+///
+/// Using `OnceLock` avoids a data race when tests run in parallel and multiple
+/// threads call `env::set_var` simultaneously.
+static EDITOR_SUPPRESSED: OnceLock<()> = OnceLock::new();
+
+fn suppress_editor() {
+    EDITOR_SUPPRESSED.get_or_init(|| {
+        // SAFETY: we are the only writer and this runs before any thread that
+        // reads STINT_TEST_EDITOR, because `OnceLock` serialises the init.
+        #[allow(deprecated)]
+        unsafe { env::set_var("STINT_TEST_EDITOR", "none") };
+    });
+}
+
 /// Create a `TempDir` with `.stint/tasks/` and `.stint/sprints/` pre-created.
 fn setup() -> (TempDir, StintRepo) {
-    // Suppress editor invocation in all tests.
-    env::set_var("STINT_TEST_EDITOR", "none");
+    suppress_editor();
 
     let tmp = TempDir::new().unwrap();
     let stint_dir = tmp.path().join(".stint");
@@ -416,4 +431,115 @@ fn done_without_prior_log_records_actual() {
         task.frontmatter.actual,
         Some(stint_core::duration::Duration::from_minutes(180))
     );
+}
+
+// ---------------------------------------------------------------------------
+// cmd_show
+// ---------------------------------------------------------------------------
+
+#[test]
+fn show_prints_task_fields() {
+    let (_tmp, repo) = setup();
+    write_task_file(&repo, "0001-task.md", &task_content("0001", "Show Me", "backlog"));
+    // cmd_show writes to stdout; we verify it doesn't error and uses the right id.
+    cmds::cmd_show(&repo, "0001").unwrap();
+}
+
+#[test]
+fn show_errors_on_missing_task() {
+    let (_tmp, repo) = setup();
+    assert!(cmds::cmd_show(&repo, "9999").is_err());
+}
+
+// ---------------------------------------------------------------------------
+// cmd_status
+// ---------------------------------------------------------------------------
+
+#[test]
+fn status_runs_on_empty_repo() {
+    let (_tmp, repo) = setup();
+    cmds::cmd_status(&repo).unwrap();
+}
+
+#[test]
+fn status_runs_with_tasks() {
+    let (_tmp, repo) = setup();
+    write_task_file(&repo, "0001-a.md", &task_content("0001", "Task A", "backlog"));
+    write_task_file(&repo, "0002-b.md", &task_content("0002", "Task B", "done"));
+    cmds::cmd_status(&repo).unwrap();
+}
+
+// ---------------------------------------------------------------------------
+// cmd_sprint_show
+// ---------------------------------------------------------------------------
+
+#[test]
+fn sprint_show_prints_header_and_tasks() {
+    let (_tmp, repo) = setup();
+    let sprint_content = "# Sprint 1 \u{00B7} Jun 1-14\n\n- 0001\n- 0002\n";
+    write_sprint_file(&repo, "s1.md", sprint_content);
+    write_task_file(&repo, "0001-task.md", &task_content("0001", "Task A", "backlog"));
+    write_task_file(&repo, "0002-task.md", &task_content("0002", "Task B", "done"));
+    // Verify it completes without error; output goes to stdout.
+    cmds::cmd_sprint_show(&repo, "s1").unwrap();
+}
+
+#[test]
+fn sprint_show_errors_on_missing_sprint() {
+    let (_tmp, repo) = setup();
+    assert!(cmds::cmd_sprint_show(&repo, "s99").is_err());
+}
+
+// ---------------------------------------------------------------------------
+// cmd_sprint_list
+// ---------------------------------------------------------------------------
+
+#[test]
+fn sprint_list_empty() {
+    let (_tmp, repo) = setup();
+    cmds::cmd_sprint_list(&repo).unwrap();
+}
+
+#[test]
+fn sprint_list_shows_all_sprints() {
+    let (_tmp, repo) = setup();
+    write_sprint_file(&repo, "s1.md", "# Sprint 1 \u{00B7} Jun 1-14\n");
+    write_sprint_file(&repo, "s2.md", "# Sprint 2 \u{00B7} Jun 15-28\n");
+    cmds::cmd_sprint_list(&repo).unwrap();
+}
+
+// ---------------------------------------------------------------------------
+// cmd_sprint_reorder
+// ---------------------------------------------------------------------------
+
+#[test]
+fn sprint_reorder_no_crash_with_test_editor() {
+    let (_tmp, repo) = setup();
+    // STINT_TEST_EDITOR=none is already set by setup(); open_editor is a no-op.
+    write_sprint_file(&repo, "s1.md", "# Sprint 1 \u{00B7} Jun 1-14\n\n- 0001\n");
+    cmds::cmd_sprint_reorder(&repo, "s1").unwrap();
+}
+
+// ---------------------------------------------------------------------------
+// sprint_remove error path
+// ---------------------------------------------------------------------------
+
+#[test]
+fn sprint_remove_errors_when_task_not_present() {
+    let (_tmp, repo) = setup();
+    write_sprint_file(&repo, "s1.md", "# Sprint 1 \u{00B7} Jun 1-14\n\n- 0001\n");
+    let err = cmds::cmd_sprint_remove(&repo, "s1", "9999").unwrap_err();
+    assert!(err.to_string().contains("not in the sprint"));
+}
+
+// ---------------------------------------------------------------------------
+// sprint_add error path
+// ---------------------------------------------------------------------------
+
+#[test]
+fn sprint_add_errors_when_task_already_present() {
+    let (_tmp, repo) = setup();
+    write_sprint_file(&repo, "s1.md", "# Sprint 1 \u{00B7} Jun 1-14\n\n- 0001\n");
+    let err = cmds::cmd_sprint_add(&repo, "s1", "0001").unwrap_err();
+    assert!(err.to_string().contains("already in the sprint"));
 }

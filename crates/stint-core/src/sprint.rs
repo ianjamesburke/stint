@@ -20,6 +20,22 @@ pub enum SprintParseError {
     InvalidHeader,
 }
 
+/// Errors that can occur when adding a task to a sprint.
+#[derive(Debug, Error, PartialEq)]
+pub enum SprintAddError {
+    /// The task is already present in the sprint.
+    #[error("task {0:?} is already in the sprint")]
+    AlreadyPresent(String),
+}
+
+/// Errors that can occur when removing a task from a sprint.
+#[derive(Debug, Error, PartialEq)]
+pub enum SprintRemoveError {
+    /// The task was not found in the sprint.
+    #[error("task {0:?} is not in the sprint")]
+    NotFound(String),
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -45,34 +61,60 @@ pub fn parse_sprint(content: &str) -> Result<Sprint, SprintParseError> {
 
 /// Append a task entry to a sprint file's string content.
 ///
-/// Returns the new file content with the task ID appended to the list.
-pub fn sprint_add_task(content: &str, task_id: &str) -> String {
+/// Returns the new file content with the task ID appended to the list, or
+/// `Err(SprintAddError::AlreadyPresent)` if the task is already in the sprint.
+pub fn sprint_add_task(content: &str, task_id: &str) -> Result<String, SprintAddError> {
+    // Check for duplicate by numeric prefix.
+    let already_present = content
+        .lines()
+        .filter_map(|line| parse_task_list_entry(line))
+        .any(|entry| numeric_prefix(&entry) == task_id);
+    if already_present {
+        return Err(SprintAddError::AlreadyPresent(task_id.to_owned()));
+    }
     let trimmed = content.trim_end_matches('\n');
-    format!("{}\n- {}\n", trimmed, task_id)
+    Ok(format!("{}\n- {}\n", trimmed, task_id))
 }
 
 /// Remove a task entry from a sprint file's string content by numeric prefix.
 ///
 /// Matches entries where the numeric prefix equals `task_id`.  Returns the
-/// updated content.  If no match is found the content is returned unchanged.
-pub fn sprint_remove_task(content: &str, task_id: &str) -> String {
+/// updated content, or `Err(SprintRemoveError::NotFound)` if the task is not
+/// present in the sprint.
+pub fn sprint_remove_task(content: &str, task_id: &str) -> Result<String, SprintRemoveError> {
+    let mut removed = false;
     let lines: Vec<&str> = content
         .lines()
         .filter(|line| {
             if let Some(entry) = parse_task_list_entry(line) {
-                numeric_prefix(&entry) != task_id
-            } else {
-                true
+                if numeric_prefix(&entry) == task_id {
+                    removed = true;
+                    return false;
+                }
             }
+            true
         })
         .collect();
 
+    if !removed {
+        return Err(SprintRemoveError::NotFound(task_id.to_owned()));
+    }
+
     if lines.is_empty() {
-        String::new()
+        Ok(String::new())
     } else {
         let mut result = lines.join("\n");
         result.push('\n');
-        result
+        Ok(result)
+    }
+}
+
+/// Normalise a sprint ID: `"12"` → `"s12"`, `"s12"` → `"s12"`.
+pub fn normalize_sprint_id(id: &str) -> String {
+    if id.starts_with('s') {
+        id.to_owned()
+    } else {
+        format!("s{}", id)
     }
 }
 
@@ -196,26 +238,41 @@ mod tests {
 
     #[test]
     fn sprint_add_task_appends() {
-        let updated = sprint_add_task(SPRINT_FILE, "0010-new-task");
+        let updated = sprint_add_task(SPRINT_FILE, "0010-new-task").unwrap();
         let sprint = parse_sprint(&updated).unwrap();
         assert_eq!(sprint.task_ids.last().unwrap(), "0010-new-task");
         assert_eq!(sprint.task_ids.len(), 5);
     }
 
     #[test]
+    fn sprint_add_task_duplicate_errors() {
+        // "0001" is already in SPRINT_FILE.
+        let err = sprint_add_task(SPRINT_FILE, "0001").unwrap_err();
+        assert!(matches!(err, SprintAddError::AlreadyPresent(_)));
+    }
+
+    #[test]
     fn sprint_remove_task_by_id() {
-        let updated = sprint_remove_task(SPRINT_FILE, "0004");
+        let updated = sprint_remove_task(SPRINT_FILE, "0004").unwrap();
         let sprint = parse_sprint(&updated).unwrap();
         assert!(!sprint.task_ids.iter().any(|id| id.starts_with("0004")));
         assert_eq!(sprint.task_ids.len(), 3);
     }
 
     #[test]
-    fn sprint_remove_nonexistent_is_noop() {
-        let updated = sprint_remove_task(SPRINT_FILE, "9999");
-        let sprint_before = parse_sprint(SPRINT_FILE).unwrap();
-        let sprint_after = parse_sprint(&updated).unwrap();
-        assert_eq!(sprint_before.task_ids.len(), sprint_after.task_ids.len());
+    fn sprint_remove_nonexistent_errors() {
+        let err = sprint_remove_task(SPRINT_FILE, "9999").unwrap_err();
+        assert!(matches!(err, SprintRemoveError::NotFound(_)));
+    }
+
+    #[test]
+    fn normalize_sprint_id_with_prefix() {
+        assert_eq!(normalize_sprint_id("s12"), "s12");
+    }
+
+    #[test]
+    fn normalize_sprint_id_without_prefix() {
+        assert_eq!(normalize_sprint_id("12"), "s12");
     }
 
     #[test]

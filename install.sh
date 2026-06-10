@@ -50,6 +50,8 @@ trap 'rm -f "$TMP"' EXIT
 curl -fsSL "$URL" | gunzip > "$TMP"
 chmod +x "$TMP"
 
+mkdir -p "$INSTALL_DIR"
+
 if [ -w "$INSTALL_DIR" ]; then
   mv "$TMP" "${INSTALL_DIR}/${BIN}"
 else

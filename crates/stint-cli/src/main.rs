@@ -16,6 +16,7 @@ use repo::StintRepo;
 #[derive(Parser)]
 #[command(
     name = "stint",
+    version,
     about = "Git-tracked sprint planning and task tracking"
 )]
 struct Cli {

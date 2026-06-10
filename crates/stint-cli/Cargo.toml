@@ -1,0 +1,14 @@
+[package]
+name = "stint-cli"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "stint"
+path = "src/main.rs"
+
+[dependencies]
+stint-core = { path = "../stint-core" }
+clap = { version = "4", features = ["derive"] }
+anyhow = { workspace = true }

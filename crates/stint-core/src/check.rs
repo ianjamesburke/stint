@@ -1,0 +1,1 @@
+// stint check validation rules

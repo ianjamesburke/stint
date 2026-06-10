@@ -91,11 +91,6 @@ fn parse_sprint_header(line: &str) -> Result<SprintHeader, SprintParseError> {
     // Split on " · " (middle dot separator)
     let parts: Vec<&str> = without_hash.split(" \u{00B7} ").collect();
 
-    // At minimum we need the "Sprint <N>" part
-    if parts.is_empty() {
-        return Err(SprintParseError::InvalidHeader);
-    }
-
     let sprint_part = parts[0];
     let number_str = sprint_part
         .strip_prefix("Sprint ")

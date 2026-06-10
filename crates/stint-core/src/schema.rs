@@ -1,4 +1,6 @@
 /// Core domain types for tasks, sprints, and blockers.
+use std::str::FromStr;
+
 use crate::duration::Duration;
 
 /// Status lifecycle for a task.
@@ -16,19 +18,38 @@ pub enum TaskStatus {
     Archived,
 }
 
-impl TaskStatus {
-    /// Parse from the canonical string representation used in frontmatter.
-    pub fn from_str(s: &str) -> Option<Self> {
+/// Error returned when a `TaskStatus` string is not recognised.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaskStatusParseError(pub String);
+
+impl std::fmt::Display for TaskStatusParseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "unknown status {:?}; expected one of backlog, todo, in-progress, done, archived",
+            self.0
+        )
+    }
+}
+
+impl std::error::Error for TaskStatusParseError {}
+
+impl FromStr for TaskStatus {
+    type Err = TaskStatusParseError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
-            "backlog" => Some(TaskStatus::Backlog),
-            "todo" => Some(TaskStatus::Todo),
-            "in-progress" => Some(TaskStatus::InProgress),
-            "done" => Some(TaskStatus::Done),
-            "archived" => Some(TaskStatus::Archived),
-            _ => None,
+            "backlog" => Ok(TaskStatus::Backlog),
+            "todo" => Ok(TaskStatus::Todo),
+            "in-progress" => Ok(TaskStatus::InProgress),
+            "done" => Ok(TaskStatus::Done),
+            "archived" => Ok(TaskStatus::Archived),
+            _ => Err(TaskStatusParseError(s.to_owned())),
         }
     }
+}
 
+impl TaskStatus {
     /// Return the canonical string representation.
     pub fn as_str(&self) -> &'static str {
         match self {
@@ -163,14 +184,14 @@ mod tests {
     #[test]
     fn task_status_round_trip() {
         for s in &["backlog", "todo", "in-progress", "done", "archived"] {
-            let status = TaskStatus::from_str(s).unwrap();
+            let status: TaskStatus = s.parse().unwrap();
             assert_eq!(status.as_str(), *s);
         }
     }
 
     #[test]
     fn task_status_invalid() {
-        assert!(TaskStatus::from_str("unknown").is_none());
+        assert!("unknown".parse::<TaskStatus>().is_err());
     }
 
     #[test]

@@ -46,7 +46,7 @@ impl FromStr for Duration {
             let hours: f64 = hours_str
                 .parse()
                 .map_err(|_| DurationError::InvalidFormat(s.to_owned()))?;
-            if hours < 0.0 {
+            if !hours.is_finite() || hours < 0.0 {
                 return Err(DurationError::InvalidFormat(s.to_owned()));
             }
             let minutes = (hours * 60.0).round() as u32;
@@ -57,13 +57,20 @@ impl FromStr for Duration {
             let minutes: f64 = minutes_str
                 .parse()
                 .map_err(|_| DurationError::InvalidFormat(s.to_owned()))?;
-            if minutes < 0.0 {
+            if !minutes.is_finite() || minutes < 0.0 {
                 return Err(DurationError::InvalidFormat(s.to_owned()));
             }
             return Ok(Duration(minutes.round() as u32));
         }
 
         Err(DurationError::InvalidFormat(s.to_owned()))
+    }
+}
+
+impl std::ops::Add for Duration {
+    type Output = Duration;
+    fn add(self, rhs: Duration) -> Duration {
+        Duration(self.0 + rhs.0)
     }
 }
 
@@ -140,5 +147,20 @@ mod tests {
         assert!("4x".parse::<Duration>().is_err());
         assert!("".parse::<Duration>().is_err());
         assert!("abc".parse::<Duration>().is_err());
+    }
+
+    #[test]
+    fn inf_hours_is_error() {
+        assert!("infh".parse::<Duration>().is_err());
+    }
+
+    #[test]
+    fn nan_minutes_is_error() {
+        assert!("nanm".parse::<Duration>().is_err());
+    }
+
+    #[test]
+    fn ops_add_durations() {
+        assert_eq!(Duration(60) + Duration(30), Duration(90));
     }
 }

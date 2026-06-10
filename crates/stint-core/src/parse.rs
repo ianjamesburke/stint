@@ -108,9 +108,9 @@ pub fn parse_task(content: &str, filename: &str) -> Result<Task, ParseError> {
         .filter(|s| !s.is_empty())
         .ok_or(ParseError::MissingField("status"))?;
 
-    let status = TaskStatus::from_str(&status_str).ok_or_else(|| ParseError::InvalidField {
+    let status = status_str.parse::<TaskStatus>().map_err(|e| ParseError::InvalidField {
         field: "status",
-        reason: format!("unknown value {:?}; expected one of backlog, todo, in-progress, done, archived", status_str),
+        reason: e.to_string(),
     })?;
 
     let estimate = raw
@@ -198,15 +198,20 @@ fn split_frontmatter(content: &str) -> Result<(&str, &str), ParseError> {
         .or_else(|| after_open.strip_prefix("\r\n"))
         .ok_or(ParseError::MissingFrontmatter)?;
 
-    // Find the closing ---
-    // Look for a line that is exactly "---"
-    let close_marker = "\n---";
+    // Find the closing --- on its own line (must be followed by \n or end of string).
     let close_pos = after_newline
-        .find(close_marker)
+        .find("\n---\n")
+        .or_else(|| {
+            if after_newline.ends_with("\n---") {
+                Some(after_newline.len() - 4)
+            } else {
+                None
+            }
+        })
         .ok_or(ParseError::MissingFrontmatter)?;
 
     let frontmatter_str = &after_newline[..close_pos];
-    let after_close = &after_newline[close_pos + close_marker.len()..];
+    let after_close = &after_newline[close_pos + 4..]; // skip "\n---"
 
     // Body is everything after the optional newline following the close marker.
     let body = after_close

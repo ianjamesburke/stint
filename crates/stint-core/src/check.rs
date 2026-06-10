@@ -297,7 +297,9 @@ fn check_cycles(tasks: &[Task], errors: &mut Vec<CheckError>) {
                     continue;
                 }
                 // Mark as "in-stack"
-                *stack.last_mut().unwrap() = (node, true);
+                if let Some(top) = stack.last_mut() {
+                    *top = (node, true);
+                }
                 color.insert(node, 1);
 
                 if let Some(blockers) = id_to_blockers.get(node) {

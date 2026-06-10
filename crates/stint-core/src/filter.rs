@@ -55,14 +55,20 @@ mod tests {
 
     #[test]
     fn filter_all_none_returns_all() {
-        let tasks = vec![make_task("0001", "A", "backlog"), make_task("0002", "B", "done")];
+        let tasks = vec![
+            make_task("0001", "A", "backlog"),
+            make_task("0002", "B", "done"),
+        ];
         let result = filter_tasks(&tasks, None, None, None, None);
         assert_eq!(result.len(), 2);
     }
 
     #[test]
     fn filter_by_status() {
-        let tasks = vec![make_task("0001", "A", "backlog"), make_task("0002", "B", "done")];
+        let tasks = vec![
+            make_task("0001", "A", "backlog"),
+            make_task("0002", "B", "done"),
+        ];
         let result = filter_tasks(&tasks, Some("backlog"), None, None, None);
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].frontmatter.id, "0001");

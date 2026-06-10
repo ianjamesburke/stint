@@ -20,7 +20,9 @@ impl StintRepo {
         loop {
             let candidate = current.join(".stint");
             if candidate.is_dir() {
-                return Ok(StintRepo { stint_dir: candidate });
+                return Ok(StintRepo {
+                    stint_dir: candidate,
+                });
             }
             match current.parent() {
                 Some(parent) => current = parent.to_path_buf(),
@@ -69,8 +71,8 @@ impl StintRepo {
                 .ok_or_else(|| anyhow::anyhow!("path has no filename: {}", path.display()))?
                 .to_string_lossy()
                 .into_owned();
-            let content = fs::read_to_string(&path)
-                .with_context(|| format!("read {}", path.display()))?;
+            let content =
+                fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
             match parse_task(&content, &filename) {
                 Ok(task) => tasks.push(task),
                 Err(e) => eprintln!("warning: skip {}: {}", path.display(), e),
@@ -94,8 +96,8 @@ impl StintRepo {
             if path.extension().and_then(|e| e.to_str()) != Some("md") {
                 continue;
             }
-            let content = fs::read_to_string(&path)
-                .with_context(|| format!("read {}", path.display()))?;
+            let content =
+                fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
             match parse_sprint(&content) {
                 Ok(sprint) => sprints.push(sprint),
                 Err(e) => eprintln!("warning: skip {}: {}", path.display(), e),
@@ -149,33 +151,28 @@ impl StintRepo {
 
     /// Read a task file by path and parse it.
     pub fn read_task(&self, path: &Path) -> anyhow::Result<Task> {
-        let content = fs::read_to_string(path)
-            .with_context(|| format!("read {}", path.display()))?;
+        let content =
+            fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
         let filename = path
             .file_name()
             .ok_or_else(|| anyhow::anyhow!("path has no filename: {}", path.display()))?
             .to_string_lossy()
             .into_owned();
-        parse_task(&content, &filename)
-            .with_context(|| format!("parse {}", path.display()))
+        parse_task(&content, &filename).with_context(|| format!("parse {}", path.display()))
     }
 
     /// Write a serialized task back to its file.
     pub fn write_task(&self, path: &Path, content: &str) -> anyhow::Result<()> {
-        fs::write(path, content)
-            .with_context(|| format!("write {}", path.display()))
+        fs::write(path, content).with_context(|| format!("write {}", path.display()))
     }
 
     /// Read the raw string content of a sprint file.
     pub fn read_sprint_raw(&self, path: &Path) -> anyhow::Result<String> {
-        fs::read_to_string(path)
-            .with_context(|| format!("read {}", path.display()))
+        fs::read_to_string(path).with_context(|| format!("read {}", path.display()))
     }
 
     /// Write a sprint file.
     pub fn write_sprint(&self, path: &Path, content: &str) -> anyhow::Result<()> {
-        fs::write(path, content)
-            .with_context(|| format!("write {}", path.display()))
+        fs::write(path, content).with_context(|| format!("write {}", path.display()))
     }
 }
-

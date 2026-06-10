@@ -14,7 +14,10 @@ use repo::StintRepo;
 // ---------------------------------------------------------------------------
 
 #[derive(Parser)]
-#[command(name = "stint", about = "Git-tracked sprint planning and task tracking")]
+#[command(
+    name = "stint",
+    about = "Git-tracked sprint planning and task tracking"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -79,6 +82,18 @@ enum Commands {
         id: String,
     },
 
+    /// Show the next claimable tasks, derived from blockers, sprint order, and area conflicts.
+    Next {
+        /// Restrict to a sprint ID (e.g. s12).
+        #[arg(long)]
+        sprint: Option<String>,
+        /// Include tasks whose area conflicts with in-progress work.
+        #[arg(long)]
+        include_area_conflicts: bool,
+        /// Mark the top ready task as in-progress.
+        #[arg(long)]
+        claim: bool,
+    },
 
     /// Sprint management sub-commands.
     Sprint {
@@ -162,7 +177,12 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             println!("{}", path.display());
         }
 
-        Commands::List { status, sprint, area, tag } => {
+        Commands::List {
+            status,
+            sprint,
+            area,
+            tag,
+        } => {
             let repo = find_repo()?;
             let rows = cmds::cmd_list(
                 &repo,
@@ -202,8 +222,22 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             println!("archived: {}", path.display());
         }
 
+        Commands::Next {
+            sprint,
+            include_area_conflicts,
+            claim,
+        } => {
+            let repo = find_repo()?;
+            let report = cmds::cmd_next(&repo, sprint.as_deref(), include_area_conflicts, claim)?;
+            cmds::print_next(&report, claim);
+        }
+
         Commands::Sprint { command } => match command {
-            SprintCommands::New { id, date_range, goal } => {
+            SprintCommands::New {
+                id,
+                date_range,
+                goal,
+            } => {
                 let repo = find_repo()?;
                 let path = cmds::cmd_sprint_new(&repo, &id, &date_range, goal.as_deref())?;
                 println!("{}", path.display());

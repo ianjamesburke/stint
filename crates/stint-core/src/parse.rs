@@ -90,8 +90,8 @@ struct RawFrontmatter {
 pub fn parse_task(content: &str, filename: &str) -> Result<Task, ParseError> {
     let (frontmatter_str, body) = split_frontmatter(content)?;
 
-    let raw: RawFrontmatter = serde_yaml::from_str(frontmatter_str)
-        .map_err(|e| ParseError::Yaml(e.to_string()))?;
+    let raw: RawFrontmatter =
+        serde_yaml::from_str(frontmatter_str).map_err(|e| ParseError::Yaml(e.to_string()))?;
 
     let id = raw
         .id
@@ -108,10 +108,12 @@ pub fn parse_task(content: &str, filename: &str) -> Result<Task, ParseError> {
         .filter(|s| !s.is_empty())
         .ok_or(ParseError::MissingField("status"))?;
 
-    let status = status_str.parse::<TaskStatus>().map_err(|e| ParseError::InvalidField {
-        field: "status",
-        reason: e.to_string(),
-    })?;
+    let status = status_str
+        .parse::<TaskStatus>()
+        .map_err(|e| ParseError::InvalidField {
+            field: "status",
+            reason: e.to_string(),
+        })?;
 
     let estimate = raw
         .estimate
@@ -135,15 +137,9 @@ pub fn parse_task(content: &str, filename: &str) -> Result<Task, ParseError> {
         })
         .transpose()?;
 
-    let blocked_by = raw
-        .blocked_by
-        .map(|x| x.into_vec())
-        .unwrap_or_default();
+    let blocked_by = raw.blocked_by.map(|x| x.into_vec()).unwrap_or_default();
 
-    let blocked_by_gh = raw
-        .blocked_by_gh
-        .map(|x| x.into_vec())
-        .unwrap_or_default();
+    let blocked_by_gh = raw.blocked_by_gh.map(|x| x.into_vec()).unwrap_or_default();
 
     let gh_issue = raw
         .gh_issue
@@ -229,10 +225,9 @@ fn yaml_values_to_strings(v: serde_yaml::Value) -> Result<Vec<String>, ParseErro
     match v {
         serde_yaml::Value::Number(n) => Ok(vec![n.to_string()]),
         serde_yaml::Value::String(s) => Ok(vec![s]),
-        serde_yaml::Value::Sequence(items) => items
-            .into_iter()
-            .map(yaml_scalar_to_string)
-            .collect(),
+        serde_yaml::Value::Sequence(items) => {
+            items.into_iter().map(yaml_scalar_to_string).collect()
+        }
         serde_yaml::Value::Null => Ok(vec![]),
         other => Err(ParseError::InvalidField {
             field: "gh_issue",
@@ -297,7 +292,10 @@ So users can authenticate.
         assert_eq!(fm.sprint.as_deref(), Some("s12"));
         assert_eq!(fm.blocked_by, vec!["0002"]);
         assert_eq!(fm.blocked_by_gh, vec!["acme/api#7"]);
-        assert_eq!(fm.blocked_by_note.as_deref(), Some("waiting for upstream fix"));
+        assert_eq!(
+            fm.blocked_by_note.as_deref(),
+            Some("waiting for upstream fix")
+        );
         assert_eq!(fm.gh_issue, vec!["42"]);
         assert_eq!(fm.area, vec!["backend"]);
         assert_eq!(fm.tags, vec!["security", "auth"]);
@@ -306,7 +304,8 @@ So users can authenticate.
 
     #[test]
     fn coerce_scalar_blocked_by() {
-        let content = "---\nid: \"0001\"\ntitle: \"T\"\nstatus: backlog\nblocked_by: \"0002\"\n---\n";
+        let content =
+            "---\nid: \"0001\"\ntitle: \"T\"\nstatus: backlog\nblocked_by: \"0002\"\n---\n";
         let task = parse_task(content, "0001-t.md").unwrap();
         assert_eq!(task.frontmatter.blocked_by, vec!["0002"]);
     }
@@ -327,14 +326,16 @@ So users can authenticate.
 
     #[test]
     fn coerce_gh_issue_list_of_ints() {
-        let content = "---\nid: \"0001\"\ntitle: \"T\"\nstatus: backlog\ngh_issue: [1, 2, 3]\n---\n";
+        let content =
+            "---\nid: \"0001\"\ntitle: \"T\"\nstatus: backlog\ngh_issue: [1, 2, 3]\n---\n";
         let task = parse_task(content, "0001-t.md").unwrap();
         assert_eq!(task.frontmatter.gh_issue, vec!["1", "2", "3"]);
     }
 
     #[test]
     fn empty_optional_lists() {
-        let content = "---\nid: \"0001\"\ntitle: \"T\"\nstatus: backlog\nblocked_by: []\ntags: []\n---\n";
+        let content =
+            "---\nid: \"0001\"\ntitle: \"T\"\nstatus: backlog\nblocked_by: []\ntags: []\n---\n";
         let task = parse_task(content, "0001-t.md").unwrap();
         assert!(task.frontmatter.blocked_by.is_empty());
         assert!(task.frontmatter.tags.is_empty());
@@ -342,7 +343,8 @@ So users can authenticate.
 
     #[test]
     fn null_optional_lists() {
-        let content = "---\nid: \"0001\"\ntitle: \"T\"\nstatus: backlog\nblocked_by: ~\ntags: ~\n---\n";
+        let content =
+            "---\nid: \"0001\"\ntitle: \"T\"\nstatus: backlog\nblocked_by: ~\ntags: ~\n---\n";
         let task = parse_task(content, "0001-t.md").unwrap();
         assert!(task.frontmatter.blocked_by.is_empty());
         assert!(task.frontmatter.tags.is_empty());
@@ -371,7 +373,10 @@ So users can authenticate.
         let content = "---\nid: \"0001\"\ntitle: \"T\"\nstatus: flying\n---\n";
         assert!(matches!(
             parse_task(content, "0001-t.md"),
-            Err(ParseError::InvalidField { field: "status", .. })
+            Err(ParseError::InvalidField {
+                field: "status",
+                ..
+            })
         ));
     }
 
@@ -380,7 +385,10 @@ So users can authenticate.
         let content = "---\nid: \"0001\"\ntitle: \"T\"\nstatus: backlog\nestimate: \"4x\"\n---\n";
         assert!(matches!(
             parse_task(content, "0001-t.md"),
-            Err(ParseError::InvalidField { field: "estimate", .. })
+            Err(ParseError::InvalidField {
+                field: "estimate",
+                ..
+            })
         ));
     }
 

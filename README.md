@@ -28,6 +28,8 @@ stint list
 stint list --status in-progress
 stint list --sprint s1
 stint show 1
+stint next
+stint next --claim
 stint log 1 2h
 stint done 1 --actual 3h
 stint archive 1
@@ -43,6 +45,21 @@ stint sprint remove s1 0001
 stint check
 stint status
 ```
+
+## Next work
+
+`stint next` derives claimable work from the task graph. It does not maintain a
+separate parallel-work list.
+
+- tasks must be `backlog` or `todo`
+- local `blocked_by` tasks must be `done`
+- `blocked_by_gh` and `blocked_by_note` make a task blocked
+- sprint order is priority order
+- tasks whose `area` overlaps with `in-progress` work are hidden by default
+- `stint next --claim` marks the top ready task `in-progress`
+
+Use `stint next --include-area-conflicts` to see ready tasks even if they touch
+an area already in progress.
 
 ## Task format
 

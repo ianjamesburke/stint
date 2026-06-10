@@ -87,13 +87,10 @@ pub fn compute_status(
 
     // Determine which sprint to show progress for.
     let sprint_id: Option<&str> = current_sprint.or_else(|| {
-        sprints
-            .iter()
-            .map(|s| s.header.id.as_str())
-            .max_by(|a, b| {
-                // Sort by numeric sprint number for correct "latest" ordering.
-                sprint_number(a).cmp(&sprint_number(b))
-            })
+        sprints.iter().map(|s| s.header.id.as_str()).max_by(|a, b| {
+            // Sort by numeric sprint number for correct "latest" ordering.
+            sprint_number(a).cmp(&sprint_number(b))
+        })
     });
 
     let sprint_progress = sprint_id.and_then(|sid| {
@@ -159,7 +156,13 @@ mod tests {
     use crate::schema::{TaskFrontmatter, TaskStatus};
     use crate::sprint::parse_sprint;
 
-    fn make_task_with_sprint(id: &str, sprint: &str, estimate: Option<&str>, actual: Option<&str>, status: TaskStatus) -> Task {
+    fn make_task_with_sprint(
+        id: &str,
+        sprint: &str,
+        estimate: Option<&str>,
+        actual: Option<&str>,
+        status: TaskStatus,
+    ) -> Task {
         use crate::schema::Task;
         Task {
             frontmatter: TaskFrontmatter {
@@ -227,7 +230,7 @@ mod tests {
         let report = compute_status(&tasks, &[sprint], Some("s1"));
         let progress = report.sprint_progress.unwrap();
         assert_eq!(progress.committed_minutes, 360); // 4h + 2h
-        assert_eq!(progress.logged_minutes, 120);    // 2h
+        assert_eq!(progress.logged_minutes, 120); // 2h
         assert_eq!(progress.remaining_minutes, 240); // 6h - 2h
         assert_eq!(progress.done_count, 1);
         assert_eq!(progress.task_count, 2);
@@ -244,7 +247,11 @@ mod tests {
         let s1 = make_sprint_file(1);
         let s3 = make_sprint_file(3);
         let tasks = vec![make_task_with_sprint(
-            "0001", "s3", Some("1h"), None, TaskStatus::Todo,
+            "0001",
+            "s3",
+            Some("1h"),
+            None,
+            TaskStatus::Todo,
         )];
         let report = compute_status(&tasks, &[s1, s3], None);
         let progress = report.sprint_progress.unwrap();

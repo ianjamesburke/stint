@@ -95,7 +95,9 @@ pub enum CheckError {
 
     // Rule 9 — id matches filename
     /// The task's `id` field does not match the numeric prefix of its filename.
-    #[error("task {task_id}: id field {id_field:?} does not match filename prefix {filename_prefix:?}")]
+    #[error(
+        "task {task_id}: id field {id_field:?} does not match filename prefix {filename_prefix:?}"
+    )]
     IdFilenameMismatch {
         /// Task ID as stored on the struct.
         task_id: String,
@@ -136,8 +138,7 @@ pub fn check(tasks: &[Task], sprints: &[Sprint]) -> Vec<CheckError> {
         .collect();
 
     let known_task_ids: HashSet<&str> = task_id_to_file.keys().copied().collect();
-    let known_sprint_ids: HashSet<&str> =
-        sprints.iter().map(|s| s.header.id.as_str()).collect();
+    let known_sprint_ids: HashSet<&str> = sprints.iter().map(|s| s.header.id.as_str()).collect();
 
     // Rule 10 — duplicate IDs (check before everything else so later rules
     //            can assume each ID is unique).
@@ -250,10 +251,7 @@ fn check_duplicate_ids(tasks: &[Task], errors: &mut Vec<CheckError>) {
 /// Rule 9 — verify that the task `id` field equals the numeric prefix of the
 /// filename.
 fn check_id_filename_match(task: &Task, errors: &mut Vec<CheckError>) {
-    let filename_prefix = numeric_prefix(
-        task.filename
-            .trim_end_matches(".md")
-    );
+    let filename_prefix = numeric_prefix(task.filename.trim_end_matches(".md"));
     let id_field = task.frontmatter.id.as_str();
     if id_field != filename_prefix {
         errors.push(CheckError::IdFilenameMismatch {
@@ -344,10 +342,7 @@ mod tests {
     }
 
     fn make_sprint(number: u32, task_ids: &[&str]) -> Sprint {
-        let entries: String = task_ids
-            .iter()
-            .map(|id| format!("- {}\n", id))
-            .collect();
+        let entries: String = task_ids.iter().map(|id| format!("- {}\n", id)).collect();
         let content = format!("# Sprint {} · Jan 1–15 · goal: test\n\n{}", number, entries);
         parse_sprint(&content).unwrap()
     }
@@ -424,9 +419,9 @@ mod tests {
     fn unresolved_blocked_by() {
         let tasks = vec![make_task("0001", "Task A", "blocked_by: [\"9999\"]")];
         let errors = check(&tasks, &[]);
-        assert!(errors
-            .iter()
-            .any(|e| matches!(e, CheckError::UnresolvedBlockedBy { ref_id, .. } if ref_id == "9999")));
+        assert!(errors.iter().any(
+            |e| matches!(e, CheckError::UnresolvedBlockedBy { ref_id, .. } if ref_id == "9999")
+        ));
     }
 
     #[test]
@@ -451,9 +446,9 @@ mod tests {
     fn unresolved_sprint_reference() {
         let tasks = vec![make_task("0001", "Task A", "sprint: \"s99\"")];
         let errors = check(&tasks, &[]);
-        assert!(errors
-            .iter()
-            .any(|e| matches!(e, CheckError::UnresolvedSprint { sprint_id, .. } if sprint_id == "s99")));
+        assert!(errors.iter().any(
+            |e| matches!(e, CheckError::UnresolvedSprint { sprint_id, .. } if sprint_id == "s99")
+        ));
     }
 
     #[test]
@@ -529,9 +524,11 @@ mod tests {
 
     #[test]
     fn multiple_violations_all_collected() {
-        let tasks = vec![
-            make_task("0001", "A", "blocked_by: [\"9999\"]\nblocked_by_gh: \"bad\""),
-        ];
+        let tasks = vec![make_task(
+            "0001",
+            "A",
+            "blocked_by: [\"9999\"]\nblocked_by_gh: \"bad\"",
+        )];
         let errors = check(&tasks, &[]);
         // Should collect both the unresolved blocked_by AND the bad gh format
         assert!(errors.len() >= 2);

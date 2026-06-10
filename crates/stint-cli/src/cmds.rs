@@ -12,9 +12,12 @@ use stint_core::mutate::{
     add_actual, new_sprint_content, new_task_content, next_task_id, resolve_id, set_status,
     title_to_slug,
 };
+use stint_core::next::{compute_next, NextOptions, NextReport, NextTask};
 use stint_core::schema::TaskStatus;
 use stint_core::serialize::serialize_task;
-use stint_core::sprint::{numeric_prefix, sprint_add_task, sprint_remove_task, normalize_sprint_id};
+use stint_core::sprint::{
+    normalize_sprint_id, numeric_prefix, sprint_add_task, sprint_remove_task,
+};
 use stint_core::status::compute_status;
 
 use crate::repo::StintRepo;
@@ -51,16 +54,22 @@ pub fn cmd_list(
 ) -> anyhow::Result<Vec<TaskRow>> {
     let tasks = repo.load_tasks()?;
 
-    let rows = stint_core::filter::filter_tasks(&tasks, status_filter, sprint_filter, area_filter, tag_filter)
-        .into_iter()
-        .map(|t| TaskRow {
-            id: t.frontmatter.id.clone(),
-            title: t.frontmatter.title.clone(),
-            status: t.frontmatter.status.as_str().to_owned(),
-            estimate: t.frontmatter.estimate.map(|d| d.to_string()),
-            sprint: t.frontmatter.sprint.clone(),
-        })
-        .collect();
+    let rows = stint_core::filter::filter_tasks(
+        &tasks,
+        status_filter,
+        sprint_filter,
+        area_filter,
+        tag_filter,
+    )
+    .into_iter()
+    .map(|t| TaskRow {
+        id: t.frontmatter.id.clone(),
+        title: t.frontmatter.title.clone(),
+        status: t.frontmatter.status.as_str().to_owned(),
+        estimate: t.frontmatter.estimate.map(|d| d.to_string()),
+        sprint: t.frontmatter.sprint.clone(),
+    })
+    .collect();
     Ok(rows)
 }
 
@@ -70,7 +79,10 @@ pub fn print_list(rows: &[TaskRow]) {
         println!("(no tasks)");
         return;
     }
-    println!("{:<6} {:<11} {:<8} {:<6} {}", "ID", "STATUS", "ESTIMATE", "SPRINT", "TITLE");
+    println!(
+        "{:<6} {:<11} {:<8} {:<6} {}",
+        "ID", "STATUS", "ESTIMATE", "SPRINT", "TITLE"
+    );
     println!("{}", "-".repeat(78));
     for row in rows {
         println!(
@@ -199,6 +211,73 @@ pub fn cmd_archive(repo: &StintRepo, id_input: &str) -> anyhow::Result<PathBuf> 
     Ok(path)
 }
 
+/// Show or claim the next ready task.
+pub fn cmd_next(
+    repo: &StintRepo,
+    sprint: Option<&str>,
+    include_area_conflicts: bool,
+    claim: bool,
+) -> anyhow::Result<NextReport> {
+    let tasks = repo.load_tasks()?;
+    let sprints = repo.load_sprints()?;
+    let report = compute_next(
+        &tasks,
+        &sprints,
+        NextOptions {
+            sprint,
+            include_area_conflicts,
+        },
+    );
+
+    if claim {
+        let Some(task) = report.ready.first() else {
+            return Ok(report);
+        };
+        let path = repo.resolve_task_path(&task.id)?;
+        let mut task = repo.read_task(&path)?;
+        set_status(&mut task, TaskStatus::InProgress);
+        let content = serialize_task(&task);
+        repo.write_task(&path, &content)?;
+    }
+
+    Ok(report)
+}
+
+pub fn print_next(report: &NextReport, claimed: bool) {
+    if claimed {
+        match report.ready.first() {
+            Some(task) => println!("claimed: {} {}", task.id, task.title),
+            None => println!("nothing claimable"),
+        }
+    }
+
+    if report.ready.is_empty() {
+        println!("Ready: none");
+    } else {
+        println!("Ready:");
+        for task in &report.ready {
+            print_next_task(task);
+        }
+    }
+
+    if let Some(bottleneck) = &report.bottleneck {
+        println!();
+        println!(
+            "Bottleneck: {} {} blocks {} task(s)",
+            bottleneck.id, bottleneck.title, bottleneck.blocked_count
+        );
+    }
+}
+
+fn print_next_task(task: &NextTask) {
+    let area = if task.area.is_empty() {
+        "-".to_owned()
+    } else {
+        task.area.join(",")
+    };
+    println!("  {} [{}] {}", task.id, area, task.title);
+}
+
 // ---------------------------------------------------------------------------
 // Sprint commands
 // ---------------------------------------------------------------------------
@@ -282,17 +361,12 @@ pub fn cmd_sprint_show(repo: &StintRepo, id_input: &str) -> anyhow::Result<()> {
 }
 
 /// Append a task to a sprint file and update the task's `sprint` frontmatter field.
-pub fn cmd_sprint_add(
-    repo: &StintRepo,
-    sprint_id: &str,
-    task_id: &str,
-) -> anyhow::Result<PathBuf> {
+pub fn cmd_sprint_add(repo: &StintRepo, sprint_id: &str, task_id: &str) -> anyhow::Result<PathBuf> {
     let task_id = resolve_id(task_id);
     let normalized_sprint_id = normalize_sprint_id(sprint_id);
     let path = repo.resolve_sprint_path(sprint_id)?;
     let content = repo.read_sprint_raw(&path)?;
-    let updated = sprint_add_task(&content, &task_id)
-        .map_err(|e| anyhow::anyhow!("{}", e))?;
+    let updated = sprint_add_task(&content, &task_id).map_err(|e| anyhow::anyhow!("{}", e))?;
     repo.write_sprint(&path, &updated)?;
 
     // Keep the task's own `sprint` field in sync so filtering/status work.
@@ -316,8 +390,12 @@ pub fn cmd_sprint_reorder(repo: &StintRepo, id_input: &str) -> anyhow::Result<Pa
     open_editor(&path)?;
     // Validate the file is still parseable after manual edits.
     let content = repo.read_sprint_raw(&path)?;
-    stint_core::sprint::parse_sprint(&content)
-        .with_context(|| format!("sprint file is no longer valid after reorder: {}", path.display()))?;
+    stint_core::sprint::parse_sprint(&content).with_context(|| {
+        format!(
+            "sprint file is no longer valid after reorder: {}",
+            path.display()
+        )
+    })?;
     Ok(path)
 }
 
@@ -330,8 +408,7 @@ pub fn cmd_sprint_remove(
     let task_id = resolve_id(task_id);
     let path = repo.resolve_sprint_path(sprint_id)?;
     let content = repo.read_sprint_raw(&path)?;
-    let updated = sprint_remove_task(&content, &task_id)
-        .map_err(|e| anyhow::anyhow!("{}", e))?;
+    let updated = sprint_remove_task(&content, &task_id).map_err(|e| anyhow::anyhow!("{}", e))?;
     repo.write_sprint(&path, &updated)?;
 
     // Clear the task's `sprint` field so filtering/status stay consistent.
@@ -396,18 +473,12 @@ pub fn cmd_status(repo: &StintRepo) -> anyhow::Result<()> {
     if let Some(p) = &report.sprint_progress {
         println!();
         println!("Sprint {}:", p.sprint_id);
-        println!(
-            "  Tasks:     {}/{} done",
-            p.done_count, p.task_count
-        );
+        println!("  Tasks:     {}/{} done", p.done_count, p.task_count);
         println!(
             "  Committed: {}h",
             minutes_to_hours_str(p.committed_minutes)
         );
-        println!(
-            "  Logged:    {}h",
-            minutes_to_hours_str(p.logged_minutes)
-        );
+        println!("  Logged:    {}h", minutes_to_hours_str(p.logged_minutes));
         println!(
             "  Remaining: {}h",
             minutes_to_hours_str(p.remaining_minutes)

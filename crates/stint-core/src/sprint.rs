@@ -46,9 +46,7 @@ pub enum SprintRemoveError {
 pub fn parse_sprint(content: &str) -> Result<Sprint, SprintParseError> {
     let mut lines = content.lines();
 
-    let header_line = lines
-        .next()
-        .ok_or(SprintParseError::InvalidHeader)?;
+    let header_line = lines.next().ok_or(SprintParseError::InvalidHeader)?;
 
     let header = parse_sprint_header(header_line)?;
 

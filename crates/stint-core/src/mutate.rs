@@ -14,7 +14,6 @@ pub fn set_status(task: &mut Task, status: TaskStatus) {
     task.frontmatter.status = status;
 }
 
-
 /// Add `duration` to the task's `actual` field, accumulating from any
 /// existing value.
 pub fn add_actual(task: &mut Task, duration: Duration) {
@@ -123,7 +122,10 @@ mod tests {
 
     fn make_task(id: &str, title: &str) -> Task {
         let filename = format!("{}-slug.md", id);
-        let content = format!("---\nid: \"{}\"\ntitle: \"{}\"\nstatus: backlog\n---\n", id, title);
+        let content = format!(
+            "---\nid: \"{}\"\ntitle: \"{}\"\nstatus: backlog\n---\n",
+            id, title
+        );
         parse_task(&content, &filename).unwrap()
     }
 

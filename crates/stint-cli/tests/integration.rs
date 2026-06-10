@@ -11,10 +11,10 @@ use tempfile::TempDir;
 
 // Bring the CLI modules into scope.  They live in `src/` so we use a path
 // attribute to include them here.
-#[path = "../src/repo.rs"]
-mod repo;
 #[path = "../src/cmds.rs"]
 mod cmds;
+#[path = "../src/repo.rs"]
+mod repo;
 
 use repo::StintRepo;
 
@@ -33,7 +33,9 @@ fn suppress_editor() {
         // SAFETY: we are the only writer and this runs before any thread that
         // reads STINT_TEST_EDITOR, because `OnceLock` serialises the init.
         #[allow(deprecated)]
-        unsafe { env::set_var("STINT_TEST_EDITOR", "none") };
+        unsafe {
+            env::set_var("STINT_TEST_EDITOR", "none")
+        };
     });
 }
 
@@ -133,7 +135,11 @@ fn add_creates_file() {
 #[test]
 fn add_increments_id() {
     let (_tmp, repo) = setup();
-    write_task_file(&repo, "0001-existing.md", &task_content("0001", "Existing", "backlog"));
+    write_task_file(
+        &repo,
+        "0001-existing.md",
+        &task_content("0001", "Existing", "backlog"),
+    );
     let path = cmds::cmd_add(&repo, "Second task").unwrap();
     let content = fs::read_to_string(&path).unwrap();
     assert!(content.contains("id: \"0002\""));
@@ -154,7 +160,11 @@ fn add_filename_includes_slug() {
 #[test]
 fn list_returns_all_tasks() {
     let (_tmp, repo) = setup();
-    write_task_file(&repo, "0001-a.md", &task_content("0001", "Task A", "backlog"));
+    write_task_file(
+        &repo,
+        "0001-a.md",
+        &task_content("0001", "Task A", "backlog"),
+    );
     write_task_file(&repo, "0002-b.md", &task_content("0002", "Task B", "done"));
     let rows = cmds::cmd_list(&repo, None, None, None, None).unwrap();
     assert_eq!(rows.len(), 2);
@@ -163,7 +173,11 @@ fn list_returns_all_tasks() {
 #[test]
 fn list_filters_by_status() {
     let (_tmp, repo) = setup();
-    write_task_file(&repo, "0001-a.md", &task_content("0001", "Task A", "backlog"));
+    write_task_file(
+        &repo,
+        "0001-a.md",
+        &task_content("0001", "Task A", "backlog"),
+    );
     write_task_file(&repo, "0002-b.md", &task_content("0002", "Task B", "done"));
     let rows = cmds::cmd_list(&repo, Some("backlog"), None, None, None).unwrap();
     assert_eq!(rows.len(), 1);
@@ -220,7 +234,11 @@ fn list_empty_returns_empty_vec() {
 #[test]
 fn done_sets_status() {
     let (_tmp, repo) = setup();
-    write_task_file(&repo, "0001-task.md", &task_content("0001", "Task", "in-progress"));
+    write_task_file(
+        &repo,
+        "0001-task.md",
+        &task_content("0001", "Task", "in-progress"),
+    );
     cmds::cmd_done(&repo, "0001", Some("2h")).unwrap();
     let path = repo.resolve_task_path("0001").unwrap();
     let content = fs::read_to_string(&path).unwrap();
@@ -230,7 +248,11 @@ fn done_sets_status() {
 #[test]
 fn done_records_actual_time() {
     let (_tmp, repo) = setup();
-    write_task_file(&repo, "0001-task.md", &task_content("0001", "Task", "backlog"));
+    write_task_file(
+        &repo,
+        "0001-task.md",
+        &task_content("0001", "Task", "backlog"),
+    );
     cmds::cmd_done(&repo, "0001", Some("3h")).unwrap();
     let path = repo.resolve_task_path("0001").unwrap();
     let content = fs::read_to_string(&path).unwrap();
@@ -257,7 +279,11 @@ fn done_skips_actual_when_already_set() {
 #[test]
 fn log_accumulates_time() {
     let (_tmp, repo) = setup();
-    write_task_file(&repo, "0001-task.md", &task_content("0001", "Task", "in-progress"));
+    write_task_file(
+        &repo,
+        "0001-task.md",
+        &task_content("0001", "Task", "in-progress"),
+    );
     cmds::cmd_log(&repo, "0001", "2h").unwrap();
     cmds::cmd_log(&repo, "1", "30m").unwrap(); // partial ID
     let path = repo.resolve_task_path("0001").unwrap();
@@ -269,7 +295,11 @@ fn log_accumulates_time() {
 #[test]
 fn log_rejects_invalid_duration() {
     let (_tmp, repo) = setup();
-    write_task_file(&repo, "0001-task.md", &task_content("0001", "Task", "backlog"));
+    write_task_file(
+        &repo,
+        "0001-task.md",
+        &task_content("0001", "Task", "backlog"),
+    );
     assert!(cmds::cmd_log(&repo, "0001", "2x").is_err());
 }
 
@@ -280,11 +310,81 @@ fn log_rejects_invalid_duration() {
 #[test]
 fn archive_sets_status() {
     let (_tmp, repo) = setup();
-    write_task_file(&repo, "0001-task.md", &task_content("0001", "Task", "backlog"));
+    write_task_file(
+        &repo,
+        "0001-task.md",
+        &task_content("0001", "Task", "backlog"),
+    );
     cmds::cmd_archive(&repo, "0001").unwrap();
     let path = repo.resolve_task_path("0001").unwrap();
     let content = fs::read_to_string(&path).unwrap();
     assert!(content.contains("status: archived"));
+}
+
+// ---------------------------------------------------------------------------
+// cmd_next
+// ---------------------------------------------------------------------------
+
+#[test]
+fn next_returns_ready_tasks_without_area_conflicts() {
+    let (_tmp, repo) = setup();
+    write_task_file(
+        &repo,
+        "0001-active.md",
+        "---\nid: \"0001\"\ntitle: \"Active\"\nstatus: in-progress\narea: [cli]\n---\n",
+    );
+    write_task_file(
+        &repo,
+        "0002-conflict.md",
+        "---\nid: \"0002\"\ntitle: \"Conflict\"\nstatus: todo\narea: [cli]\n---\n",
+    );
+    write_task_file(
+        &repo,
+        "0003-ready.md",
+        "---\nid: \"0003\"\ntitle: \"Ready\"\nstatus: todo\narea: [docs]\n---\n",
+    );
+
+    let report = cmds::cmd_next(&repo, None, false, false).unwrap();
+    assert_eq!(report.ready.len(), 1);
+    assert_eq!(report.ready[0].id, "0003");
+}
+
+#[test]
+fn next_claim_sets_first_ready_task_in_progress() {
+    let (_tmp, repo) = setup();
+    write_sprint_file(
+        &repo,
+        "s1.md",
+        "# Sprint 1 \u{00B7} Jun 1-14\n\n- 0002\n- 0001\n",
+    );
+    write_task_file(
+        &repo,
+        "0001-later.md",
+        "---\nid: \"0001\"\ntitle: \"Later\"\nstatus: todo\nsprint: \"s1\"\narea: [docs]\n---\n",
+    );
+    write_task_file(
+        &repo,
+        "0002-first.md",
+        "---\nid: \"0002\"\ntitle: \"First\"\nstatus: todo\nsprint: \"s1\"\narea: [cli]\n---\n",
+    );
+
+    let report = cmds::cmd_next(&repo, Some("s1"), false, true).unwrap();
+    assert_eq!(report.ready[0].id, "0002");
+
+    let claimed = repo
+        .read_task(&repo.resolve_task_path("0002").unwrap())
+        .unwrap();
+    let untouched = repo
+        .read_task(&repo.resolve_task_path("0001").unwrap())
+        .unwrap();
+    assert_eq!(
+        claimed.frontmatter.status,
+        stint_core::schema::TaskStatus::InProgress
+    );
+    assert_eq!(
+        untouched.frontmatter.status,
+        stint_core::schema::TaskStatus::Todo
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -329,7 +429,11 @@ fn sprint_add_appends_task() {
 #[test]
 fn sprint_remove_deletes_task() {
     let (_tmp, repo) = setup();
-    write_sprint_file(&repo, "s1.md", "# Sprint 1 \u{00B7} Jun 1-14\n\n- 0001\n- 0002\n");
+    write_sprint_file(
+        &repo,
+        "s1.md",
+        "# Sprint 1 \u{00B7} Jun 1-14\n\n- 0001\n- 0002\n",
+    );
     cmds::cmd_sprint_remove(&repo, "s1", "0001").unwrap();
     let content = fs::read_to_string(repo.sprints_dir().join("s1.md")).unwrap();
     assert!(!content.contains("- 0001"));
@@ -343,7 +447,11 @@ fn sprint_remove_deletes_task() {
 #[test]
 fn check_passes_clean_graph() {
     let (_tmp, repo) = setup();
-    write_task_file(&repo, "0001-a.md", &task_content("0001", "Task A", "backlog"));
+    write_task_file(
+        &repo,
+        "0001-a.md",
+        &task_content("0001", "Task A", "backlog"),
+    );
     write_task_file(&repo, "0002-b.md", &task_content("0002", "Task B", "done"));
     let errors = cmds::cmd_check(&repo, false).unwrap();
     assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
@@ -352,7 +460,8 @@ fn check_passes_clean_graph() {
 #[test]
 fn check_detects_unresolved_blocked_by() {
     let (_tmp, repo) = setup();
-    let content = "---\nid: \"0001\"\ntitle: \"T\"\nstatus: backlog\nblocked_by:\n  - \"9999\"\n---\n";
+    let content =
+        "---\nid: \"0001\"\ntitle: \"T\"\nstatus: backlog\nblocked_by:\n  - \"9999\"\n---\n";
     write_task_file(&repo, "0001-t.md", content);
     let errors = cmds::cmd_check(&repo, false).unwrap();
     assert!(!errors.is_empty(), "expected at least one error");
@@ -362,9 +471,17 @@ fn check_detects_unresolved_blocked_by() {
 #[test]
 fn check_detects_duplicate_ids() {
     let (_tmp, repo) = setup();
-    write_task_file(&repo, "0001-a.md", &task_content("0001", "Task A", "backlog"));
+    write_task_file(
+        &repo,
+        "0001-a.md",
+        &task_content("0001", "Task A", "backlog"),
+    );
     // Different filename, same id field — triggers duplicate check.
-    write_task_file(&repo, "0001-b.md", &task_content("0001", "Task B", "backlog"));
+    write_task_file(
+        &repo,
+        "0001-b.md",
+        &task_content("0001", "Task B", "backlog"),
+    );
     let errors = cmds::cmd_check(&repo, false).unwrap();
     assert!(errors.iter().any(|e| e.contains("duplicate")));
 }
@@ -405,7 +522,10 @@ fn done_then_log_round_trips_cleanly() {
 
     let path = repo.resolve_task_path("0001").unwrap();
     let task = repo.read_task(&path).unwrap();
-    assert_eq!(task.frontmatter.status, stint_core::schema::TaskStatus::Done);
+    assert_eq!(
+        task.frontmatter.status,
+        stint_core::schema::TaskStatus::Done
+    );
     // actual stays at 1h (60m) — done does not overwrite an existing actual value.
     assert_eq!(
         task.frontmatter.actual,
@@ -426,7 +546,10 @@ fn done_without_prior_log_records_actual() {
     cmds::cmd_done(&repo, "0001", Some("3h")).unwrap();
     let path = repo.resolve_task_path("0001").unwrap();
     let task = repo.read_task(&path).unwrap();
-    assert_eq!(task.frontmatter.status, stint_core::schema::TaskStatus::Done);
+    assert_eq!(
+        task.frontmatter.status,
+        stint_core::schema::TaskStatus::Done
+    );
     assert_eq!(
         task.frontmatter.actual,
         Some(stint_core::duration::Duration::from_minutes(180))
@@ -440,7 +563,11 @@ fn done_without_prior_log_records_actual() {
 #[test]
 fn show_prints_task_fields() {
     let (_tmp, repo) = setup();
-    write_task_file(&repo, "0001-task.md", &task_content("0001", "Show Me", "backlog"));
+    write_task_file(
+        &repo,
+        "0001-task.md",
+        &task_content("0001", "Show Me", "backlog"),
+    );
     // cmd_show writes to stdout; we verify it doesn't error and uses the right id.
     cmds::cmd_show(&repo, "0001").unwrap();
 }
@@ -464,7 +591,11 @@ fn status_runs_on_empty_repo() {
 #[test]
 fn status_runs_with_tasks() {
     let (_tmp, repo) = setup();
-    write_task_file(&repo, "0001-a.md", &task_content("0001", "Task A", "backlog"));
+    write_task_file(
+        &repo,
+        "0001-a.md",
+        &task_content("0001", "Task A", "backlog"),
+    );
     write_task_file(&repo, "0002-b.md", &task_content("0002", "Task B", "done"));
     cmds::cmd_status(&repo).unwrap();
 }
@@ -478,8 +609,16 @@ fn sprint_show_prints_header_and_tasks() {
     let (_tmp, repo) = setup();
     let sprint_content = "# Sprint 1 \u{00B7} Jun 1-14\n\n- 0001\n- 0002\n";
     write_sprint_file(&repo, "s1.md", sprint_content);
-    write_task_file(&repo, "0001-task.md", &task_content("0001", "Task A", "backlog"));
-    write_task_file(&repo, "0002-task.md", &task_content("0002", "Task B", "done"));
+    write_task_file(
+        &repo,
+        "0001-task.md",
+        &task_content("0001", "Task A", "backlog"),
+    );
+    write_task_file(
+        &repo,
+        "0002-task.md",
+        &task_content("0002", "Task B", "done"),
+    );
     // Verify it completes without error; output goes to stdout.
     cmds::cmd_sprint_show(&repo, "s1").unwrap();
 }

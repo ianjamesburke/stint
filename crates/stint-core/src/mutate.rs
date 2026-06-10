@@ -14,6 +14,7 @@ pub fn set_status(task: &mut Task, status: TaskStatus) {
     task.frontmatter.status = status;
 }
 
+
 /// Add `duration` to the task's `actual` field, accumulating from any
 /// existing value.
 pub fn add_actual(task: &mut Task, duration: Duration) {

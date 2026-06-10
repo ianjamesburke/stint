@@ -1,0 +1,45 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: macos-latest
+            target: aarch64-apple-darwin
+          - os: macos-13
+            target: x86_64-apple-darwin
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }} --package stint-cli
+
+      - name: Package
+        run: |
+          ASSET="stint-${{ github.ref_name }}-${{ matrix.target }}"
+          cp "target/${{ matrix.target }}/release/stint" "$ASSET"
+          gzip "$ASSET"
+          echo "ASSET=${ASSET}.gz" >> "$GITHUB_ENV"
+
+      - name: Upload
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ env.ASSET }}

@@ -281,18 +281,28 @@ pub fn cmd_sprint_show(repo: &StintRepo, id_input: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Append a task to a sprint file.
+/// Append a task to a sprint file and update the task's `sprint` frontmatter field.
 pub fn cmd_sprint_add(
     repo: &StintRepo,
     sprint_id: &str,
     task_id: &str,
 ) -> anyhow::Result<PathBuf> {
     let task_id = resolve_id(task_id);
+    let normalized_sprint_id = normalize_sprint_id(sprint_id);
     let path = repo.resolve_sprint_path(sprint_id)?;
     let content = repo.read_sprint_raw(&path)?;
     let updated = sprint_add_task(&content, &task_id)
         .map_err(|e| anyhow::anyhow!("{}", e))?;
     repo.write_sprint(&path, &updated)?;
+
+    // Keep the task's own `sprint` field in sync so filtering/status work.
+    if let Ok(task_path) = repo.resolve_task_path(&task_id) {
+        let mut task = repo.read_task(&task_path)?;
+        task.frontmatter.sprint = Some(normalized_sprint_id);
+        let task_content = serialize_task(&task);
+        repo.write_task(&task_path, &task_content)?;
+    }
+
     Ok(path)
 }
 
@@ -311,7 +321,7 @@ pub fn cmd_sprint_reorder(repo: &StintRepo, id_input: &str) -> anyhow::Result<Pa
     Ok(path)
 }
 
-/// Remove a task from a sprint file.
+/// Remove a task from a sprint file and clear the task's `sprint` frontmatter field.
 pub fn cmd_sprint_remove(
     repo: &StintRepo,
     sprint_id: &str,
@@ -323,6 +333,15 @@ pub fn cmd_sprint_remove(
     let updated = sprint_remove_task(&content, &task_id)
         .map_err(|e| anyhow::anyhow!("{}", e))?;
     repo.write_sprint(&path, &updated)?;
+
+    // Clear the task's `sprint` field so filtering/status stay consistent.
+    if let Ok(task_path) = repo.resolve_task_path(&task_id) {
+        let mut task = repo.read_task(&task_path)?;
+        task.frontmatter.sprint = None;
+        let task_content = serialize_task(&task);
+        repo.write_task(&task_path, &task_content)?;
+    }
+
     Ok(path)
 }
 

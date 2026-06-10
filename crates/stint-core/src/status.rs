@@ -76,9 +76,10 @@ pub fn compute_status(
         .collect();
 
     let sprint_id: Option<&str> = current_sprint.or_else(|| {
-        sprints.iter().map(|s| s.header.id.as_str()).max_by(|a, b| {
-            sprint_number(a).cmp(&sprint_number(b))
-        })
+        sprints
+            .iter()
+            .map(|s| s.header.id.as_str())
+            .max_by(|a, b| sprint_number(a).cmp(&sprint_number(b)))
     });
 
     let sprint_progress = sprint_id.and_then(|sid| {

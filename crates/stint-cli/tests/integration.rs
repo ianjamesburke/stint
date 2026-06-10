@@ -171,7 +171,7 @@ fn list_defaults_to_active_tasks() {
         "0003-c.md",
         &task_content("0003", "Task C", "archived"),
     );
-    let rows = cmds::cmd_list(&repo, None, false, None, None, None).unwrap();
+    let rows = cmds::cmd_list(&repo, None, false, None, None, None, None).unwrap();
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].id, "0001");
 }
@@ -190,7 +190,7 @@ fn list_all_includes_done_and_archived_tasks() {
         "0003-c.md",
         &task_content("0003", "Task C", "archived"),
     );
-    let rows = cmds::cmd_list(&repo, None, true, None, None, None).unwrap();
+    let rows = cmds::cmd_list(&repo, None, true, None, None, None, None).unwrap();
     assert_eq!(rows.len(), 3);
 }
 
@@ -203,7 +203,7 @@ fn list_filters_by_status() {
         &task_content("0001", "Task A", "backlog"),
     );
     write_task_file(&repo, "0002-b.md", &task_content("0002", "Task B", "done"));
-    let rows = cmds::cmd_list(&repo, Some("backlog"), false, None, None, None).unwrap();
+    let rows = cmds::cmd_list(&repo, Some("backlog"), false, None, None, None, None).unwrap();
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].id, "0001");
 }
@@ -217,9 +217,60 @@ fn list_explicit_status_can_show_done_tasks() {
         &task_content("0001", "Task A", "backlog"),
     );
     write_task_file(&repo, "0002-b.md", &task_content("0002", "Task B", "done"));
-    let rows = cmds::cmd_list(&repo, Some("done"), false, None, None, None).unwrap();
+    let rows = cmds::cmd_list(&repo, Some("done"), false, None, None, None, None).unwrap();
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].id, "0002");
+}
+
+#[test]
+fn list_marks_currently_blocked_tasks() {
+    let (_tmp, repo) = setup();
+    write_task_file(&repo, "0001-a.md", &task_content("0001", "Task A", "todo"));
+    write_task_file(
+        &repo,
+        "0002-b.md",
+        "---\nid: \"0002\"\ntitle: \"Task B\"\nstatus: todo\nblocked_by: [\"0001\"]\n---\n",
+    );
+
+    let rows = cmds::cmd_list(&repo, None, false, None, None, None, None).unwrap();
+    assert_eq!(rows.len(), 2);
+    assert!(!rows.iter().find(|r| r.id == "0001").unwrap().blocked);
+    assert!(rows.iter().find(|r| r.id == "0002").unwrap().blocked);
+}
+
+#[test]
+fn list_does_not_mark_task_blocked_by_done_local_task() {
+    let (_tmp, repo) = setup();
+    write_task_file(&repo, "0001-a.md", &task_content("0001", "Task A", "done"));
+    write_task_file(
+        &repo,
+        "0002-b.md",
+        "---\nid: \"0002\"\ntitle: \"Task B\"\nstatus: todo\nblocked_by: [\"0001\"]\n---\n",
+    );
+
+    let rows = cmds::cmd_list(&repo, None, false, None, None, None, None).unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].id, "0002");
+    assert!(!rows[0].blocked);
+}
+
+#[test]
+fn list_filters_blocked_tasks() {
+    let (_tmp, repo) = setup();
+    write_task_file(&repo, "0001-a.md", &task_content("0001", "Task A", "todo"));
+    write_task_file(
+        &repo,
+        "0002-b.md",
+        "---\nid: \"0002\"\ntitle: \"Task B\"\nstatus: todo\nblocked_by: [\"0001\"]\n---\n",
+    );
+
+    let blocked = cmds::cmd_list(&repo, None, false, Some(true), None, None, None).unwrap();
+    assert_eq!(blocked.len(), 1);
+    assert_eq!(blocked[0].id, "0002");
+
+    let unblocked = cmds::cmd_list(&repo, None, false, Some(false), None, None, None).unwrap();
+    assert_eq!(unblocked.len(), 1);
+    assert_eq!(unblocked[0].id, "0001");
 }
 
 #[test]
@@ -229,7 +280,7 @@ fn list_filters_by_sprint() {
     let t2 = "---\nid: \"0002\"\ntitle: \"B\"\nstatus: todo\nsprint: \"s2\"\n---\n";
     write_task_file(&repo, "0001-a.md", t1);
     write_task_file(&repo, "0002-b.md", t2);
-    let rows = cmds::cmd_list(&repo, None, false, Some("s1"), None, None).unwrap();
+    let rows = cmds::cmd_list(&repo, None, false, None, Some("s1"), None, None).unwrap();
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].id, "0001");
 }
@@ -241,7 +292,7 @@ fn list_filters_by_area() {
     let t2 = "---\nid: \"0002\"\ntitle: \"B\"\nstatus: backlog\narea:\n  - frontend\n---\n";
     write_task_file(&repo, "0001-a.md", t1);
     write_task_file(&repo, "0002-b.md", t2);
-    let rows = cmds::cmd_list(&repo, None, false, None, Some("backend"), None).unwrap();
+    let rows = cmds::cmd_list(&repo, None, false, None, None, Some("backend"), None).unwrap();
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].id, "0001");
 }
@@ -253,7 +304,7 @@ fn list_filters_by_tag() {
     let t2 = "---\nid: \"0002\"\ntitle: \"B\"\nstatus: backlog\ntags:\n  - perf\n---\n";
     write_task_file(&repo, "0001-a.md", t1);
     write_task_file(&repo, "0002-b.md", t2);
-    let rows = cmds::cmd_list(&repo, None, false, None, None, Some("security")).unwrap();
+    let rows = cmds::cmd_list(&repo, None, false, None, None, None, Some("security")).unwrap();
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].id, "0001");
 }
@@ -261,7 +312,7 @@ fn list_filters_by_tag() {
 #[test]
 fn list_empty_returns_empty_vec() {
     let (_tmp, repo) = setup();
-    let rows = cmds::cmd_list(&repo, None, false, None, None, None).unwrap();
+    let rows = cmds::cmd_list(&repo, None, false, None, None, None, None).unwrap();
     assert!(rows.is_empty());
 }
 
@@ -593,7 +644,10 @@ fn next_count_claim_marks_n_tasks_in_progress() {
         let t = repo
             .read_task(&repo.resolve_task_path(&format!("{:04}", i)).unwrap())
             .unwrap();
-        assert_eq!(t.frontmatter.status, stint_core::schema::TaskStatus::InProgress);
+        assert_eq!(
+            t.frontmatter.status,
+            stint_core::schema::TaskStatus::InProgress
+        );
         assert!(t.frontmatter.started_at.is_some());
     }
 
@@ -698,6 +752,17 @@ fn check_detects_unresolved_blocked_by() {
     let errors = cmds::cmd_check(&repo, false).unwrap();
     assert!(!errors.is_empty(), "expected at least one error");
     assert!(errors.iter().any(|e| e.contains("9999")));
+}
+
+#[test]
+fn check_detects_deprecated_blocked_by_gh() {
+    let (_tmp, repo) = setup();
+    let content =
+        "---\nid: \"0001\"\ntitle: \"T\"\nstatus: backlog\nblocked_by_gh:\n  - 123\n---\n";
+    write_task_file(&repo, "0001-t.md", content);
+    let errors = cmds::cmd_check(&repo, false).unwrap();
+    assert!(!errors.is_empty(), "expected at least one error");
+    assert!(errors.iter().any(|e| e.contains("blocked_by_gh")));
 }
 
 #[test]

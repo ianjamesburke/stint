@@ -72,6 +72,8 @@ struct RawFrontmatter {
     #[serde(default)]
     blocked_by: Option<serde_yaml::Value>,
     #[serde(default)]
+    blocked_by_gh: Option<serde_yaml::Value>,
+    #[serde(default)]
     gh_issue: Option<serde_yaml::Value>,
     #[serde(default)]
     area: Option<OneOrMany<String>>,
@@ -114,6 +116,13 @@ pub fn parse_task(content: &str, filename: &str) -> Result<Task, ParseError> {
             field: "status",
             reason: e.to_string(),
         })?;
+
+    if raw.blocked_by_gh.is_some() {
+        return Err(ParseError::InvalidField {
+            field: "blocked_by_gh",
+            reason: "deprecated field; move GitHub blockers into blocked_by using @N or owner/repo@N syntax".to_owned(),
+        });
+    }
 
     let estimate = raw
         .estimate
@@ -363,8 +372,7 @@ So users can authenticate.
 
     #[test]
     fn blocked_by_bare_integer_in_yaml() {
-        let content =
-            "---\nid: \"0001\"\ntitle: \"T\"\nstatus: backlog\nblocked_by: 146\n---\n";
+        let content = "---\nid: \"0001\"\ntitle: \"T\"\nstatus: backlog\nblocked_by: 146\n---\n";
         let task = parse_task(content, "0001-t.md").unwrap();
         assert_eq!(
             task.frontmatter.blocked_by,
@@ -417,6 +425,31 @@ So users can authenticate.
             "---\nid: \"0001\"\ntitle: \"T\"\nstatus: backlog\ngh_issue: [1, 2, 3]\n---\n";
         let task = parse_task(content, "0001-t.md").unwrap();
         assert_eq!(task.frontmatter.gh_issue, vec!["1", "2", "3"]);
+    }
+
+    #[test]
+    fn blocked_by_gh_is_rejected() {
+        let content =
+            "---\nid: \"0001\"\ntitle: \"T\"\nstatus: backlog\nblocked_by_gh: [123]\n---\n";
+        assert!(matches!(
+            parse_task(content, "0001-t.md"),
+            Err(ParseError::InvalidField {
+                field: "blocked_by_gh",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn empty_blocked_by_gh_is_rejected() {
+        let content = "---\nid: \"0001\"\ntitle: \"T\"\nstatus: backlog\nblocked_by_gh: []\n---\n";
+        assert!(matches!(
+            parse_task(content, "0001-t.md"),
+            Err(ParseError::InvalidField {
+                field: "blocked_by_gh",
+                ..
+            })
+        ));
     }
 
     #[test]

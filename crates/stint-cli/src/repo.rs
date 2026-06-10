@@ -3,7 +3,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context};
-use stint_core::parse::parse_task;
+use stint_core::parse::{parse_task, ParseError};
 use stint_core::schema::{Sprint, Task};
 use stint_core::sprint::parse_sprint;
 
@@ -51,15 +51,23 @@ impl StintRepo {
         Ok(())
     }
 
-    /// Load and parse every task file in `.stint/tasks/`.
-    ///
-    /// Files that fail to parse emit a warning to stderr and are skipped.
     pub fn load_tasks(&self) -> anyhow::Result<Vec<Task>> {
+        let (tasks, errors) = self.load_tasks_with_errors()?;
+        for error in errors {
+            eprintln!("warning: skip {}: {}", error.path.display(), error.error);
+        }
+        Ok(tasks)
+    }
+
+    /// Load and parse every task file in `.stint/tasks/`, returning parse
+    /// errors so `stint check` can report them as failures.
+    pub fn load_tasks_with_errors(&self) -> anyhow::Result<(Vec<Task>, Vec<TaskParseError>)> {
         let dir = self.tasks_dir();
         if !dir.exists() {
-            return Ok(vec![]);
+            return Ok((vec![], vec![]));
         }
         let mut tasks = Vec::new();
+        let mut errors = Vec::new();
         for entry in fs::read_dir(&dir).context("read .stint/tasks/")? {
             let entry = entry.context("read dir entry")?;
             let path = entry.path();
@@ -75,12 +83,13 @@ impl StintRepo {
                 fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
             match parse_task(&content, &filename) {
                 Ok(task) => tasks.push(task),
-                Err(e) => eprintln!("warning: skip {}: {}", path.display(), e),
+                Err(error) => errors.push(TaskParseError { path, error }),
             }
         }
         // Sort by numeric ID for deterministic output.
         tasks.sort_by(|a, b| a.frontmatter.id.cmp(&b.frontmatter.id));
-        Ok(tasks)
+        errors.sort_by(|a, b| a.path.cmp(&b.path));
+        Ok((tasks, errors))
     }
 
     /// Load and parse every sprint file in `.stint/sprints/`.
@@ -175,4 +184,10 @@ impl StintRepo {
     pub fn write_sprint(&self, path: &Path, content: &str) -> anyhow::Result<()> {
         fs::write(path, content).with_context(|| format!("write {}", path.display()))
     }
+}
+
+/// A task file that could not be parsed.
+pub struct TaskParseError {
+    pub path: PathBuf,
+    pub error: ParseError,
 }

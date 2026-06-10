@@ -41,6 +41,12 @@ enum Commands {
         /// Include done and archived tasks when no explicit status filter is set.
         #[arg(long)]
         all: bool,
+        /// Show only tasks that are currently blocked.
+        #[arg(long)]
+        blocked: bool,
+        /// Hide tasks that are currently blocked.
+        #[arg(long)]
+        hide_blocked: bool,
         /// Filter by sprint ID (e.g. s12).
         #[arg(long)]
         sprint: Option<String>,
@@ -217,15 +223,28 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Commands::List {
             status,
             all,
+            blocked,
+            hide_blocked,
             sprint,
             area,
             tag,
         } => {
             let repo = find_repo()?;
+            if blocked && hide_blocked {
+                anyhow::bail!("--blocked and --hide-blocked cannot be used together");
+            }
+            let blocked_filter = if blocked {
+                Some(true)
+            } else if hide_blocked {
+                Some(false)
+            } else {
+                None
+            };
             let rows = cmds::cmd_list(
                 &repo,
                 status.as_deref(),
                 all,
+                blocked_filter,
                 sprint.as_deref(),
                 area.as_deref(),
                 tag.as_deref(),
@@ -298,8 +317,13 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             json,
         } => {
             let repo = find_repo()?;
-            let report =
-                cmds::cmd_next(&repo, sprint.as_deref(), include_area_conflicts, claim, count)?;
+            let report = cmds::cmd_next(
+                &repo,
+                sprint.as_deref(),
+                include_area_conflicts,
+                claim,
+                count,
+            )?;
             if json {
                 cmds::print_next_json(&repo, &report, claim, count);
             } else {

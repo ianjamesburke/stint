@@ -173,7 +173,10 @@ pub fn check(tasks: &[Task], sprints: &[Sprint]) -> Vec<CheckError> {
                         });
                     }
                 }
-                BlockedByRef::ExternalTask { repo, task_id: ref_task_id } => {
+                BlockedByRef::ExternalTask {
+                    repo,
+                    task_id: ref_task_id,
+                } => {
                     if !is_valid_gh_repo(repo) || ref_task_id.is_empty() {
                         errors.push(CheckError::InvalidBlockedByRef {
                             task_id: id.to_owned(),
@@ -189,7 +192,10 @@ pub fn check(tasks: &[Task], sprints: &[Sprint]) -> Vec<CheckError> {
                         });
                     }
                 }
-                BlockedByRef::LocalDirTask { path, task_id: ref_task_id } => {
+                BlockedByRef::LocalDirTask {
+                    path,
+                    task_id: ref_task_id,
+                } => {
                     if path.is_empty() || ref_task_id.is_empty() {
                         errors.push(CheckError::InvalidBlockedByRef {
                             task_id: id.to_owned(),

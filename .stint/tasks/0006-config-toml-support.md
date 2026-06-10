@@ -7,7 +7,8 @@ area:
   - "core"
   - "cli"
   - "apps"
-blocked_by: []
+blocked_by:
+  - "0005"
 blocked_by_gh: []
 gh_issue: []
 tags:
@@ -26,6 +27,10 @@ the CLI as the backend instead of growing a separate Plexi app data layer.
 
 - parse optional `.stint/config.toml`
 - support `default_sprint`
+- support list table display preferences, such as visible columns for `status`,
+  blocked state, estimate, sprint, area, and tags
+- make `stint list`/`stint ls` respect config-backed table defaults while still
+  letting explicit CLI flags win
 - reserve a `[plexi]` table for UI generation/open defaults
 - keep all commands working when config is absent
 - expose one internal config loader shared by CLI commands

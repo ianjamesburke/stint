@@ -1,6 +1,7 @@
 /// All command implementations.  Each function takes a `&StintRepo` and
 /// whatever arguments the command needs.  No `std::process::exit` here —
 /// callers handle exit codes.
+use std::collections::HashSet;
 use std::fs;
 use std::io::{self, Write};
 use std::path::PathBuf;
@@ -15,7 +16,7 @@ use stint_core::mutate::{
     set_actual, set_completed_at, set_started_at_if_absent, set_status, title_to_slug,
 };
 use stint_core::next::{compute_next, NextOptions, NextReport, NextTask};
-use stint_core::schema::TaskStatus;
+use stint_core::schema::{BlockedByRef, Task, TaskStatus};
 use stint_core::serialize::serialize_task;
 use stint_core::sprint::{
     normalize_sprint_id, numeric_prefix, sprint_add_task, sprint_remove_task,
@@ -51,11 +52,17 @@ pub fn cmd_list(
     repo: &StintRepo,
     status_filter: Option<&str>,
     include_all: bool,
+    blocked_filter: Option<bool>,
     sprint_filter: Option<&str>,
     area_filter: Option<&str>,
     tag_filter: Option<&str>,
 ) -> anyhow::Result<Vec<TaskRow>> {
     let tasks = repo.load_tasks()?;
+    let done_ids: HashSet<&str> = tasks
+        .iter()
+        .filter(|t| matches!(t.frontmatter.status, TaskStatus::Done))
+        .map(|t| t.frontmatter.id.as_str())
+        .collect();
 
     let rows = stint_core::filter::filter_tasks(
         &tasks,
@@ -73,10 +80,15 @@ pub fn cmd_list(
                 TaskStatus::Done | TaskStatus::Archived
             )
     })
+    .filter(|t| match blocked_filter {
+        Some(blocked) => task_is_blocked(t, &done_ids) == blocked,
+        None => true,
+    })
     .map(|t| TaskRow {
         id: t.frontmatter.id.clone(),
         title: t.frontmatter.title.clone(),
         status: t.frontmatter.status.as_str().to_owned(),
+        blocked: task_is_blocked(t, &done_ids),
         estimate: t.frontmatter.estimate.map(|d| d.to_string()),
         sprint: t.frontmatter.sprint.clone(),
     })
@@ -91,15 +103,16 @@ pub fn print_list(rows: &[TaskRow]) {
         return;
     }
     println!(
-        "{:<6} {:<11} {:<8} {:<6} {}",
-        "ID", "STATUS", "ESTIMATE", "SPRINT", "TITLE"
+        "{:<6} {:<11} {:<7} {:<8} {:<6} {}",
+        "ID", "STATUS", "BLOCKED", "ESTIMATE", "SPRINT", "TITLE"
     );
     println!("{}", "-".repeat(78));
     for row in rows {
         println!(
-            "{:<6} {:<11} {:<8} {:<6} {}",
+            "{:<6} {:<11} {:<7} {:<8} {:<6} {}",
             row.id,
             row.status,
+            if row.blocked { "[x]" } else { "[ ]" },
             row.estimate.as_deref().unwrap_or("-"),
             row.sprint.as_deref().unwrap_or("-"),
             truncate(&row.title, 40),
@@ -112,8 +125,19 @@ pub struct TaskRow {
     pub id: String,
     pub title: String,
     pub status: String,
+    pub blocked: bool,
     pub estimate: Option<String>,
     pub sprint: Option<String>,
+}
+
+fn task_is_blocked(task: &Task, done_ids: &HashSet<&str>) -> bool {
+    task.frontmatter
+        .blocked_by
+        .iter()
+        .any(|blocker| match blocker {
+            BlockedByRef::LocalTask(id) => !done_ids.contains(id.as_str()),
+            _ => true,
+        })
 }
 
 /// Print a full task (frontmatter table + body) to stdout.
@@ -446,7 +470,12 @@ fn with_claim_lock<T, F: FnOnce() -> anyhow::Result<T>>(
 pub fn print_next(report: &NextReport, claimed: bool, count: Option<usize>) {
     let n = count.unwrap_or(usize::MAX);
     let claimed_ids: Vec<&str> = if claimed {
-        report.ready.iter().take(count.unwrap_or(1)).map(|t| t.id.as_str()).collect()
+        report
+            .ready
+            .iter()
+            .take(count.unwrap_or(1))
+            .map(|t| t.id.as_str())
+            .collect()
     } else {
         vec![]
     };
@@ -506,7 +535,12 @@ pub fn print_next_json(repo: &StintRepo, report: &NextReport, claimed: bool, cou
     let ready: Vec<Value> = report.ready.iter().take(n).map(task_to_json).collect();
 
     let claimed_ids: Vec<&str> = if claimed {
-        report.ready.iter().take(count.unwrap_or(1)).map(|t| t.id.as_str()).collect()
+        report
+            .ready
+            .iter()
+            .take(count.unwrap_or(1))
+            .map(|t| t.id.as_str())
+            .collect()
     } else {
         vec![]
     };
@@ -689,10 +723,14 @@ pub fn cmd_check(repo: &StintRepo, cross_repo: bool) -> anyhow::Result<Vec<Strin
         // STUB: cross-repo resolution not yet implemented.
         eprintln!("cross-repo resolution not yet implemented");
     }
-    let tasks = repo.load_tasks()?;
+    let (tasks, parse_errors) = repo.load_tasks_with_errors()?;
     let sprints = repo.load_sprints()?;
-    let errors = check(&tasks, &sprints);
-    Ok(errors.iter().map(|e| e.to_string()).collect())
+    let mut errors: Vec<String> = parse_errors
+        .iter()
+        .map(|e| format!("{}: {}", e.path.display(), e.error))
+        .collect();
+    errors.extend(check(&tasks, &sprints).iter().map(|e| e.to_string()));
+    Ok(errors)
 }
 
 /// Print the `stint status` summary.

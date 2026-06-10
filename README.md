@@ -26,6 +26,8 @@ cargo install --git https://github.com/ianjamesburke/stint
 stint add "Implement auth middleware"
 stint list
 stint list --status in-progress
+stint list --blocked
+stint list --hide-blocked
 stint list --sprint s1
 stint show 1
 stint next

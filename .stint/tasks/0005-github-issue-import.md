@@ -1,12 +1,13 @@
 ---
 id: "0005"
-title: "GitHub issue import (stint gh import)"
+title: "Init flow with optional GitHub issue import"
 status: backlog
 estimate: "3h"
 sprint: "s1"
 area:
   - "cli"
 tags:
+  - "init"
   - "gh-integration"
 blocked_by: []
 blocked_by_gh: []
@@ -15,11 +16,24 @@ gh_issue: []
 
 ## Why
 
-Teams track work in GitHub Issues. `stint gh import <N>` should pull issue
-title, body, and labels into a new task file so the two systems stay in sync
-without manual copying.
+New repos need one obvious command to start using stint. `stint init` should
+create the `.stint/` layout and optional config, and `stint init --with-github`
+should import existing open GitHub issues as local tasks so the repo can move
+onto markdown-backed planning without manual copying.
+
+## Shape
+
+- `stint init` creates `.stint/tasks`, `.stint/sprints`, and `.stint/config.toml`
+- refuse by default if `.stint/` already exists
+- `stint init --with-github` uses `gh` to import open issues
+- `stint init --with-github --repo owner/name` overrides repo inference
+- imported tasks get `status: backlog`, issue title/body, labels as tags, and
+  `gh_issue`
+- repeated imports should not duplicate issues already present in local tasks
 
 ## Gotchas
 
 Requires `gh` CLI to be available and authenticated. Infer repo from git remote
-if `.stint/config.toml` has no `[gh] repo` entry.
+if `.stint/config.toml` has no `[gh] repo` entry. Keep GitHub import as an
+optional init path first; a later standalone sync/import command can reuse the
+same importer.

@@ -1,9 +1,10 @@
 ---
 id: "0003"
 title: "Add stint update command"
-status: in-progress
+status: done
 estimate: "2h"
-sprint: "s1"
+actual: "2h"
+completed_at: "2026-06-10T20:45:00Z"
 blocked_by: []
 blocked_by_gh: []
 gh_issue: []

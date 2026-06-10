@@ -3,7 +3,6 @@ id: "0005"
 title: "Init flow with optional GitHub issue import"
 status: backlog
 estimate: "3h"
-sprint: "s1"
 area:
   - "cli"
 tags:

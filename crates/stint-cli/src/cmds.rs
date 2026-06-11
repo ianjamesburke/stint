@@ -12,14 +12,15 @@ use chrono::{DateTime, SecondsFormat, Utc};
 use stint_core::check::check;
 use stint_core::duration::Duration;
 use stint_core::gate::{
-    active_blocker_infos, active_blockers, gate_applies_to_task, BlockerInfo, BlockerSource,
+    active_blocker_infos, active_blockers, effective_blocker_infos, gate_applies_to_task,
+    BlockerInfo, BlockerSource,
 };
 use stint_core::mutate::{
     add_actual, new_sprint_content, new_task_content, next_task_id, resolve_id, restart_task,
     set_actual, set_completed_at, set_started_at_if_absent, set_status, title_to_slug,
 };
 use stint_core::next::{compute_next, NextOptions, NextReport, NextTask};
-use stint_core::schema::{Task, TaskStatus};
+use stint_core::schema::{BlockedByRef, Task, TaskStatus};
 use stint_core::serialize::serialize_task;
 use stint_core::sprint::{
     normalize_sprint_id, numeric_prefix, sprint_add_task, sprint_remove_task,
@@ -329,6 +330,50 @@ pub fn cmd_done(
     Ok(path)
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnblockedTask {
+    pub id: String,
+    pub title: String,
+}
+
+pub fn tasks_unblocked_by_done(
+    repo: &StintRepo,
+    done_id_input: &str,
+) -> anyhow::Result<Vec<UnblockedTask>> {
+    let done_path = repo.resolve_task_path(done_id_input)?;
+    let done_task = repo.read_task(&done_path)?;
+    let done_id = done_task.frontmatter.id;
+    let tasks = repo.load_tasks()?;
+    let gates = repo.load_gates()?;
+    let done_ids: HashSet<&str> = tasks
+        .iter()
+        .filter(|t| t.frontmatter.status == TaskStatus::Done)
+        .map(|t| t.frontmatter.id.as_str())
+        .collect();
+
+    let mut unblocked = Vec::new();
+    for task in &tasks {
+        if !matches!(
+            task.frontmatter.status,
+            TaskStatus::Backlog | TaskStatus::Todo | TaskStatus::InProgress
+        ) {
+            continue;
+        }
+
+        let waits_on_done_task = effective_blocker_infos(&task, &gates).iter().any(
+            |blocker| matches!(&blocker.reference, BlockedByRef::LocalTask(id) if id == &done_id),
+        );
+        if waits_on_done_task && active_blocker_infos(&task, &gates, &done_ids).is_empty() {
+            unblocked.push(UnblockedTask {
+                id: task.frontmatter.id.clone(),
+                title: task.frontmatter.title.clone(),
+            });
+        }
+    }
+
+    Ok(unblocked)
+}
+
 fn prompt_actual() -> anyhow::Result<String> {
     let mut buf = String::new();
     eprint!("Actual time spent (e.g. 2h, 30m) [skip]: ");
@@ -522,7 +567,8 @@ pub fn print_next(report: &NextReport, claimed: bool, count: Option<usize>) {
     if !claimed_ids.is_empty() {
         for id in &claimed_ids {
             if let Some(t) = report.ready.iter().find(|t| t.id.as_str() == *id) {
-                println!("claimed: {} {}", t.id, t.title);
+                println!("claimed: {}", t.id);
+                println!("  {}", t.title);
             }
         }
     } else if claimed {
@@ -539,20 +585,12 @@ pub fn print_next(report: &NextReport, claimed: bool, count: Option<usize>) {
         }
     }
 
-    if !report.blocked.is_empty() {
-        println!();
-        println!("Blocked:");
-        for task in &report.blocked {
-            print_next_task(task);
-        }
-    }
-
     if let Some(bottleneck) = &report.bottleneck {
         println!();
-        println!(
-            "Bottleneck: {} {} blocks {} task(s)",
-            bottleneck.id, bottleneck.title, bottleneck.blocked_count
-        );
+        println!("Bottleneck:");
+        println!("  {}", bottleneck.id);
+        println!("       {}", bottleneck.title);
+        println!("       blocks {} task(s)", bottleneck.blocked_count);
     }
 }
 
@@ -620,12 +658,11 @@ fn blocker_to_json(blocker: &BlockerInfo) -> serde_json::Value {
 }
 
 fn print_next_task(task: &NextTask) {
-    let area = if task.area.is_empty() {
-        "-".to_owned()
-    } else {
-        task.area.join(",")
-    };
-    println!("  {} [{}] {}", task.id, area, task.title);
+    println!("  {}", task.id);
+    if !task.area.is_empty() {
+        println!("       areas: {}", task.area.join(", "));
+    }
+    println!("       {}", task.title);
     if !task.blockers.is_empty() {
         println!(
             "       blocked by {}",

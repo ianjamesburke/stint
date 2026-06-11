@@ -414,6 +414,53 @@ fn done_skips_actual_when_already_set() {
 }
 
 #[test]
+fn done_reports_tasks_unblocked_by_completed_task() {
+    let (_tmp, repo) = setup();
+    write_task_file(
+        &repo,
+        "0001-task.md",
+        &task_content("0001", "Task", "in-progress"),
+    );
+    write_task_file(
+        &repo,
+        "0002-dependent.md",
+        "---\nid: \"0002\"\ntitle: \"Dependent\"\nstatus: todo\nblocked_by: [\"0001\"]\n---\n",
+    );
+
+    cmds::cmd_done(&repo, "1", Some("2h"), None, None).unwrap();
+    let unblocked = cmds::tasks_unblocked_by_done(&repo, "1").unwrap();
+
+    assert_eq!(unblocked.len(), 1);
+    assert_eq!(unblocked[0].id, "0002");
+    assert_eq!(unblocked[0].title, "Dependent");
+}
+
+#[test]
+fn done_does_not_report_tasks_with_remaining_blockers() {
+    let (_tmp, repo) = setup();
+    write_task_file(
+        &repo,
+        "0001-task.md",
+        &task_content("0001", "Task", "in-progress"),
+    );
+    write_task_file(
+        &repo,
+        "0003-other.md",
+        &task_content("0003", "Other", "todo"),
+    );
+    write_task_file(
+        &repo,
+        "0002-dependent.md",
+        "---\nid: \"0002\"\ntitle: \"Dependent\"\nstatus: todo\nblocked_by: [\"0001\", \"0003\"]\n---\n",
+    );
+
+    cmds::cmd_done(&repo, "0001", Some("2h"), None, None).unwrap();
+    let unblocked = cmds::tasks_unblocked_by_done(&repo, "0001").unwrap();
+
+    assert!(unblocked.is_empty());
+}
+
+#[test]
 fn start_sets_status_and_started_at() {
     let (_tmp, repo) = setup();
     write_task_file(&repo, "0001-task.md", &task_content("0001", "Task", "todo"));

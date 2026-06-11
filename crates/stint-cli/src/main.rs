@@ -310,6 +310,13 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 completed_at.as_deref(),
             )?;
             println!("done: {}", path.display());
+            let unblocked = cmds::tasks_unblocked_by_done(&repo, &id)?;
+            if !unblocked.is_empty() {
+                println!("unblocked:");
+                for task in unblocked {
+                    println!("  {} {}", task.id, task.title);
+                }
+            }
         }
 
         Commands::Log { id, duration } => {

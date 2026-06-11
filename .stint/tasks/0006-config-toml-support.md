@@ -9,7 +9,6 @@ area:
   - "apps"
 blocked_by:
   - "0005"
-blocked_by_gh: []
 gh_issue: []
 tags:
   - "config"

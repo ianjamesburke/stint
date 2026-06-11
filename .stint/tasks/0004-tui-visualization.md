@@ -10,7 +10,6 @@ tags:
   - "plexi"
 blocked_by:
   - "0003"
-blocked_by_gh: []
 gh_issue: []
 ---
 

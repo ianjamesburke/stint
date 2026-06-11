@@ -10,7 +10,6 @@ tags:
   - "validation"
 blocked_by:
   - "0001"
-blocked_by_gh: []
 gh_issue: []
 ---
 

@@ -9,7 +9,6 @@ area:
 tags:
   - "parsing"
 blocked_by: []
-blocked_by_gh: []
 gh_issue: []
 ---
 

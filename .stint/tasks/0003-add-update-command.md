@@ -6,7 +6,6 @@ estimate: "2h"
 actual: "2h"
 completed_at: "2026-06-10T20:45:00Z"
 blocked_by: []
-blocked_by_gh: []
 gh_issue: []
 area:
   - "cli"

@@ -1,7 +1,7 @@
 ---
 id: "0005"
 title: "Init flow with optional GitHub issue import"
-status: backlog
+status: todo
 estimate: "3h"
 area:
   - "cli"

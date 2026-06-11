@@ -1,6 +1,7 @@
 pub mod check;
 pub mod duration;
 pub mod filter;
+pub mod gate;
 pub mod mutate;
 pub mod next;
 pub mod parse;

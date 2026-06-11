@@ -6,7 +6,8 @@ use std::collections::{HashMap, HashSet};
 
 use thiserror::Error;
 
-use crate::schema::{BlockedByRef, Sprint, Task};
+use crate::gate::effective_blockers;
+use crate::schema::{BlockedByRef, Gate, Sprint, Task};
 use crate::sprint::numeric_prefix;
 
 /// A single validation violation found by `check`.
@@ -117,6 +118,16 @@ pub enum CheckError {
         /// Second filename.
         file_b: String,
     },
+
+    /// A gate's `id` field does not match the filename stem.
+    #[error(
+        "gate {gate_id}: id field {id_field:?} does not match filename stem {filename_stem:?}"
+    )]
+    GateIdFilenameMismatch {
+        gate_id: String,
+        id_field: String,
+        filename_stem: String,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -127,7 +138,7 @@ pub enum CheckError {
 ///
 /// `tasks` is the full list of parsed tasks; `sprints` is the full list of
 /// parsed sprint index files.  Returns an empty `Vec` when everything is valid.
-pub fn check(tasks: &[Task], sprints: &[Sprint]) -> Vec<CheckError> {
+pub fn check(tasks: &[Task], sprints: &[Sprint], gates: &[Gate]) -> Vec<CheckError> {
     let mut errors: Vec<CheckError> = Vec::new();
 
     let task_id_to_file: HashMap<&str, &str> = tasks
@@ -163,57 +174,8 @@ pub fn check(tasks: &[Task], sprints: &[Sprint]) -> Vec<CheckError> {
 
         // Rule 4 — LocalTask blockers must resolve to known task IDs
         // Rule 5 — external refs must be structurally valid
-        for r in &task.frontmatter.blocked_by {
-            match r {
-                BlockedByRef::LocalTask(ref_id) => {
-                    if !known_task_ids.contains(ref_id.as_str()) {
-                        errors.push(CheckError::UnresolvedBlockedBy {
-                            task_id: id.to_owned(),
-                            ref_id: ref_id.clone(),
-                        });
-                    }
-                }
-                BlockedByRef::ExternalTask {
-                    repo,
-                    task_id: ref_task_id,
-                } => {
-                    if !is_valid_gh_repo(repo) || ref_task_id.is_empty() {
-                        errors.push(CheckError::InvalidBlockedByRef {
-                            task_id: id.to_owned(),
-                            entry: r.to_string(),
-                        });
-                    }
-                }
-                BlockedByRef::ExternalIssue { repo, .. } => {
-                    if !is_valid_gh_repo(repo) {
-                        errors.push(CheckError::InvalidBlockedByRef {
-                            task_id: id.to_owned(),
-                            entry: r.to_string(),
-                        });
-                    }
-                }
-                BlockedByRef::LocalDirTask {
-                    path,
-                    task_id: ref_task_id,
-                } => {
-                    if path.is_empty() || ref_task_id.is_empty() {
-                        errors.push(CheckError::InvalidBlockedByRef {
-                            task_id: id.to_owned(),
-                            entry: r.to_string(),
-                        });
-                    }
-                }
-                BlockedByRef::LocalDirIssue { path, .. } => {
-                    if path.is_empty() {
-                        errors.push(CheckError::InvalidBlockedByRef {
-                            task_id: id.to_owned(),
-                            entry: r.to_string(),
-                        });
-                    }
-                }
-                // LocalIssue and Note: no structural validation needed
-                BlockedByRef::LocalIssue(_) | BlockedByRef::Note(_) => {}
-            }
+        for r in task.frontmatter.blocked_by.iter() {
+            validate_blocker_ref(id, r, &known_task_ids, &mut errors);
         }
 
         // Rule 6 — sprint reference
@@ -224,6 +186,18 @@ pub fn check(tasks: &[Task], sprints: &[Sprint]) -> Vec<CheckError> {
                     sprint_id: sprint_id.clone(),
                 });
             }
+        }
+    }
+
+    for gate in gates {
+        check_gate_id_filename_match(gate, &mut errors);
+        for r in &gate.blocked_by {
+            validate_blocker_ref(
+                &format!("gate:{}", gate.id),
+                r,
+                &known_task_ids,
+                &mut errors,
+            );
         }
     }
 
@@ -241,9 +215,66 @@ pub fn check(tasks: &[Task], sprints: &[Sprint]) -> Vec<CheckError> {
     }
 
     // Rule 8 — circular blocked_by (local task refs only)
-    check_cycles(tasks, &mut errors);
+    check_cycles(tasks, gates, &mut errors);
 
     errors
+}
+
+fn validate_blocker_ref(
+    owner_id: &str,
+    r: &BlockedByRef,
+    known_task_ids: &HashSet<&str>,
+    errors: &mut Vec<CheckError>,
+) {
+    match r {
+        BlockedByRef::LocalTask(ref_id) => {
+            if !known_task_ids.contains(ref_id.as_str()) {
+                errors.push(CheckError::UnresolvedBlockedBy {
+                    task_id: owner_id.to_owned(),
+                    ref_id: ref_id.clone(),
+                });
+            }
+        }
+        BlockedByRef::ExternalTask {
+            repo,
+            task_id: ref_task_id,
+        } => {
+            if !is_valid_gh_repo(repo) || ref_task_id.is_empty() {
+                errors.push(CheckError::InvalidBlockedByRef {
+                    task_id: owner_id.to_owned(),
+                    entry: r.to_string(),
+                });
+            }
+        }
+        BlockedByRef::ExternalIssue { repo, .. } => {
+            if !is_valid_gh_repo(repo) {
+                errors.push(CheckError::InvalidBlockedByRef {
+                    task_id: owner_id.to_owned(),
+                    entry: r.to_string(),
+                });
+            }
+        }
+        BlockedByRef::LocalDirTask {
+            path,
+            task_id: ref_task_id,
+        } => {
+            if path.is_empty() || ref_task_id.is_empty() {
+                errors.push(CheckError::InvalidBlockedByRef {
+                    task_id: owner_id.to_owned(),
+                    entry: r.to_string(),
+                });
+            }
+        }
+        BlockedByRef::LocalDirIssue { path, .. } => {
+            if path.is_empty() {
+                errors.push(CheckError::InvalidBlockedByRef {
+                    task_id: owner_id.to_owned(),
+                    entry: r.to_string(),
+                });
+            }
+        }
+        BlockedByRef::LocalIssue(_) | BlockedByRef::Note(_) => {}
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -284,19 +315,28 @@ fn check_id_filename_match(task: &Task, errors: &mut Vec<CheckError>) {
     }
 }
 
+fn check_gate_id_filename_match(gate: &Gate, errors: &mut Vec<CheckError>) {
+    let filename_stem = gate.filename.trim_end_matches(".md");
+    if gate.id != filename_stem {
+        errors.push(CheckError::GateIdFilenameMismatch {
+            gate_id: gate.id.clone(),
+            id_field: gate.id.clone(),
+            filename_stem: filename_stem.to_owned(),
+        });
+    }
+}
+
 /// Rule 8 — detect cycles in the local `blocked_by` graph (DFS colouring).
-fn check_cycles(tasks: &[Task], errors: &mut Vec<CheckError>) {
+fn check_cycles(tasks: &[Task], gates: &[Gate], errors: &mut Vec<CheckError>) {
     // Only traverse LocalTask refs — external refs can't form local cycles.
-    let id_to_local_blockers: HashMap<&str, Vec<&str>> = tasks
+    let id_to_local_blockers: HashMap<&str, Vec<String>> = tasks
         .iter()
         .map(|t| {
-            let local: Vec<&str> = t
-                .frontmatter
-                .blocked_by
-                .iter()
+            let local: Vec<String> = effective_blockers(t, gates)
+                .into_iter()
                 .filter_map(|r| {
                     if let BlockedByRef::LocalTask(id) = r {
-                        Some(id.as_str())
+                        Some(id)
                     } else {
                         None
                     }
@@ -326,16 +366,16 @@ fn check_cycles(tasks: &[Task], errors: &mut Vec<CheckError>) {
                 color.insert(node, 1);
 
                 if let Some(blockers) = id_to_local_blockers.get(node) {
-                    for &dep in blockers {
-                        match color.get(dep).copied().unwrap_or(0) {
+                    for dep in blockers {
+                        match color.get(dep.as_str()).copied().unwrap_or(0) {
                             1 => {
                                 errors.push(CheckError::CircularBlockedBy {
                                     task_id: node.to_owned(),
-                                    cycle_member: dep.to_owned(),
+                                    cycle_member: dep.clone(),
                                 });
                             }
                             0 => {
-                                stack.push((dep, false));
+                                stack.push((dep.as_str(), false));
                             }
                             _ => {}
                         }
@@ -353,7 +393,7 @@ fn check_cycles(tasks: &[Task], errors: &mut Vec<CheckError>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::parse::parse_task;
+    use crate::parse::{parse_gate, parse_task};
     use crate::sprint::parse_sprint;
 
     fn make_task(id: &str, title: &str, extra: &str) -> Task {
@@ -392,7 +432,7 @@ mod tests {
             body: String::new(),
             filename: "0001-slug.md".to_owned(),
         };
-        let errors = check(&[task], &[]);
+        let errors = check(&[task], &[], &[]);
         assert!(errors
             .iter()
             .any(|e| matches!(e, CheckError::MissingRequiredField { field: "id", .. })));
@@ -419,7 +459,7 @@ mod tests {
             body: String::new(),
             filename: "0001-slug.md".to_owned(),
         };
-        let errors = check(&[task], &[]);
+        let errors = check(&[task], &[], &[]);
         assert!(errors
             .iter()
             .any(|e| matches!(e, CheckError::MissingRequiredField { field: "title", .. })));
@@ -431,16 +471,32 @@ mod tests {
             make_task("0001", "Task A", ""),
             make_task("0002", "Task B", "blocked_by: [\"0001\"]"),
         ];
-        assert!(check(&tasks, &[]).is_empty());
+        assert!(check(&tasks, &[], &[]).is_empty());
     }
 
     #[test]
     fn unresolved_blocked_by() {
         let tasks = vec![make_task("0001", "Task A", "blocked_by: [\"9999\"]")];
-        let errors = check(&tasks, &[]);
+        let errors = check(&tasks, &[], &[]);
         assert!(errors.iter().any(
             |e| matches!(e, CheckError::UnresolvedBlockedBy { ref_id, .. } if ref_id == "9999")
         ));
+    }
+
+    #[test]
+    fn gate_unresolved_blocked_by() {
+        let tasks = vec![make_task("0001", "Task A", "tags: [\"v2\"]")];
+        let gate = parse_gate(
+            "---\nid: v2-after-v1\napplies_to:\n  tags: [\"v2\"]\nblocked_by:\n  - 9999\n---\n",
+            "v2-after-v1.md",
+        )
+        .unwrap();
+        let errors = check(&tasks, &[], &[gate]);
+        assert!(errors.iter().any(|e| matches!(
+            e,
+            CheckError::UnresolvedBlockedBy { task_id, ref_id }
+                if task_id == "gate:v2-after-v1" && ref_id == "9999"
+        )));
     }
 
     #[test]
@@ -450,7 +506,7 @@ mod tests {
             "Task A",
             "blocked_by: [\"owner/repo:0999\"]",
         )];
-        let errors = check(&tasks, &[]);
+        let errors = check(&tasks, &[], &[]);
         assert!(errors
             .iter()
             .all(|e| !matches!(e, CheckError::UnresolvedBlockedBy { .. })));
@@ -459,7 +515,7 @@ mod tests {
     #[test]
     fn external_issue_ref_passes_format_check() {
         let tasks = vec![make_task("0001", "Task A", "blocked_by: [\"acme/api@7\"]")];
-        let errors = check(&tasks, &[]);
+        let errors = check(&tasks, &[], &[]);
         assert!(errors
             .iter()
             .all(|e| !matches!(e, CheckError::InvalidBlockedByRef { .. })));
@@ -472,7 +528,7 @@ mod tests {
             "Task A",
             "blocked_by: [\"waiting for upstream\"]",
         )];
-        let errors = check(&tasks, &[]);
+        let errors = check(&tasks, &[], &[]);
         assert!(errors.is_empty());
     }
 
@@ -483,7 +539,7 @@ mod tests {
             "Task A",
             "blocked_by: [\"../plexi:0146\"]",
         )];
-        let errors = check(&tasks, &[]);
+        let errors = check(&tasks, &[], &[]);
         assert!(errors
             .iter()
             .all(|e| !matches!(e, CheckError::InvalidBlockedByRef { .. })));
@@ -492,7 +548,7 @@ mod tests {
     #[test]
     fn unresolved_sprint_reference() {
         let tasks = vec![make_task("0001", "Task A", "sprint: \"s99\"")];
-        let errors = check(&tasks, &[]);
+        let errors = check(&tasks, &[], &[]);
         assert!(errors.iter().any(
             |e| matches!(e, CheckError::UnresolvedSprint { sprint_id, .. } if sprint_id == "s99")
         ));
@@ -502,7 +558,7 @@ mod tests {
     fn sprint_references_existing_sprint() {
         let tasks = vec![make_task("0001", "Task A", "sprint: \"s1\"")];
         let sprints = vec![make_sprint(1, &["0001"])];
-        let errors = check(&tasks, &sprints);
+        let errors = check(&tasks, &sprints, &[]);
         assert!(errors
             .iter()
             .all(|e| !matches!(e, CheckError::UnresolvedSprint { .. })));
@@ -512,7 +568,7 @@ mod tests {
     fn sprint_unresolved_task() {
         let tasks = vec![make_task("0001", "Task A", "")];
         let sprints = vec![make_sprint(1, &["9999"])];
-        let errors = check(&tasks, &sprints);
+        let errors = check(&tasks, &sprints, &[]);
         assert!(errors
             .iter()
             .any(|e| matches!(e, CheckError::SprintUnresolvedTask { .. })));
@@ -522,7 +578,7 @@ mod tests {
     fn sprint_resolved_task_with_slug() {
         let tasks = vec![make_task("0001", "Task A", "")];
         let sprints = vec![make_sprint(1, &["0001-slug"])];
-        let errors = check(&tasks, &sprints);
+        let errors = check(&tasks, &sprints, &[]);
         assert!(errors
             .iter()
             .all(|e| !matches!(e, CheckError::SprintUnresolvedTask { .. })));
@@ -532,7 +588,7 @@ mod tests {
     fn circular_blocked_by() {
         let t1 = make_task("0001", "A", "blocked_by: [\"0002\"]");
         let t2 = make_task("0002", "B", "blocked_by: [\"0001\"]");
-        let errors = check(&[t1, t2], &[]);
+        let errors = check(&[t1, t2], &[], &[]);
         assert!(errors
             .iter()
             .any(|e| matches!(e, CheckError::CircularBlockedBy { .. })));
@@ -541,7 +597,7 @@ mod tests {
     #[test]
     fn self_referencing_blocked_by() {
         let task = make_task("0001", "A", "blocked_by: [\"0001\"]");
-        let errors = check(&[task], &[]);
+        let errors = check(&[task], &[], &[]);
         assert!(errors
             .iter()
             .any(|e| matches!(e, CheckError::CircularBlockedBy { .. })));
@@ -551,7 +607,7 @@ mod tests {
     fn id_filename_mismatch() {
         let content = "---\nid: \"0099\"\ntitle: \"T\"\nstatus: backlog\n---\n";
         let task = parse_task(content, "0001-slug.md").unwrap();
-        let errors = check(&[task], &[]);
+        let errors = check(&[task], &[], &[]);
         assert!(errors
             .iter()
             .any(|e| matches!(e, CheckError::IdFilenameMismatch { .. })));
@@ -562,7 +618,7 @@ mod tests {
         let t1 = make_task("0001", "A", "");
         let content = "---\nid: \"0001\"\ntitle: \"B\"\nstatus: backlog\n---\n";
         let t2 = parse_task(content, "0001-other.md").unwrap();
-        let errors = check(&[t1, t2], &[]);
+        let errors = check(&[t1, t2], &[], &[]);
         assert!(errors
             .iter()
             .any(|e| matches!(e, CheckError::DuplicateId { id, .. } if id == "0001")));
@@ -575,7 +631,7 @@ mod tests {
             "A",
             "blocked_by: [\"9999\", \"another/task:9998\"]",
         )];
-        let errors = check(&tasks, &[]);
+        let errors = check(&tasks, &[], &[]);
         // At least the unresolved local task error
         assert!(errors
             .iter()

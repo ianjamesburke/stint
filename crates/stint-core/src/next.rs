@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
-use crate::schema::{Sprint, Task, TaskStatus};
+use crate::gate::{active_blocker_infos, effective_blockers, BlockerInfo};
+use crate::schema::{Gate, Sprint, Task, TaskStatus};
 use crate::sprint::numeric_prefix;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -18,7 +19,7 @@ pub struct NextTask {
     pub area: Vec<String>,
     pub gh_issue: Vec<String>,
     pub filename: String,
-    pub blockers: Vec<String>,
+    pub blockers: Vec<BlockerInfo>,
     pub area_conflicts: Vec<String>,
 }
 
@@ -36,7 +37,12 @@ pub struct NextReport {
     pub bottleneck: Option<Bottleneck>,
 }
 
-pub fn compute_next(tasks: &[Task], sprints: &[Sprint], options: NextOptions<'_>) -> NextReport {
+pub fn compute_next(
+    tasks: &[Task],
+    sprints: &[Sprint],
+    gates: &[Gate],
+    options: NextOptions<'_>,
+) -> NextReport {
     let task_by_id: HashMap<&str, &Task> = tasks
         .iter()
         .map(|task| (task.frontmatter.id.as_str(), task))
@@ -59,7 +65,7 @@ pub fn compute_next(tasks: &[Task], sprints: &[Sprint], options: NextOptions<'_>
             continue;
         }
 
-        let blockers = blockers(task, &done_ids);
+        let blockers = blockers(task, gates, &done_ids);
         let mut area_conflicts = area_conflicts(task, &active_area_tasks);
         area_conflicts.sort();
         area_conflicts.dedup();
@@ -102,7 +108,13 @@ pub fn compute_next(tasks: &[Task], sprints: &[Sprint], options: NextOptions<'_>
     NextReport {
         ready,
         blocked,
-        bottleneck: bottleneck(tasks, &task_by_id),
+        bottleneck: bottleneck(
+            tasks,
+            gates,
+            &task_by_id,
+            &done_ids,
+            sprint_task_ids.as_ref(),
+        ),
     }
 }
 
@@ -119,21 +131,8 @@ fn is_candidate(task: &Task, sprint_task_ids: Option<&HashSet<String>>) -> bool 
     true
 }
 
-fn blockers(task: &Task, done_ids: &HashSet<&str>) -> Vec<String> {
-    use crate::schema::BlockedByRef;
-    let mut blockers = Vec::new();
-    for r in &task.frontmatter.blocked_by {
-        match r {
-            BlockedByRef::LocalTask(id) => {
-                if !done_ids.contains(id.as_str()) {
-                    blockers.push(r.to_string());
-                }
-            }
-            // Non-local refs are always active blockers (can't resolve locally).
-            other => blockers.push(other.to_string()),
-        }
-    }
-    blockers
+fn blockers(task: &Task, gates: &[Gate], done_ids: &HashSet<&str>) -> Vec<BlockerInfo> {
+    active_blocker_infos(task, gates, done_ids)
 }
 
 fn active_area_tasks(tasks: &[Task]) -> HashMap<String, Vec<String>> {
@@ -211,28 +210,42 @@ fn sprint_number(id: &str) -> u64 {
     id.trim_start_matches('s').parse().unwrap_or(0)
 }
 
-fn bottleneck(tasks: &[Task], task_by_id: &HashMap<&str, &Task>) -> Option<Bottleneck> {
+fn bottleneck(
+    tasks: &[Task],
+    gates: &[Gate],
+    task_by_id: &HashMap<&str, &Task>,
+    done_ids: &HashSet<&str>,
+    sprint_task_ids: Option<&HashSet<String>>,
+) -> Option<Bottleneck> {
     use crate::schema::BlockedByRef;
-    let mut counts: HashMap<&str, usize> = HashMap::new();
+    let mut counts: HashMap<String, usize> = HashMap::new();
     for task in tasks {
-        if matches!(
-            task.frontmatter.status,
-            TaskStatus::Done | TaskStatus::Archived
-        ) {
+        if !is_candidate(task, sprint_task_ids) {
             continue;
         }
-        for blocker in &task.frontmatter.blocked_by {
-            if let BlockedByRef::LocalTask(id) = blocker {
-                *counts.entry(id.as_str()).or_default() += 1;
+        let mut counted_for_task = HashSet::new();
+        for blocker in effective_blockers(task, gates) {
+            let BlockedByRef::LocalTask(id) = blocker else {
+                continue;
+            };
+            if done_ids.contains(id.as_str()) || !task_by_id.contains_key(id.as_str()) {
+                continue;
+            }
+            if counted_for_task.insert(id.clone()) {
+                *counts.entry(id).or_default() += 1;
             }
         }
     }
 
     counts
         .into_iter()
-        .max_by_key(|(_, count)| *count)
+        .max_by(|(left_id, left_count), (right_id, right_count)| {
+            left_count
+                .cmp(right_count)
+                .then_with(|| right_id.cmp(left_id))
+        })
         .and_then(|(id, count)| {
-            task_by_id.get(id).map(|task| Bottleneck {
+            task_by_id.get(id.as_str()).map(|task| Bottleneck {
                 id: task.frontmatter.id.clone(),
                 title: task.frontmatter.title.clone(),
                 blocked_count: count,
@@ -243,7 +256,7 @@ fn bottleneck(tasks: &[Task], task_by_id: &HashMap<&str, &Task>) -> Option<Bottl
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::parse::parse_task;
+    use crate::parse::{parse_gate, parse_task};
     use crate::sprint::parse_sprint;
 
     fn task(id: &str, title: &str, status: &str, extra: &str) -> Task {
@@ -260,6 +273,7 @@ mod tests {
         ];
         let report = compute_next(
             &tasks,
+            &[],
             &[],
             NextOptions {
                 sprint: None,
@@ -286,6 +300,7 @@ mod tests {
         let report = compute_next(
             &tasks,
             &[],
+            &[],
             NextOptions {
                 sprint: None,
                 include_area_conflicts: false,
@@ -303,6 +318,7 @@ mod tests {
         ];
         let report = compute_next(
             &tasks,
+            &[],
             &[],
             NextOptions {
                 sprint: None,
@@ -327,6 +343,7 @@ mod tests {
         let report = compute_next(
             &tasks,
             &[sprint],
+            &[],
             NextOptions {
                 sprint: Some("s1"),
                 include_area_conflicts: false,
@@ -352,11 +369,116 @@ mod tests {
         let report = compute_next(
             &tasks,
             &[],
+            &[],
             NextOptions {
                 sprint: None,
                 include_area_conflicts: false,
             },
         );
         assert_eq!(report.bottleneck.unwrap().blocked_count, 2);
+    }
+
+    #[test]
+    fn gate_blockers_make_matching_tasks_blocked() {
+        let tasks = vec![
+            task("0001", "A", "todo", ""),
+            task("0002", "B", "todo", "tags: [\"v2\"]"),
+        ];
+        let gate = parse_gate(
+            "---\nid: v2-after-v1\napplies_to:\n  tags: [\"v2\"]\nblocked_by:\n  - 0001\n---\n",
+            "v2-after-v1.md",
+        )
+        .unwrap();
+        let report = compute_next(
+            &tasks,
+            &[],
+            &[gate],
+            NextOptions {
+                sprint: None,
+                include_area_conflicts: false,
+            },
+        );
+        assert_eq!(report.ready[0].id, "0001");
+        assert_eq!(report.blocked[0].id, "0002");
+        assert_eq!(report.blocked[0].blockers[0].reference.to_string(), "0001");
+        assert_eq!(report.bottleneck.unwrap().id, "0001");
+    }
+
+    #[test]
+    fn bottleneck_ignores_done_blockers() {
+        let tasks = vec![
+            task("0001", "A", "done", ""),
+            task("0002", "B", "todo", "blocked_by: [\"0001\"]"),
+        ];
+        let report = compute_next(
+            &tasks,
+            &[],
+            &[],
+            NextOptions {
+                sprint: None,
+                include_area_conflicts: false,
+            },
+        );
+        assert_eq!(report.bottleneck, None);
+    }
+
+    #[test]
+    fn bottleneck_respects_selected_sprint() {
+        let tasks = vec![
+            task("0001", "A", "todo", ""),
+            task("0002", "B", "todo", "blocked_by: [\"0001\"]"),
+            task("0003", "C", "todo", "blocked_by: [\"0001\"]"),
+        ];
+        let sprint = parse_sprint("# Sprint 1 · Jun 1-14\n\n- 0002\n").unwrap();
+        let report = compute_next(
+            &tasks,
+            &[sprint],
+            &[],
+            NextOptions {
+                sprint: Some("s1"),
+                include_area_conflicts: false,
+            },
+        );
+        assert_eq!(report.bottleneck.unwrap().blocked_count, 1);
+    }
+
+    #[test]
+    fn bottleneck_ignores_unknown_local_blockers() {
+        let tasks = vec![task(
+            "0001",
+            "A",
+            "todo",
+            "blocked_by: [\"9999\", \"9999\"]",
+        )];
+        let report = compute_next(
+            &tasks,
+            &[],
+            &[],
+            NextOptions {
+                sprint: None,
+                include_area_conflicts: false,
+            },
+        );
+        assert_eq!(report.bottleneck, None);
+    }
+
+    #[test]
+    fn bottleneck_ties_choose_lowest_id() {
+        let tasks = vec![
+            task("0001", "A", "todo", ""),
+            task("0002", "B", "todo", ""),
+            task("0003", "C", "todo", "blocked_by: [\"0002\"]"),
+            task("0004", "D", "todo", "blocked_by: [\"0001\"]"),
+        ];
+        let report = compute_next(
+            &tasks,
+            &[],
+            &[],
+            NextOptions {
+                sprint: None,
+                include_area_conflicts: false,
+            },
+        );
+        assert_eq!(report.bottleneck.unwrap().id, "0001");
     }
 }

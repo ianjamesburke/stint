@@ -237,6 +237,28 @@ impl Task {
     }
 }
 
+/// Rule that applies inherited blockers to matching tasks.
+#[derive(Debug, Clone)]
+pub struct Gate {
+    /// Stable gate identifier, usually matching the filename stem.
+    pub id: String,
+    /// Criteria that decide which tasks inherit this gate.
+    pub applies_to: GateAppliesTo,
+    /// Blockers inherited by matching tasks.
+    pub blocked_by: Vec<BlockedByRef>,
+    /// Optional human-readable explanation.
+    pub reason: Option<String>,
+    /// Original filename (without directory).
+    pub filename: String,
+}
+
+/// Gate matching criteria.
+#[derive(Debug, Clone, Default)]
+pub struct GateAppliesTo {
+    /// Task tags that activate the gate. A task matches if it has any listed tag.
+    pub tags: Vec<String>,
+}
+
 /// Parsed sprint file header.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SprintHeader {

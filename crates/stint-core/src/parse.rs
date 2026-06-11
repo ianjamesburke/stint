@@ -3,7 +3,7 @@ use serde::Deserialize;
 use thiserror::Error;
 
 use crate::duration::Duration;
-use crate::schema::{BlockedByRef, Task, TaskFrontmatter, TaskStatus};
+use crate::schema::{BlockedByRef, Gate, GateAppliesTo, Task, TaskFrontmatter, TaskStatus};
 
 /// Errors that can occur while parsing a task file.
 #[derive(Debug, Error, PartialEq)]
@@ -72,11 +72,24 @@ struct RawFrontmatter {
     #[serde(default)]
     blocked_by: Option<serde_yaml::Value>,
     #[serde(default)]
-    blocked_by_gh: Option<serde_yaml::Value>,
-    #[serde(default)]
     gh_issue: Option<serde_yaml::Value>,
     #[serde(default)]
     area: Option<OneOrMany<String>>,
+    #[serde(default)]
+    tags: Option<OneOrMany<String>>,
+}
+
+#[derive(Deserialize, Debug)]
+struct RawGateFrontmatter {
+    id: Option<String>,
+    applies_to: Option<RawGateAppliesTo>,
+    #[serde(default)]
+    blocked_by: Option<serde_yaml::Value>,
+    reason: Option<String>,
+}
+
+#[derive(Deserialize, Debug)]
+struct RawGateAppliesTo {
     #[serde(default)]
     tags: Option<OneOrMany<String>>,
 }
@@ -116,13 +129,6 @@ pub fn parse_task(content: &str, filename: &str) -> Result<Task, ParseError> {
             field: "status",
             reason: e.to_string(),
         })?;
-
-    if raw.blocked_by_gh.is_some() {
-        return Err(ParseError::InvalidField {
-            field: "blocked_by_gh",
-            reason: "deprecated field; move GitHub blockers into blocked_by using @N or owner/repo@N syntax".to_owned(),
-        });
-    }
 
     let estimate = raw
         .estimate
@@ -179,6 +185,53 @@ pub fn parse_task(content: &str, filename: &str) -> Result<Task, ParseError> {
     Ok(Task {
         frontmatter,
         body: body.to_owned(),
+        filename: filename.to_owned(),
+    })
+}
+
+/// Parse a gate file from its string content and filename.
+pub fn parse_gate(content: &str, filename: &str) -> Result<Gate, ParseError> {
+    let (frontmatter_str, _body) = split_frontmatter(content)?;
+
+    let raw: RawGateFrontmatter =
+        serde_yaml::from_str(frontmatter_str).map_err(|e| ParseError::Yaml(e.to_string()))?;
+
+    let id = raw
+        .id
+        .filter(|s| !s.is_empty())
+        .ok_or(ParseError::MissingField("id"))?;
+
+    let applies_to = raw
+        .applies_to
+        .ok_or(ParseError::MissingField("applies_to"))?;
+    let tags = applies_to
+        .tags
+        .map(|tags| tags.into_vec())
+        .unwrap_or_default();
+    if tags.is_empty() {
+        return Err(ParseError::InvalidField {
+            field: "applies_to",
+            reason: "expected at least one tag".to_owned(),
+        });
+    }
+
+    let blocked_by = raw
+        .blocked_by
+        .map(parse_blocked_by_value)
+        .transpose()?
+        .unwrap_or_default();
+    if blocked_by.is_empty() {
+        return Err(ParseError::InvalidField {
+            field: "blocked_by",
+            reason: "expected at least one blocker".to_owned(),
+        });
+    }
+
+    Ok(Gate {
+        id,
+        applies_to: GateAppliesTo { tags },
+        blocked_by,
+        reason: raw.reason.filter(|s| !s.is_empty()),
         filename: filename.to_owned(),
     })
 }
@@ -371,6 +424,23 @@ So users can authenticate.
     }
 
     #[test]
+    fn parse_tag_gate() {
+        let gate = parse_gate(
+            "---\nid: v2-after-v1\napplies_to:\n  tags: [\"v2\"]\nblocked_by:\n  - 0030\nreason: \"v2 waits on v1\"\n---\n",
+            "v2-after-v1.md",
+        )
+        .unwrap();
+
+        assert_eq!(gate.id, "v2-after-v1");
+        assert_eq!(gate.applies_to.tags, vec!["v2"]);
+        assert_eq!(
+            gate.blocked_by,
+            vec![BlockedByRef::LocalTask("0030".to_owned())]
+        );
+        assert_eq!(gate.reason.as_deref(), Some("v2 waits on v1"));
+    }
+
+    #[test]
     fn blocked_by_bare_integer_in_yaml() {
         let content = "---\nid: \"0001\"\ntitle: \"T\"\nstatus: backlog\nblocked_by: 146\n---\n";
         let task = parse_task(content, "0001-t.md").unwrap();
@@ -428,28 +498,12 @@ So users can authenticate.
     }
 
     #[test]
-    fn blocked_by_gh_is_rejected() {
+    fn unknown_frontmatter_fields_are_ignored() {
         let content =
             "---\nid: \"0001\"\ntitle: \"T\"\nstatus: backlog\nblocked_by_gh: [123]\n---\n";
-        assert!(matches!(
-            parse_task(content, "0001-t.md"),
-            Err(ParseError::InvalidField {
-                field: "blocked_by_gh",
-                ..
-            })
-        ));
-    }
-
-    #[test]
-    fn empty_blocked_by_gh_is_rejected() {
-        let content = "---\nid: \"0001\"\ntitle: \"T\"\nstatus: backlog\nblocked_by_gh: []\n---\n";
-        assert!(matches!(
-            parse_task(content, "0001-t.md"),
-            Err(ParseError::InvalidField {
-                field: "blocked_by_gh",
-                ..
-            })
-        ));
+        let task = parse_task(content, "0001-t.md").unwrap();
+        assert_eq!(task.frontmatter.id, "0001");
+        assert!(task.frontmatter.blocked_by.is_empty());
     }
 
     #[test]

@@ -46,6 +46,7 @@ stint sprint remove s1 0001
 # Validation
 stint check
 stint status
+stint gates list
 ```
 
 ## Next work
@@ -56,6 +57,7 @@ separate parallel-work list.
 - tasks must be `backlog` or `todo`
 - local task blockers must be `done`
 - all other blocker types (issues, external tasks, notes) make a task blocked
+- matching `.stint/gates/*.md` files add inherited blockers without editing each task
 - sprint order is priority order
 - tasks whose `area` overlaps with `in-progress` work are hidden by default
 - `stint next --claim` marks the top ready task `in-progress`
@@ -105,6 +107,29 @@ Non-obvious constraints, prior attempts, things that will bite you.
 | `../path:NNNN` | task in a sibling local directory |
 | `../path@N` | issue in a sibling local directory |
 | quoted string | free-text blocker note |
+
+## Gate format
+
+Gates apply inherited blockers to matching tasks without copying `blocked_by`
+into each task file.
+
+```markdown
+---
+id: v2-after-v1
+applies_to:
+  tags: ["v2"]
+blocked_by:
+  - 0030
+  - 0031
+reason: "v2 work starts after v1 release hardening"
+---
+```
+
+Tasks match a gate when any task tag appears in `applies_to.tags`. `stint next`,
+`stint list --blocked`, `stint status`, and `stint check` use inherited
+blockers. Done local-task blockers are ignored. CLI output labels inherited
+blockers as `via gate <id>`, and `stint gates list` shows the gate rules and
+how many current tasks they match.
 
 ## Sprint format
 

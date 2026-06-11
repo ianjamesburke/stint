@@ -14,6 +14,32 @@ pub struct StintRepo {
 }
 
 impl StintRepo {
+    /// Create a new `.stint/` workspace directly under `root`.
+    pub fn init(root: &Path, force: bool) -> anyhow::Result<Self> {
+        let stint_dir = root.join(".stint");
+        if stint_dir.exists() && !force {
+            bail!(
+                "{} already exists; use --force to ensure missing files",
+                stint_dir.display()
+            );
+        }
+
+        let repo = StintRepo { stint_dir };
+        repo.ensure_dirs()?;
+        fs::create_dir_all(repo.gates_dir()).context("create .stint/gates/")?;
+
+        let config_path = repo.stint_dir.join("config.toml");
+        if !config_path.exists() {
+            fs::write(
+                &config_path,
+                "[project]\nname = \"\"\ndefault_sprint = \"\"\n\n[gh]\nrepo = \"\"\n",
+            )
+            .with_context(|| format!("write {}", config_path.display()))?;
+        }
+
+        Ok(repo)
+    }
+
     /// Walk up from `from` until a directory containing `.stint/` is found.
     pub fn find(from: &Path) -> anyhow::Result<Self> {
         let mut current = from.to_path_buf();

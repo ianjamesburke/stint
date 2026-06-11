@@ -51,6 +51,11 @@ fn setup() -> (TempDir, StintRepo) {
     (tmp, repo)
 }
 
+fn setup_empty_dir() -> TempDir {
+    suppress_editor();
+    TempDir::new().unwrap()
+}
+
 /// Write a raw task file into the repo's tasks dir.
 fn write_task_file(repo: &StintRepo, filename: &str, content: &str) {
     fs::write(repo.tasks_dir().join(filename), content).unwrap();
@@ -70,6 +75,67 @@ fn write_gate_file(repo: &StintRepo, filename: &str, content: &str) {
 /// Minimal valid task content.
 fn task_content(id: &str, title: &str, status: &str) -> String {
     format!("---\nid: \"{id}\"\ntitle: \"{title}\"\nstatus: {status}\n---\n")
+}
+
+// ---------------------------------------------------------------------------
+// cmd_init
+// ---------------------------------------------------------------------------
+
+#[test]
+fn init_creates_workspace_layout() {
+    let tmp = setup_empty_dir();
+    let report = cmds::cmd_init(tmp.path(), false, false, None).unwrap();
+
+    assert_eq!(report.repo, tmp.path().join(".stint"));
+    assert!(tmp.path().join(".stint/tasks").is_dir());
+    assert!(tmp.path().join(".stint/sprints").is_dir());
+    assert!(tmp.path().join(".stint/gates").is_dir());
+    assert!(tmp.path().join(".stint/config.toml").is_file());
+}
+
+#[test]
+fn init_refuses_existing_workspace_without_force() {
+    let tmp = setup_empty_dir();
+    cmds::cmd_init(tmp.path(), false, false, None).unwrap();
+
+    assert!(cmds::cmd_init(tmp.path(), false, false, None).is_err());
+}
+
+#[test]
+fn init_force_is_idempotent() {
+    let tmp = setup_empty_dir();
+    cmds::cmd_init(tmp.path(), false, false, None).unwrap();
+    let report = cmds::cmd_init(tmp.path(), true, false, None).unwrap();
+
+    assert_eq!(report.repo, tmp.path().join(".stint"));
+    assert!(tmp.path().join(".stint/tasks").is_dir());
+}
+
+#[test]
+fn github_import_creates_tasks_and_skips_existing_issue() {
+    let (_tmp, repo) = setup();
+    write_task_file(
+        &repo,
+        "0001-existing.md",
+        "---\nid: \"0001\"\ntitle: \"Existing\"\nstatus: backlog\ngh_issue: [7]\n---\n",
+    );
+    let issues = cmds::parse_github_issues_json(
+        br#"[
+          {"number": 7, "title": "Existing issue", "body": "old", "labels": []},
+          {"number": 8, "title": "Fix auth flow", "body": "Issue body", "labels": [{"name": "bug"}, {"name": "cli"}]}
+        ]"#,
+    )
+    .unwrap();
+
+    let report = cmds::import_github_issues(&repo, &issues).unwrap();
+
+    assert_eq!(report.imported, 1);
+    assert_eq!(report.skipped, 1);
+    let imported = fs::read_to_string(repo.tasks_dir().join("0002-fix-auth-flow.md")).unwrap();
+    assert!(imported.contains("title: \"Fix auth flow\""));
+    assert!(imported.contains("gh_issue:\n  - \"8\""));
+    assert!(imported.contains("tags:\n  - \"bug\"\n  - \"cli\""));
+    assert!(imported.contains("## GitHub Issue\n\nIssue body"));
 }
 
 // ---------------------------------------------------------------------------

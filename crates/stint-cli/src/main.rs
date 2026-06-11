@@ -26,6 +26,19 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Create a .stint workspace in the current directory.
+    Init {
+        /// Ensure missing files when .stint already exists.
+        #[arg(long)]
+        force: bool,
+        /// Import open GitHub issues through the gh CLI.
+        #[arg(long)]
+        with_github: bool,
+        /// GitHub repository override for --with-github, e.g. owner/name.
+        #[arg(long)]
+        repo: Option<String>,
+    },
+
     /// Create a new task and open $EDITOR for the body.
     Add {
         /// Task title.
@@ -229,6 +242,22 @@ fn main() {
 
 fn run(cli: Cli) -> anyhow::Result<()> {
     match cli.command {
+        Commands::Init {
+            force,
+            with_github,
+            repo,
+        } => {
+            let cwd = env::current_dir().context("get current directory")?;
+            let report = cmds::cmd_init(&cwd, force, with_github, repo.as_deref())?;
+            println!("initialized: {}", report.repo.display());
+            if with_github {
+                println!(
+                    "github import: {} imported, {} skipped",
+                    report.imported, report.skipped
+                );
+            }
+        }
+
         Commands::Add { title } => {
             let repo = find_repo()?;
             let path = cmds::cmd_add(&repo, &title)?;

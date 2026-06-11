@@ -1,16 +1,19 @@
 ---
 id: "0005"
 title: "Init flow with optional GitHub issue import"
-status: todo
+status: done
 estimate: "3h"
+actual: "3h"
+completed_at: "2026-06-11T08:36:47Z"
+blocked_by: []
+gh_issue: []
 area:
   - "cli"
 tags:
   - "init"
   - "gh-integration"
-blocked_by: []
-gh_issue: []
 ---
+
 
 ## Why
 

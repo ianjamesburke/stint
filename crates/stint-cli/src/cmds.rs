@@ -4,7 +4,7 @@
 use std::collections::HashSet;
 use std::fs;
 use std::io::{self, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{bail, Context};
@@ -28,6 +28,193 @@ use stint_core::sprint::{
 use stint_core::status::compute_status;
 
 use crate::repo::StintRepo;
+
+// ---------------------------------------------------------------------------
+// Init command
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InitReport {
+    pub repo: PathBuf,
+    pub imported: usize,
+    pub skipped: usize,
+}
+
+/// Create `.stint/` and optionally import open GitHub issues.
+pub fn cmd_init(
+    root: &Path,
+    force: bool,
+    with_github: bool,
+    github_repo: Option<&str>,
+) -> anyhow::Result<InitReport> {
+    let repo = StintRepo::init(root, force)?;
+    let mut report = InitReport {
+        repo: repo.stint_dir.clone(),
+        imported: 0,
+        skipped: 0,
+    };
+
+    if with_github {
+        let issues = fetch_open_github_issues(github_repo)?;
+        let imported = import_github_issues(&repo, &issues)?;
+        report.imported = imported.imported;
+        report.skipped = imported.skipped;
+    }
+
+    Ok(report)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GithubImportReport {
+    pub imported: usize,
+    pub skipped: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct GithubIssue {
+    number: String,
+    title: String,
+    body: String,
+    labels: Vec<String>,
+}
+
+fn fetch_open_github_issues(repo: Option<&str>) -> anyhow::Result<Vec<GithubIssue>> {
+    let mut cmd = Command::new("gh");
+    cmd.args([
+        "issue",
+        "list",
+        "--state",
+        "open",
+        "--limit",
+        "1000",
+        "--json",
+        "number,title,body,labels",
+    ]);
+    if let Some(repo) = repo {
+        cmd.args(["--repo", repo]);
+    }
+
+    let output = cmd.output().context("run gh issue list")?;
+    if !output.status.success() {
+        bail!(
+            "gh issue list failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+
+    parse_github_issues_json(&output.stdout)
+}
+
+pub(crate) fn parse_github_issues_json(bytes: &[u8]) -> anyhow::Result<Vec<GithubIssue>> {
+    let value: serde_json::Value = serde_json::from_slice(bytes).context("parse gh issue JSON")?;
+    let issues = value
+        .as_array()
+        .ok_or_else(|| anyhow::anyhow!("expected gh issue list JSON array"))?;
+
+    let mut parsed = Vec::with_capacity(issues.len());
+    for issue in issues {
+        let number = issue
+            .get("number")
+            .and_then(|v| v.as_u64())
+            .ok_or_else(|| anyhow::anyhow!("GitHub issue missing numeric number"))?
+            .to_string();
+        let title = issue
+            .get("title")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("GitHub issue {} missing title", number))?
+            .to_owned();
+        let body = issue
+            .get("body")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_owned();
+        let labels = issue
+            .get("labels")
+            .and_then(|v| v.as_array())
+            .map(|labels| {
+                labels
+                    .iter()
+                    .filter_map(|label| label.get("name").and_then(|name| name.as_str()))
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        parsed.push(GithubIssue {
+            number,
+            title,
+            body,
+            labels,
+        });
+    }
+
+    Ok(parsed)
+}
+
+pub(crate) fn import_github_issues(
+    repo: &StintRepo,
+    issues: &[GithubIssue],
+) -> anyhow::Result<GithubImportReport> {
+    repo.ensure_dirs()?;
+    let mut tasks = repo.load_tasks()?;
+    let mut seen_issues: HashSet<String> = tasks
+        .iter()
+        .flat_map(|task| task.frontmatter.gh_issue.iter().cloned())
+        .collect();
+
+    let mut imported = 0usize;
+    let mut skipped = 0usize;
+    for issue in issues {
+        if seen_issues.contains(&issue.number) {
+            skipped += 1;
+            continue;
+        }
+
+        let id = next_task_id(&tasks);
+        let filename = format!("{}-{}.md", id, title_to_slug(&issue.title));
+        let path = repo.tasks_dir().join(filename);
+        let content = github_issue_task_content(&id, issue);
+        repo.write_task(&path, &content)?;
+        let task = repo.read_task(&path)?;
+        tasks.push(task);
+        seen_issues.insert(issue.number.clone());
+        imported += 1;
+    }
+
+    Ok(GithubImportReport { imported, skipped })
+}
+
+fn github_issue_task_content(id: &str, issue: &GithubIssue) -> String {
+    let mut task = new_task_content(id, &issue.title);
+    let mut imported_fields = string_list_yaml("gh_issue", std::slice::from_ref(&issue.number));
+    if !issue.labels.is_empty() {
+        imported_fields.push_str(&string_list_yaml("tags", &issue.labels));
+    }
+    task = task.replace(
+        "---\n\n## Why",
+        &format!("{}---\n\n## Why", imported_fields),
+    );
+
+    if !issue.body.trim().is_empty() {
+        task.push_str("\n## GitHub Issue\n\n");
+        task.push_str(issue.body.trim());
+        task.push('\n');
+    }
+
+    task
+}
+
+fn string_list_yaml(key: &str, values: &[String]) -> String {
+    let mut out = format!("{}:\n", key);
+    for value in values {
+        out.push_str(&format!("  - \"{}\"\n", yaml_escape(value)));
+    }
+    out
+}
+
+fn yaml_escape(value: &str) -> String {
+    value.replace('\\', "\\\\").replace('"', "\\\"")
+}
 
 // ---------------------------------------------------------------------------
 // Task commands

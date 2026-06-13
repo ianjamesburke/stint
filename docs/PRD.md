@@ -86,19 +86,19 @@ Non-obvious constraints, prior attempts, things that will bite you.
 ```markdown
 # Sprint 12 · Jun 9–20 · goal: ship TUI skeleton
 
-- ../tasks/0001-auth-middleware.md
-- ../tasks/0004-tui-skeleton.md
-- ../tasks/0007-gh-import.md
-- ../tasks/0003-docs.md
+- [0001](../tasks/0001-auth-middleware.md)
+- [0004](../tasks/0004-tui-skeleton.md)
+- [0007](../tasks/0007-gh-import.md)
+- [0003](../tasks/0003-docs.md)
 ```
 
 - First line: `# Sprint <id> · <date range> · goal: <goal>` (parsed by core)
 - Remaining lines: ordered task entries (line order = priority order)
-- Each entry is a relative link (`../tasks/<id>-<slug>.md`) so editors can `gf`
-  straight to the task file. `stint sprint add` writes this form; `stint sprint
-  relink` migrates older files.
+- Each entry is a markdown link (`[<id>](../tasks/<id>-<slug>.md)`) — a real
+  clickable link: cmd-click in VS Code, `gf`/link-follow in Vim. `stint sprint
+  add` writes this form.
 - The task ID is extracted regardless of form — bare IDs (`0001`), slug forms
-  (`0001-auth-middleware`), and link form are all accepted
+  (`0001-auth-middleware`), plain paths, and markdown links are all accepted
 
 ---
 
@@ -128,7 +128,6 @@ Non-obvious constraints, prior attempts, things that will bite you.
 | `stint sprint add <sprint-id> <task-id>` | Append task to sprint |
 | `stint sprint remove <sprint-id> <task-id>` | Remove task from sprint |
 | `stint sprint reorder <id>` | Interactive reorder (uses $EDITOR) |
-| `stint sprint relink [<id>] [--all]` | Rewrite entries as `../tasks/<file>.md` links for editor `gf` |
 
 ### Validation
 

@@ -20,8 +20,7 @@ use stint::next::{compute_next, NextOptions, NextReport, NextTask};
 use stint::schema::{BlockedByRef, TaskStatus};
 use stint::serialize::serialize_task;
 use stint::sprint::{
-    normalize_sprint_id, numeric_prefix, relink_sprint, sprint_add_task, sprint_remove_task,
-    task_link,
+    normalize_sprint_id, numeric_prefix, sprint_add_task, sprint_remove_task, task_link,
 };
 use stint::status::compute_status;
 
@@ -1051,36 +1050,6 @@ pub fn cmd_sprint_reorder(repo: &StintRepo, id_input: &str) -> anyhow::Result<Pa
         )
     })?;
     Ok(path)
-}
-
-/// Rewrite sprint files so every task entry is a `../tasks/<filename>` link.
-///
-/// Pass `Some(id)` to relink one sprint, or `None` to relink all of them.
-/// Returns the sprint IDs that were rewritten.
-pub fn cmd_sprint_relink(repo: &StintRepo, id_input: Option<&str>) -> anyhow::Result<Vec<String>> {
-    let tasks = repo.load_tasks()?;
-    let filenames: std::collections::HashMap<String, String> = tasks
-        .iter()
-        .map(|t| (t.frontmatter.id.clone(), t.filename.clone()))
-        .collect();
-
-    let sprints = repo.load_sprints()?;
-    let targets: Vec<String> = match id_input {
-        Some(id) => vec![normalize_sprint_id(id)],
-        None => sprints.iter().map(|s| s.header.id.clone()).collect(),
-    };
-
-    let mut relinked = Vec::new();
-    for sprint_id in targets {
-        let path = repo.resolve_sprint_path(&sprint_id)?;
-        let content = repo.read_sprint_raw(&path)?;
-        let updated = relink_sprint(&content, &filenames);
-        if updated != content {
-            repo.write_sprint(&path, &updated)?;
-            relinked.push(sprint_id);
-        }
-    }
-    Ok(relinked)
 }
 
 /// Remove a task from a sprint file and clear the task's `sprint` frontmatter field.

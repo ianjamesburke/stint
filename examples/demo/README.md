@@ -4,9 +4,9 @@ A tiny, self-contained stint workspace you can poke at to see how tasks,
 sprints, and blocking relationships fit together. It plans an imaginary
 `weather` CLI across one sprint.
 
-`.stint/sprints/s1.md` lists each task as a relative link
-(`../tasks/0001-project-scaffold.md`), so opening it in Vim and pressing `gf`
-on a line jumps straight to that task file.
+`.stint/sprints/s1.md` lists each task as a markdown link
+(`[0001](../tasks/0001-project-scaffold.md)`), so it is a real clickable link:
+cmd-click in VS Code, or `gf`/link-follow in Vim, opens that task file.
 
 Run any stint command from inside this directory (stint walks up to find the
 nearest `.stint/`):

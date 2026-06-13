@@ -8,6 +8,9 @@ use crate::sprint::numeric_prefix;
 pub struct NextOptions<'a> {
     pub sprint: Option<&'a str>,
     pub include_area_conflicts: bool,
+    /// When true, backlog tasks are evaluated alongside todo tasks (appear in ready/blocked per
+    /// their blockers). Default false: backlog tasks are completely excluded (icebox).
+    pub include_backlog: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -61,7 +64,7 @@ pub fn compute_next(
     let mut claimed_areas = HashSet::new();
 
     for task in ordered {
-        if !is_candidate(task, sprint_task_ids.as_ref()) {
+        if !is_candidate(task, sprint_task_ids.as_ref(), options.include_backlog) {
             continue;
         }
 
@@ -108,21 +111,24 @@ pub fn compute_next(
     NextReport {
         ready,
         blocked,
-        bottleneck: bottleneck(
-            tasks,
-            gates,
-            &task_by_id,
-            &done_ids,
-            sprint_task_ids.as_ref(),
-        ),
+        bottleneck: bottleneck(tasks, gates, &task_by_id, &done_ids, sprint_task_ids.as_ref()),
     }
 }
 
-fn is_candidate(task: &Task, sprint_task_ids: Option<&HashSet<String>>) -> bool {
-    if !matches!(
-        task.frontmatter.status,
-        TaskStatus::Backlog | TaskStatus::Todo
-    ) {
+fn is_candidate(
+    task: &Task,
+    sprint_task_ids: Option<&HashSet<String>>,
+    include_backlog: bool,
+) -> bool {
+    let status_ok = if include_backlog {
+        matches!(
+            task.frontmatter.status,
+            TaskStatus::Backlog | TaskStatus::Todo
+        )
+    } else {
+        matches!(task.frontmatter.status, TaskStatus::Todo)
+    };
+    if !status_ok {
         return false;
     }
     if let Some(sprint_task_ids) = sprint_task_ids {
@@ -220,8 +226,18 @@ fn bottleneck(
     use crate::schema::BlockedByRef;
     let mut counts: HashMap<String, usize> = HashMap::new();
     for task in tasks {
-        if !is_candidate(task, sprint_task_ids) {
+        // Only count dependents that are active (Todo or InProgress).
+        // Backlog dependents are iced and must not inflate the bottleneck score.
+        if !matches!(
+            task.frontmatter.status,
+            TaskStatus::Todo | TaskStatus::InProgress
+        ) {
             continue;
+        }
+        if let Some(sprint_task_ids) = sprint_task_ids {
+            if !sprint_task_ids.contains(&task.frontmatter.id) {
+                continue;
+            }
         }
         let mut counted_for_task = HashSet::new();
         for blocker in effective_blockers(task, gates) {
@@ -278,6 +294,7 @@ mod tests {
             NextOptions {
                 sprint: None,
                 include_area_conflicts: false,
+                include_backlog: false,
             },
         );
         assert_eq!(
@@ -304,6 +321,7 @@ mod tests {
             NextOptions {
                 sprint: None,
                 include_area_conflicts: false,
+                include_backlog: false,
             },
         );
         assert_eq!(report.ready[0].id, "0002");
@@ -323,6 +341,7 @@ mod tests {
             NextOptions {
                 sprint: None,
                 include_area_conflicts: false,
+                include_backlog: false,
             },
         );
         assert_eq!(
@@ -347,6 +366,7 @@ mod tests {
             NextOptions {
                 sprint: Some("s1"),
                 include_area_conflicts: false,
+                include_backlog: false,
             },
         );
         assert_eq!(
@@ -373,6 +393,7 @@ mod tests {
             NextOptions {
                 sprint: None,
                 include_area_conflicts: false,
+                include_backlog: false,
             },
         );
         assert_eq!(report.bottleneck.unwrap().blocked_count, 2);
@@ -396,6 +417,7 @@ mod tests {
             NextOptions {
                 sprint: None,
                 include_area_conflicts: false,
+                include_backlog: false,
             },
         );
         assert_eq!(report.ready[0].id, "0001");
@@ -417,6 +439,7 @@ mod tests {
             NextOptions {
                 sprint: None,
                 include_area_conflicts: false,
+                include_backlog: false,
             },
         );
         assert_eq!(report.bottleneck, None);
@@ -437,6 +460,7 @@ mod tests {
             NextOptions {
                 sprint: Some("s1"),
                 include_area_conflicts: false,
+                include_backlog: false,
             },
         );
         assert_eq!(report.bottleneck.unwrap().blocked_count, 1);
@@ -457,6 +481,7 @@ mod tests {
             NextOptions {
                 sprint: None,
                 include_area_conflicts: false,
+                include_backlog: false,
             },
         );
         assert_eq!(report.bottleneck, None);
@@ -477,8 +502,91 @@ mod tests {
             NextOptions {
                 sprint: None,
                 include_area_conflicts: false,
+                include_backlog: false,
             },
         );
         assert_eq!(report.bottleneck.unwrap().id, "0001");
+    }
+
+    #[test]
+    fn backlog_excluded_from_ready_and_blocked_by_default() {
+        let tasks = vec![
+            task("0001", "A", "backlog", ""),
+            task("0002", "B", "backlog", "blocked_by: [\"0001\"]"),
+        ];
+        let report = compute_next(
+            &tasks,
+            &[],
+            &[],
+            NextOptions {
+                sprint: None,
+                include_area_conflicts: false,
+                include_backlog: false,
+            },
+        );
+        assert!(report.ready.is_empty());
+        assert!(report.blocked.is_empty());
+    }
+
+    #[test]
+    fn backlog_included_when_flag_set() {
+        let tasks = vec![
+            task("0001", "A", "backlog", ""),
+            task("0002", "B", "backlog", "blocked_by: [\"0001\"]"),
+        ];
+        let report = compute_next(
+            &tasks,
+            &[],
+            &[],
+            NextOptions {
+                sprint: None,
+                include_area_conflicts: false,
+                include_backlog: true,
+            },
+        );
+        assert_eq!(report.ready[0].id, "0001");
+        assert_eq!(report.blocked[0].id, "0002");
+    }
+
+    #[test]
+    fn bottleneck_excludes_backlog_dependents() {
+        let tasks = vec![
+            task("0001", "A", "todo", ""),
+            task("0002", "B", "backlog", "blocked_by: [\"0001\"]"),
+            task("0003", "C", "backlog", "blocked_by: [\"0001\"]"),
+        ];
+        let report = compute_next(
+            &tasks,
+            &[],
+            &[],
+            NextOptions {
+                sprint: None,
+                include_area_conflicts: false,
+                include_backlog: false,
+            },
+        );
+        assert_eq!(report.bottleneck, None);
+    }
+
+    #[test]
+    fn bottleneck_counts_todo_dependents() {
+        let tasks = vec![
+            task("0001", "A", "todo", ""),
+            task("0002", "B", "todo", "blocked_by: [\"0001\"]"),
+            task("0003", "C", "backlog", "blocked_by: [\"0001\"]"),
+        ];
+        let report = compute_next(
+            &tasks,
+            &[],
+            &[],
+            NextOptions {
+                sprint: None,
+                include_area_conflicts: false,
+                include_backlog: false,
+            },
+        );
+        let bn = report.bottleneck.unwrap();
+        assert_eq!(bn.id, "0001");
+        assert_eq!(bn.blocked_count, 1);
     }
 }

@@ -721,7 +721,7 @@ fn next_returns_ready_tasks_without_area_conflicts() {
         "---\nid: \"0003\"\ntitle: \"Ready\"\nstatus: todo\narea: [docs]\n---\n",
     );
 
-    let report = cmds::cmd_next(&repo, None, false, false, None).unwrap();
+    let report = cmds::cmd_next(&repo, None, false, false, false, None).unwrap();
     assert_eq!(report.ready.len(), 1);
     assert_eq!(report.ready[0].id, "0003");
 }
@@ -745,7 +745,7 @@ fn next_claim_sets_first_ready_task_in_progress() {
         "---\nid: \"0002\"\ntitle: \"First\"\nstatus: todo\nsprint: \"s1\"\narea: [cli]\n---\n",
     );
 
-    let report = cmds::cmd_next(&repo, Some("s1"), false, true, None).unwrap();
+    let report = cmds::cmd_next(&repo, Some("s1"), false, false, true, None).unwrap();
     assert_eq!(report.ready[0].id, "0002");
 
     let claimed = repo
@@ -783,7 +783,7 @@ fn next_count_limits_ready_list() {
         );
     }
 
-    let report = cmds::cmd_next(&repo, None, false, false, Some(2)).unwrap();
+    let report = cmds::cmd_next(&repo, None, false, false, false, Some(2)).unwrap();
     // All four are ready; count does not filter the report, it's a display hint.
     // The report should contain all ready tasks; display truncates.
     assert_eq!(report.ready.len(), 4);
@@ -803,7 +803,7 @@ fn next_count_claim_marks_n_tasks_in_progress() {
         );
     }
 
-    let _ = cmds::cmd_next(&repo, None, false, true, Some(2)).unwrap();
+    let _ = cmds::cmd_next(&repo, None, false, false, true, Some(2)).unwrap();
 
     for i in 1u32..=2 {
         let t = repo
@@ -831,7 +831,7 @@ fn next_json_output_is_valid() {
         "---\nid: \"0001\"\ntitle: \"A task\"\nstatus: todo\narea: [cli]\ngh_issue: [42]\n---\n",
     );
 
-    let report = cmds::cmd_next(&repo, None, false, false, None).unwrap();
+    let report = cmds::cmd_next(&repo, None, false, false, false, None).unwrap();
     // Capture JSON output via a simple structural check on the report fields.
     assert_eq!(report.ready[0].id, "0001");
     assert_eq!(report.ready[0].gh_issue, vec!["42"]);

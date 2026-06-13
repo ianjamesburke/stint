@@ -140,6 +140,9 @@ enum Commands {
         /// Include tasks whose area conflicts with in-progress work.
         #[arg(long)]
         include_area_conflicts: bool,
+        /// Include backlog tasks alongside todo tasks (opt-in; default excludes backlog).
+        #[arg(long)]
+        include_backlog: bool,
         /// Mark the top ready task(s) as in-progress (atomic with count).
         #[arg(long)]
         claim: bool,
@@ -149,6 +152,30 @@ enum Commands {
         /// Output as JSON for agent/orchestrator consumption.
         #[arg(long)]
         json: bool,
+    },
+
+    /// Promote backlog tasks to todo (move out of icebox into the ready pool).
+    Ready {
+        /// Task ID(s) to promote. Omit to use --sprint or --tag selectors.
+        ids: Vec<String>,
+        /// Promote all backlog tasks in this sprint.
+        #[arg(long)]
+        sprint: Option<String>,
+        /// Promote all backlog tasks with this tag.
+        #[arg(long)]
+        tag: Option<String>,
+    },
+
+    /// Send todo tasks back to backlog (move into icebox).
+    Defer {
+        /// Task ID(s) to defer. Omit to use --sprint or --tag selectors.
+        ids: Vec<String>,
+        /// Defer all todo tasks in this sprint.
+        #[arg(long)]
+        sprint: Option<String>,
+        /// Defer all todo tasks with this tag.
+        #[arg(long)]
+        tag: Option<String>,
     },
 
     /// Sprint management sub-commands.
@@ -363,6 +390,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Commands::Next {
             sprint,
             include_area_conflicts,
+            include_backlog,
             claim,
             count,
             json,
@@ -372,6 +400,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 &repo,
                 sprint.as_deref(),
                 include_area_conflicts,
+                include_backlog,
                 claim,
                 count,
             )?;
@@ -379,6 +408,22 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 cmds::print_next_json(&repo, &report, claim, count);
             } else {
                 cmds::print_next(&report, claim, count);
+            }
+        }
+
+        Commands::Ready { ids, sprint, tag } => {
+            let repo = find_repo()?;
+            let paths = cmds::cmd_ready(&repo, &ids, sprint.as_deref(), tag.as_deref())?;
+            for path in paths {
+                println!("ready: {}", path.display());
+            }
+        }
+
+        Commands::Defer { ids, sprint, tag } => {
+            let repo = find_repo()?;
+            let paths = cmds::cmd_defer(&repo, &ids, sprint.as_deref(), tag.as_deref())?;
+            for path in paths {
+                println!("deferred: {}", path.display());
             }
         }
 

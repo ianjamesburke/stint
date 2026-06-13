@@ -23,7 +23,11 @@ pub struct NextTask {
     pub gh_issue: Vec<String>,
     pub filename: String,
     pub blockers: Vec<BlockedByRef>,
+    /// IDs of in-progress tasks whose area this task shares (resource busy).
     pub area_conflicts: Vec<String>,
+    /// IDs of earlier ready tasks selected this run whose area this task shares
+    /// (would collide if both started together).
+    pub selected_conflicts: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -52,7 +56,8 @@ pub fn compute_next(tasks: &[Task], sprints: &[Sprint], options: NextOptions<'_>
 
     let mut ready = Vec::new();
     let mut blocked = Vec::new();
-    let mut claimed_areas = HashSet::new();
+    // area name -> id of the ready task that first claimed it this run.
+    let mut claimed_areas: HashMap<String, String> = HashMap::new();
 
     for task in ordered {
         if !is_candidate(task, sprint_task_ids.as_ref(), options.include_backlog) {
@@ -64,6 +69,15 @@ pub fn compute_next(tasks: &[Task], sprints: &[Sprint], options: NextOptions<'_>
         area_conflicts.sort();
         area_conflicts.dedup();
 
+        let mut selected_conflicts: Vec<String> = task
+            .frontmatter
+            .area
+            .iter()
+            .filter_map(|area| claimed_areas.get(area).cloned())
+            .collect();
+        selected_conflicts.sort();
+        selected_conflicts.dedup();
+
         let row = NextTask {
             id: task.frontmatter.id.clone(),
             title: task.frontmatter.title.clone(),
@@ -74,6 +88,7 @@ pub fn compute_next(tasks: &[Task], sprints: &[Sprint], options: NextOptions<'_>
             filename: task.filename.clone(),
             blockers: blockers.clone(),
             area_conflicts: area_conflicts.clone(),
+            selected_conflicts: selected_conflicts.clone(),
         };
 
         if !blockers.is_empty() {
@@ -81,20 +96,17 @@ pub fn compute_next(tasks: &[Task], sprints: &[Sprint], options: NextOptions<'_>
             continue;
         }
 
-        let conflicts_with_selected = task
-            .frontmatter
-            .area
-            .iter()
-            .any(|area| claimed_areas.contains(area));
         if !options.include_area_conflicts
-            && (!area_conflicts.is_empty() || conflicts_with_selected)
+            && (!area_conflicts.is_empty() || !selected_conflicts.is_empty())
         {
             blocked.push(row);
             continue;
         }
 
         for area in &task.frontmatter.area {
-            claimed_areas.insert(area.clone());
+            claimed_areas
+                .entry(area.clone())
+                .or_insert_with(|| task.frontmatter.id.clone());
         }
         ready.push(row);
     }
@@ -341,6 +353,29 @@ mod tests {
             vec!["0003"]
         );
         assert_eq!(report.blocked[0].area_conflicts, vec!["0001"]);
+    }
+
+    #[test]
+    fn area_conflict_with_selected_ready_task_is_attributed() {
+        // No in-progress work: 0001 and 0002 share area cli. 0001 is selected
+        // ready; 0002 is blocked, attributed to 0001 (not an in-progress task).
+        let tasks = vec![
+            task("0001", "A", "todo", "area: [cli]"),
+            task("0002", "B", "todo", "area: [cli]"),
+        ];
+        let report = compute_next(
+            &tasks,
+            &[],
+            NextOptions {
+                sprint: None,
+                include_area_conflicts: false,
+                include_backlog: false,
+            },
+        );
+        assert_eq!(report.ready[0].id, "0001");
+        assert_eq!(report.blocked[0].id, "0002");
+        assert!(report.blocked[0].area_conflicts.is_empty());
+        assert_eq!(report.blocked[0].selected_conflicts, vec!["0001"]);
     }
 
     #[test]

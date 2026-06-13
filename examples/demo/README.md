@@ -25,7 +25,7 @@ stint show 0001  # full task detail
 0001 scaffold ──┬─> 0002 config loader
                 ├─> 0003 http client ──┬─> 0005 render forecast
                 ├─> 0004 cli args ─────┘
-                └─> 0006 caching (backlog / iced)
+                └─> 0006 caching (backlog)
 0007 readme (done)
 ```
 
@@ -36,7 +36,7 @@ stint show 0001  # full task detail
 | 0003 | todo     | 0001       | Blocked                      |
 | 0004 | todo     | 0001       | Blocked                      |
 | 0005 | todo     | 0003, 0004 | Blocked                      |
-| 0006 | backlog  | 0003       | Iced (excluded entirely)     |
+| 0006 | backlog  | 0003       | backlog (excluded from next)  |
 | 0007 | done     | —          | —                            |
 
 ## What it demonstrates

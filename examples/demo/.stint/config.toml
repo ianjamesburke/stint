@@ -1,0 +1,6 @@
+[project]
+name = "weather-cli"
+default_sprint = "s1"
+
+[gh]
+repo = ""

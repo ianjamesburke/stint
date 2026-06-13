@@ -3,7 +3,7 @@ use serde::Deserialize;
 use thiserror::Error;
 
 use crate::duration::Duration;
-use crate::schema::{BlockedByRef, Gate, GateAppliesTo, Task, TaskFrontmatter, TaskStatus};
+use crate::schema::{BlockedByRef, Task, TaskFrontmatter, TaskStatus};
 
 /// Errors that can occur while parsing a task file.
 #[derive(Debug, Error, PartialEq)]
@@ -75,21 +75,6 @@ struct RawFrontmatter {
     gh_issue: Option<serde_yaml::Value>,
     #[serde(default)]
     area: Option<OneOrMany<String>>,
-    #[serde(default)]
-    tags: Option<OneOrMany<String>>,
-}
-
-#[derive(Deserialize, Debug)]
-struct RawGateFrontmatter {
-    id: Option<String>,
-    applies_to: Option<RawGateAppliesTo>,
-    #[serde(default)]
-    blocked_by: Option<serde_yaml::Value>,
-    reason: Option<String>,
-}
-
-#[derive(Deserialize, Debug)]
-struct RawGateAppliesTo {
     #[serde(default)]
     tags: Option<OneOrMany<String>>,
 }
@@ -185,53 +170,6 @@ pub fn parse_task(content: &str, filename: &str) -> Result<Task, ParseError> {
     Ok(Task {
         frontmatter,
         body: body.to_owned(),
-        filename: filename.to_owned(),
-    })
-}
-
-/// Parse a gate file from its string content and filename.
-pub fn parse_gate(content: &str, filename: &str) -> Result<Gate, ParseError> {
-    let (frontmatter_str, _body) = split_frontmatter(content)?;
-
-    let raw: RawGateFrontmatter =
-        serde_yaml::from_str(frontmatter_str).map_err(|e| ParseError::Yaml(e.to_string()))?;
-
-    let id = raw
-        .id
-        .filter(|s| !s.is_empty())
-        .ok_or(ParseError::MissingField("id"))?;
-
-    let applies_to = raw
-        .applies_to
-        .ok_or(ParseError::MissingField("applies_to"))?;
-    let tags = applies_to
-        .tags
-        .map(|tags| tags.into_vec())
-        .unwrap_or_default();
-    if tags.is_empty() {
-        return Err(ParseError::InvalidField {
-            field: "applies_to",
-            reason: "expected at least one tag".to_owned(),
-        });
-    }
-
-    let blocked_by = raw
-        .blocked_by
-        .map(parse_blocked_by_value)
-        .transpose()?
-        .unwrap_or_default();
-    if blocked_by.is_empty() {
-        return Err(ParseError::InvalidField {
-            field: "blocked_by",
-            reason: "expected at least one blocker".to_owned(),
-        });
-    }
-
-    Ok(Gate {
-        id,
-        applies_to: GateAppliesTo { tags },
-        blocked_by,
-        reason: raw.reason.filter(|s| !s.is_empty()),
         filename: filename.to_owned(),
     })
 }
@@ -421,23 +359,6 @@ So users can authenticate.
         assert_eq!(fm.area, vec!["backend"]);
         assert_eq!(fm.tags, vec!["security", "auth"]);
         assert!(task.body.contains("## Why"));
-    }
-
-    #[test]
-    fn parse_tag_gate() {
-        let gate = parse_gate(
-            "---\nid: v2-after-v1\napplies_to:\n  tags: [\"v2\"]\nblocked_by:\n  - 0030\nreason: \"v2 waits on v1\"\n---\n",
-            "v2-after-v1.md",
-        )
-        .unwrap();
-
-        assert_eq!(gate.id, "v2-after-v1");
-        assert_eq!(gate.applies_to.tags, vec!["v2"]);
-        assert_eq!(
-            gate.blocked_by,
-            vec![BlockedByRef::LocalTask("0030".to_owned())]
-        );
-        assert_eq!(gate.reason.as_deref(), Some("v2 waits on v1"));
     }
 
     #[test]

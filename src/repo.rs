@@ -3,9 +3,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context};
-use stint_core::parse::{parse_gate, parse_task, ParseError};
-use stint_core::schema::{Gate, Sprint, Task};
-use stint_core::sprint::parse_sprint;
+use stint::parse::{parse_task, ParseError};
+use stint::schema::{Sprint, Task};
+use stint::sprint::parse_sprint;
 
 /// A handle to an initialised `.stint/` workspace.
 pub struct StintRepo {
@@ -26,7 +26,6 @@ impl StintRepo {
 
         let repo = StintRepo { stint_dir };
         repo.ensure_dirs()?;
-        fs::create_dir_all(repo.gates_dir()).context("create .stint/gates/")?;
 
         let config_path = repo.stint_dir.join("config.toml");
         if !config_path.exists() {
@@ -68,11 +67,6 @@ impl StintRepo {
     /// Path to the sprints directory.
     pub fn sprints_dir(&self) -> PathBuf {
         self.stint_dir.join("sprints")
-    }
-
-    /// Path to the gates directory.
-    pub fn gates_dir(&self) -> PathBuf {
-        self.stint_dir.join("gates")
     }
 
     /// Ensure the `tasks/` and `sprints/` sub-directories exist.
@@ -147,51 +141,13 @@ impl StintRepo {
         Ok(sprints)
     }
 
-    pub fn load_gates(&self) -> anyhow::Result<Vec<Gate>> {
-        let (gates, errors) = self.load_gates_with_errors()?;
-        for error in errors {
-            eprintln!("warning: skip {}: {}", error.path.display(), error.error);
-        }
-        Ok(gates)
-    }
-
-    pub fn load_gates_with_errors(&self) -> anyhow::Result<(Vec<Gate>, Vec<TaskParseError>)> {
-        let dir = self.gates_dir();
-        if !dir.exists() {
-            return Ok((vec![], vec![]));
-        }
-        let mut gates = Vec::new();
-        let mut errors = Vec::new();
-        for entry in fs::read_dir(&dir).context("read .stint/gates/")? {
-            let entry = entry.context("read dir entry")?;
-            let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) != Some("md") {
-                continue;
-            }
-            let filename = path
-                .file_name()
-                .ok_or_else(|| anyhow::anyhow!("path has no filename: {}", path.display()))?
-                .to_string_lossy()
-                .into_owned();
-            let content =
-                fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
-            match parse_gate(&content, &filename) {
-                Ok(gate) => gates.push(gate),
-                Err(error) => errors.push(TaskParseError { path, error }),
-            }
-        }
-        gates.sort_by(|a, b| a.id.cmp(&b.id));
-        errors.sort_by(|a, b| a.path.cmp(&b.path));
-        Ok((gates, errors))
-    }
-
     /// Resolve a user-supplied task ID fragment to a full path on disk.
     ///
     /// The numeric prefix is extracted, padded to 4 digits, then matched
     /// against filenames in `.stint/tasks/`.  Returns an error if zero or
     /// more than one match is found.
     pub fn resolve_task_path(&self, id_input: &str) -> anyhow::Result<PathBuf> {
-        let id = stint_core::mutate::resolve_id(id_input);
+        let id = stint::mutate::resolve_id(id_input);
         let dir = self.tasks_dir();
         let mut matches = Vec::new();
         if dir.exists() {
@@ -218,7 +174,7 @@ impl StintRepo {
     ///
     /// The sprint ID may omit the leading `s` (e.g. `"12"` → `"s12"`).
     pub fn resolve_sprint_path(&self, id_input: &str) -> anyhow::Result<PathBuf> {
-        let id = stint_core::sprint::normalize_sprint_id(id_input);
+        let id = stint::sprint::normalize_sprint_id(id_input);
         let path = self.sprints_dir().join(format!("{}.md", id));
         if path.exists() {
             Ok(path)

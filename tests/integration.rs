@@ -66,12 +66,6 @@ fn write_sprint_file(repo: &StintRepo, filename: &str, content: &str) {
     fs::write(repo.sprints_dir().join(filename), content).unwrap();
 }
 
-/// Write a raw gate file into the repo's gates dir.
-fn write_gate_file(repo: &StintRepo, filename: &str, content: &str) {
-    fs::create_dir_all(repo.gates_dir()).unwrap();
-    fs::write(repo.gates_dir().join(filename), content).unwrap();
-}
-
 /// Minimal valid task content.
 fn task_content(id: &str, title: &str, status: &str) -> String {
     format!("---\nid: \"{id}\"\ntitle: \"{title}\"\nstatus: {status}\n---\n")
@@ -89,7 +83,6 @@ fn init_creates_workspace_layout() {
     assert_eq!(report.repo, tmp.path().join(".stint"));
     assert!(tmp.path().join(".stint/tasks").is_dir());
     assert!(tmp.path().join(".stint/sprints").is_dir());
-    assert!(tmp.path().join(".stint/gates").is_dir());
     assert!(tmp.path().join(".stint/config.toml").is_file());
 }
 
@@ -172,20 +165,20 @@ fn find_repo_errors_when_absent() {
 
 #[test]
 fn resolve_id_full() {
-    use stint_core::mutate::resolve_id;
+    use stint::mutate::resolve_id;
     assert_eq!(resolve_id("0001"), "0001");
 }
 
 #[test]
 fn resolve_id_partial() {
-    use stint_core::mutate::resolve_id;
+    use stint::mutate::resolve_id;
     assert_eq!(resolve_id("1"), "0001");
     assert_eq!(resolve_id("42"), "0042");
 }
 
 #[test]
 fn resolve_id_with_slug() {
-    use stint_core::mutate::resolve_id;
+    use stint::mutate::resolve_id;
     assert_eq!(resolve_id("0001-auth-middleware"), "0001");
 }
 
@@ -346,49 +339,22 @@ fn list_filters_blocked_tasks() {
 }
 
 #[test]
-fn list_treats_matching_gate_blocker_as_blocked() {
+fn list_treats_direct_blocker_as_blocked() {
     let (_tmp, repo) = setup();
     write_task_file(
         &repo,
-        "0001-gate-blocker.md",
-        &task_content("0001", "Gate", "todo"),
+        "0001-blocker.md",
+        &task_content("0001", "Blocker", "todo"),
     );
     write_task_file(
         &repo,
-        "0002-v2-task.md",
-        "---\nid: \"0002\"\ntitle: \"V2\"\nstatus: todo\ntags: [\"v2\"]\n---\n",
-    );
-    write_gate_file(
-        &repo,
-        "v2-after-v1.md",
-        "---\nid: v2-after-v1\napplies_to:\n  tags: [\"v2\"]\nblocked_by:\n  - 0001\n---\n",
+        "0002-dep.md",
+        "---\nid: \"0002\"\ntitle: \"Dep\"\nstatus: todo\nblocked_by:\n  - 0001\n---\n",
     );
 
     let blocked = cmds::cmd_list(&repo, None, false, Some(true), None, None, None).unwrap();
     assert_eq!(blocked.len(), 1);
     assert_eq!(blocked[0].id, "0002");
-}
-
-#[test]
-fn gates_list_runs_with_gate_file() {
-    let (_tmp, repo) = setup();
-    write_task_file(
-        &repo,
-        "0001-gate-blocker.md",
-        &task_content("0001", "Gate", "todo"),
-    );
-    write_task_file(
-        &repo,
-        "0002-v2-task.md",
-        "---\nid: \"0002\"\ntitle: \"V2\"\nstatus: todo\ntags: [\"v2\"]\n---\n",
-    );
-    write_gate_file(
-        &repo,
-        "v2-after-v1.md",
-        "---\nid: v2-after-v1\napplies_to:\n  tags: [\"v2\"]\nblocked_by:\n  - 0001\nreason: \"v2 waits\"\n---\n",
-    );
-
-    cmds::cmd_gates_list(&repo).unwrap();
 }
 
 #[test]
@@ -562,7 +528,7 @@ fn start_restart_replaces_started_at_and_clears_completion() {
     let task = repo.read_task(&path).unwrap();
     assert_eq!(
         task.frontmatter.status,
-        stint_core::schema::TaskStatus::InProgress
+        stint::schema::TaskStatus::InProgress
     );
     assert_eq!(
         task.frontmatter.started_at.as_deref(),
@@ -585,7 +551,7 @@ fn done_computes_actual_from_started_at() {
     let task = repo.read_task(&path).unwrap();
     assert_eq!(
         task.frontmatter.actual,
-        Some(stint_core::duration::Duration::from_minutes(90))
+        Some(stint::duration::Duration::from_minutes(90))
     );
     assert_eq!(
         task.frontmatter.completed_at.as_deref(),
@@ -613,7 +579,7 @@ fn done_uses_started_at_override_when_missing() {
     let task = repo.read_task(&path).unwrap();
     assert_eq!(
         task.frontmatter.actual,
-        Some(stint_core::duration::Duration::from_minutes(45))
+        Some(stint::duration::Duration::from_minutes(45))
     );
     assert_eq!(
         task.frontmatter.started_at.as_deref(),
@@ -641,7 +607,7 @@ fn done_with_actual_records_started_at_override() {
     let task = repo.read_task(&path).unwrap();
     assert_eq!(
         task.frontmatter.actual,
-        Some(stint_core::duration::Duration::from_minutes(30))
+        Some(stint::duration::Duration::from_minutes(30))
     );
     assert_eq!(
         task.frontmatter.started_at.as_deref(),
@@ -756,12 +722,12 @@ fn next_claim_sets_first_ready_task_in_progress() {
         .unwrap();
     assert_eq!(
         claimed.frontmatter.status,
-        stint_core::schema::TaskStatus::InProgress
+        stint::schema::TaskStatus::InProgress
     );
     assert!(claimed.frontmatter.started_at.is_some());
     assert_eq!(
         untouched.frontmatter.status,
-        stint_core::schema::TaskStatus::Todo
+        stint::schema::TaskStatus::Todo
     );
 }
 
@@ -811,7 +777,7 @@ fn next_count_claim_marks_n_tasks_in_progress() {
             .unwrap();
         assert_eq!(
             t.frontmatter.status,
-            stint_core::schema::TaskStatus::InProgress
+            stint::schema::TaskStatus::InProgress
         );
         assert!(t.frontmatter.started_at.is_some());
     }
@@ -819,7 +785,7 @@ fn next_count_claim_marks_n_tasks_in_progress() {
     let t3 = repo
         .read_task(&repo.resolve_task_path("0003").unwrap())
         .unwrap();
-    assert_eq!(t3.frontmatter.status, stint_core::schema::TaskStatus::Todo);
+    assert_eq!(t3.frontmatter.status, stint::schema::TaskStatus::Todo);
 }
 
 #[test]
@@ -975,11 +941,11 @@ fn done_then_log_round_trips_cleanly() {
     let task = repo.read_task(&path).unwrap();
     assert_eq!(
         task.frontmatter.status,
-        stint_core::schema::TaskStatus::Done
+        stint::schema::TaskStatus::Done
     );
     assert_eq!(
         task.frontmatter.actual,
-        Some(stint_core::duration::Duration::from_minutes(120))
+        Some(stint::duration::Duration::from_minutes(120))
     );
     assert!(task.body.contains("Body text."));
 }
@@ -998,11 +964,11 @@ fn done_without_prior_log_records_actual() {
     let task = repo.read_task(&path).unwrap();
     assert_eq!(
         task.frontmatter.status,
-        stint_core::schema::TaskStatus::Done
+        stint::schema::TaskStatus::Done
     );
     assert_eq!(
         task.frontmatter.actual,
-        Some(stint_core::duration::Duration::from_minutes(180))
+        Some(stint::duration::Duration::from_minutes(180))
     );
 }
 

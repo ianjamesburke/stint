@@ -1,0 +1,19 @@
+---
+id: "0007"
+title: "Write the project README"
+status: done
+estimate: "30m"
+actual: "20m"
+sprint: "s1"
+area:
+  - "docs"
+tags:
+  - "docs"
+---
+
+One-paragraph README with install and usage.
+
+## Why
+
+A completed, unblocked chore. Included so the demo shows a `done` task and so
+sprint progress (`stint status`) reports something finished.

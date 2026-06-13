@@ -6,9 +6,9 @@ use std::collections::{HashMap, HashSet};
 
 use thiserror::Error;
 
-use crate::gate::effective_blockers;
-use crate::schema::{BlockedByRef, Gate, Sprint, Task};
+use crate::schema::{BlockedByRef, Sprint, Task, TaskStatus};
 use crate::sprint::numeric_prefix;
+use crate::state::done_ids;
 
 /// A single validation violation found by `check`.
 #[derive(Debug, Error, PartialEq)]
@@ -119,14 +119,21 @@ pub enum CheckError {
         file_b: String,
     },
 
-    /// A gate's `id` field does not match the filename stem.
+    // Rule 11 — task state machine
+    /// A task is `in-progress` or `done` while still having unresolved
+    /// local-task blockers. Only `backlog`/`todo` tasks may carry active
+    /// blockers; starting or completing a blocked task is contradictory.
     #[error(
-        "gate {gate_id}: id field {id_field:?} does not match filename stem {filename_stem:?}"
+        "task {task_id}: status '{status}' but blocked by unresolved task(s) {blockers:?}; \
+         only backlog/todo tasks may have active blockers"
     )]
-    GateIdFilenameMismatch {
-        gate_id: String,
-        id_field: String,
-        filename_stem: String,
+    BlockedTaskNotPending {
+        /// Task ID.
+        task_id: String,
+        /// The offending status (`in-progress` or `done`).
+        status: String,
+        /// The unresolved local-task blocker IDs.
+        blockers: Vec<String>,
     },
 }
 
@@ -138,7 +145,7 @@ pub enum CheckError {
 ///
 /// `tasks` is the full list of parsed tasks; `sprints` is the full list of
 /// parsed sprint index files.  Returns an empty `Vec` when everything is valid.
-pub fn check(tasks: &[Task], sprints: &[Sprint], gates: &[Gate]) -> Vec<CheckError> {
+pub fn check(tasks: &[Task], sprints: &[Sprint]) -> Vec<CheckError> {
     let mut errors: Vec<CheckError> = Vec::new();
 
     let task_id_to_file: HashMap<&str, &str> = tasks
@@ -148,6 +155,7 @@ pub fn check(tasks: &[Task], sprints: &[Sprint], gates: &[Gate]) -> Vec<CheckErr
 
     let known_task_ids: HashSet<&str> = task_id_to_file.keys().copied().collect();
     let known_sprint_ids: HashSet<&str> = sprints.iter().map(|s| s.header.id.as_str()).collect();
+    let done = done_ids(tasks);
 
     // Rule 10 — duplicate IDs
     check_duplicate_ids(tasks, &mut errors);
@@ -187,17 +195,31 @@ pub fn check(tasks: &[Task], sprints: &[Sprint], gates: &[Gate]) -> Vec<CheckErr
                 });
             }
         }
-    }
 
-    for gate in gates {
-        check_gate_id_filename_match(gate, &mut errors);
-        for r in &gate.blocked_by {
-            validate_blocker_ref(
-                &format!("gate:{}", gate.id),
-                r,
-                &known_task_ids,
-                &mut errors,
-            );
+        // Rule 11 — task state machine: in-progress/done tasks may not carry
+        // unresolved local-task blockers.
+        if matches!(
+            task.frontmatter.status,
+            TaskStatus::InProgress | TaskStatus::Done
+        ) {
+            let unresolved: Vec<String> = task
+                .frontmatter
+                .blocked_by
+                .iter()
+                .filter_map(|r| match r {
+                    BlockedByRef::LocalTask(ref_id) if !done.contains(ref_id.as_str()) => {
+                        Some(ref_id.clone())
+                    }
+                    _ => None,
+                })
+                .collect();
+            if !unresolved.is_empty() {
+                errors.push(CheckError::BlockedTaskNotPending {
+                    task_id: id.to_owned(),
+                    status: task.frontmatter.status.to_string(),
+                    blockers: unresolved,
+                });
+            }
         }
     }
 
@@ -215,7 +237,7 @@ pub fn check(tasks: &[Task], sprints: &[Sprint], gates: &[Gate]) -> Vec<CheckErr
     }
 
     // Rule 8 — circular blocked_by (local task refs only)
-    check_cycles(tasks, gates, &mut errors);
+    check_cycles(tasks, &mut errors);
 
     errors
 }
@@ -315,28 +337,19 @@ fn check_id_filename_match(task: &Task, errors: &mut Vec<CheckError>) {
     }
 }
 
-fn check_gate_id_filename_match(gate: &Gate, errors: &mut Vec<CheckError>) {
-    let filename_stem = gate.filename.trim_end_matches(".md");
-    if gate.id != filename_stem {
-        errors.push(CheckError::GateIdFilenameMismatch {
-            gate_id: gate.id.clone(),
-            id_field: gate.id.clone(),
-            filename_stem: filename_stem.to_owned(),
-        });
-    }
-}
-
 /// Rule 8 — detect cycles in the local `blocked_by` graph (DFS colouring).
-fn check_cycles(tasks: &[Task], gates: &[Gate], errors: &mut Vec<CheckError>) {
+fn check_cycles(tasks: &[Task], errors: &mut Vec<CheckError>) {
     // Only traverse LocalTask refs — external refs can't form local cycles.
     let id_to_local_blockers: HashMap<&str, Vec<String>> = tasks
         .iter()
         .map(|t| {
-            let local: Vec<String> = effective_blockers(t, gates)
-                .into_iter()
+            let local: Vec<String> = t
+                .frontmatter
+                .blocked_by
+                .iter()
                 .filter_map(|r| {
                     if let BlockedByRef::LocalTask(id) = r {
-                        Some(id)
+                        Some(id.clone())
                     } else {
                         None
                     }
@@ -393,7 +406,7 @@ fn check_cycles(tasks: &[Task], gates: &[Gate], errors: &mut Vec<CheckError>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::parse::{parse_gate, parse_task};
+    use crate::parse::parse_task;
     use crate::sprint::parse_sprint;
 
     fn make_task(id: &str, title: &str, extra: &str) -> Task {
@@ -432,7 +445,7 @@ mod tests {
             body: String::new(),
             filename: "0001-slug.md".to_owned(),
         };
-        let errors = check(&[task], &[], &[]);
+        let errors = check(&[task], &[]);
         assert!(errors
             .iter()
             .any(|e| matches!(e, CheckError::MissingRequiredField { field: "id", .. })));
@@ -459,7 +472,7 @@ mod tests {
             body: String::new(),
             filename: "0001-slug.md".to_owned(),
         };
-        let errors = check(&[task], &[], &[]);
+        let errors = check(&[task], &[]);
         assert!(errors
             .iter()
             .any(|e| matches!(e, CheckError::MissingRequiredField { field: "title", .. })));
@@ -471,32 +484,16 @@ mod tests {
             make_task("0001", "Task A", ""),
             make_task("0002", "Task B", "blocked_by: [\"0001\"]"),
         ];
-        assert!(check(&tasks, &[], &[]).is_empty());
+        assert!(check(&tasks, &[]).is_empty());
     }
 
     #[test]
     fn unresolved_blocked_by() {
         let tasks = vec![make_task("0001", "Task A", "blocked_by: [\"9999\"]")];
-        let errors = check(&tasks, &[], &[]);
+        let errors = check(&tasks, &[]);
         assert!(errors.iter().any(
             |e| matches!(e, CheckError::UnresolvedBlockedBy { ref_id, .. } if ref_id == "9999")
         ));
-    }
-
-    #[test]
-    fn gate_unresolved_blocked_by() {
-        let tasks = vec![make_task("0001", "Task A", "tags: [\"v2\"]")];
-        let gate = parse_gate(
-            "---\nid: v2-after-v1\napplies_to:\n  tags: [\"v2\"]\nblocked_by:\n  - 9999\n---\n",
-            "v2-after-v1.md",
-        )
-        .unwrap();
-        let errors = check(&tasks, &[], &[gate]);
-        assert!(errors.iter().any(|e| matches!(
-            e,
-            CheckError::UnresolvedBlockedBy { task_id, ref_id }
-                if task_id == "gate:v2-after-v1" && ref_id == "9999"
-        )));
     }
 
     #[test]
@@ -506,7 +503,7 @@ mod tests {
             "Task A",
             "blocked_by: [\"owner/repo:0999\"]",
         )];
-        let errors = check(&tasks, &[], &[]);
+        let errors = check(&tasks, &[]);
         assert!(errors
             .iter()
             .all(|e| !matches!(e, CheckError::UnresolvedBlockedBy { .. })));
@@ -515,7 +512,7 @@ mod tests {
     #[test]
     fn external_issue_ref_passes_format_check() {
         let tasks = vec![make_task("0001", "Task A", "blocked_by: [\"acme/api@7\"]")];
-        let errors = check(&tasks, &[], &[]);
+        let errors = check(&tasks, &[]);
         assert!(errors
             .iter()
             .all(|e| !matches!(e, CheckError::InvalidBlockedByRef { .. })));
@@ -528,7 +525,7 @@ mod tests {
             "Task A",
             "blocked_by: [\"waiting for upstream\"]",
         )];
-        let errors = check(&tasks, &[], &[]);
+        let errors = check(&tasks, &[]);
         assert!(errors.is_empty());
     }
 
@@ -539,7 +536,7 @@ mod tests {
             "Task A",
             "blocked_by: [\"../plexi:0146\"]",
         )];
-        let errors = check(&tasks, &[], &[]);
+        let errors = check(&tasks, &[]);
         assert!(errors
             .iter()
             .all(|e| !matches!(e, CheckError::InvalidBlockedByRef { .. })));
@@ -548,7 +545,7 @@ mod tests {
     #[test]
     fn unresolved_sprint_reference() {
         let tasks = vec![make_task("0001", "Task A", "sprint: \"s99\"")];
-        let errors = check(&tasks, &[], &[]);
+        let errors = check(&tasks, &[]);
         assert!(errors.iter().any(
             |e| matches!(e, CheckError::UnresolvedSprint { sprint_id, .. } if sprint_id == "s99")
         ));
@@ -558,7 +555,7 @@ mod tests {
     fn sprint_references_existing_sprint() {
         let tasks = vec![make_task("0001", "Task A", "sprint: \"s1\"")];
         let sprints = vec![make_sprint(1, &["0001"])];
-        let errors = check(&tasks, &sprints, &[]);
+        let errors = check(&tasks, &sprints);
         assert!(errors
             .iter()
             .all(|e| !matches!(e, CheckError::UnresolvedSprint { .. })));
@@ -568,7 +565,7 @@ mod tests {
     fn sprint_unresolved_task() {
         let tasks = vec![make_task("0001", "Task A", "")];
         let sprints = vec![make_sprint(1, &["9999"])];
-        let errors = check(&tasks, &sprints, &[]);
+        let errors = check(&tasks, &sprints);
         assert!(errors
             .iter()
             .any(|e| matches!(e, CheckError::SprintUnresolvedTask { .. })));
@@ -578,7 +575,7 @@ mod tests {
     fn sprint_resolved_task_with_slug() {
         let tasks = vec![make_task("0001", "Task A", "")];
         let sprints = vec![make_sprint(1, &["0001-slug"])];
-        let errors = check(&tasks, &sprints, &[]);
+        let errors = check(&tasks, &sprints);
         assert!(errors
             .iter()
             .all(|e| !matches!(e, CheckError::SprintUnresolvedTask { .. })));
@@ -588,7 +585,7 @@ mod tests {
     fn circular_blocked_by() {
         let t1 = make_task("0001", "A", "blocked_by: [\"0002\"]");
         let t2 = make_task("0002", "B", "blocked_by: [\"0001\"]");
-        let errors = check(&[t1, t2], &[], &[]);
+        let errors = check(&[t1, t2], &[]);
         assert!(errors
             .iter()
             .any(|e| matches!(e, CheckError::CircularBlockedBy { .. })));
@@ -597,7 +594,7 @@ mod tests {
     #[test]
     fn self_referencing_blocked_by() {
         let task = make_task("0001", "A", "blocked_by: [\"0001\"]");
-        let errors = check(&[task], &[], &[]);
+        let errors = check(&[task], &[]);
         assert!(errors
             .iter()
             .any(|e| matches!(e, CheckError::CircularBlockedBy { .. })));
@@ -607,7 +604,7 @@ mod tests {
     fn id_filename_mismatch() {
         let content = "---\nid: \"0099\"\ntitle: \"T\"\nstatus: backlog\n---\n";
         let task = parse_task(content, "0001-slug.md").unwrap();
-        let errors = check(&[task], &[], &[]);
+        let errors = check(&[task], &[]);
         assert!(errors
             .iter()
             .any(|e| matches!(e, CheckError::IdFilenameMismatch { .. })));
@@ -618,10 +615,49 @@ mod tests {
         let t1 = make_task("0001", "A", "");
         let content = "---\nid: \"0001\"\ntitle: \"B\"\nstatus: backlog\n---\n";
         let t2 = parse_task(content, "0001-other.md").unwrap();
-        let errors = check(&[t1, t2], &[], &[]);
+        let errors = check(&[t1, t2], &[]);
         assert!(errors
             .iter()
             .any(|e| matches!(e, CheckError::DuplicateId { id, .. } if id == "0001")));
+    }
+
+    #[test]
+    fn in_progress_with_unresolved_blocker_is_error() {
+        let blocker = make_task("0001", "Blocker", "");
+        let content =
+            "---\nid: \"0002\"\ntitle: \"B\"\nstatus: in-progress\nblocked_by: [\"0001\"]\n---\n";
+        let dependent = parse_task(content, "0002-slug.md").unwrap();
+        let errors = check(&[blocker, dependent], &[]);
+        assert!(errors.iter().any(|e| matches!(
+            e,
+            CheckError::BlockedTaskNotPending { task_id, blockers, .. }
+                if task_id == "0002" && blockers == &vec!["0001".to_owned()]
+        )));
+    }
+
+    #[test]
+    fn in_progress_with_done_blocker_is_ok() {
+        let content_blocker = "---\nid: \"0001\"\ntitle: \"A\"\nstatus: done\n---\n";
+        let blocker = parse_task(content_blocker, "0001-slug.md").unwrap();
+        let content =
+            "---\nid: \"0002\"\ntitle: \"B\"\nstatus: in-progress\nblocked_by: [\"0001\"]\n---\n";
+        let dependent = parse_task(content, "0002-slug.md").unwrap();
+        let errors = check(&[blocker, dependent], &[]);
+        assert!(errors
+            .iter()
+            .all(|e| !matches!(e, CheckError::BlockedTaskNotPending { .. })));
+    }
+
+    #[test]
+    fn todo_with_unresolved_blocker_is_not_state_error() {
+        let blocker = make_task("0001", "A", "");
+        let content =
+            "---\nid: \"0002\"\ntitle: \"B\"\nstatus: todo\nblocked_by: [\"0001\"]\n---\n";
+        let dependent = parse_task(content, "0002-slug.md").unwrap();
+        let errors = check(&[blocker, dependent], &[]);
+        assert!(errors
+            .iter()
+            .all(|e| !matches!(e, CheckError::BlockedTaskNotPending { .. })));
     }
 
     #[test]
@@ -631,7 +667,7 @@ mod tests {
             "A",
             "blocked_by: [\"9999\", \"another/task:9998\"]",
         )];
-        let errors = check(&tasks, &[], &[]);
+        let errors = check(&tasks, &[]);
         // At least the unresolved local task error
         assert!(errors
             .iter()

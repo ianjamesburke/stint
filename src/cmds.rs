@@ -3,9 +3,11 @@
 /// callers handle exit codes.
 use std::collections::HashSet;
 use std::fs;
-use std::io::{self, Write};
+use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+
+use owo_colors::OwoColorize;
 
 use anyhow::{bail, Context};
 use chrono::{DateTime, SecondsFormat, Utc};
@@ -281,30 +283,80 @@ pub fn cmd_list(
     Ok(rows)
 }
 
+// ---------------------------------------------------------------------------
+// Terminal styling. Color is applied only on an interactive stdout with NO_COLOR
+// unset; piped/redirected output stays plain so it parses cleanly.
+// ---------------------------------------------------------------------------
+
+fn color_on() -> bool {
+    io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none()
+}
+
+/// Pad `state` to `width`, then color it by lifecycle.
+fn paint_state(state: &str, width: usize, on: bool) -> String {
+    let field = format!("{:<width$}", state);
+    if !on {
+        return field;
+    }
+    match state {
+        "ready" => field.green().to_string(),
+        "active" => field.cyan().bold().to_string(),
+        "blocked" => field.yellow().to_string(),
+        "done" | "archived" => field.bright_black().to_string(),
+        "backlog" => field.dimmed().to_string(),
+        _ => field,
+    }
+}
+
+fn dim(s: &str, on: bool) -> String {
+    if on {
+        s.dimmed().to_string()
+    } else {
+        s.to_owned()
+    }
+}
+
+fn bold(s: &str, on: bool) -> String {
+    if on {
+        s.bold().to_string()
+    } else {
+        s.to_owned()
+    }
+}
+
+fn paint_id(s: &str, on: bool) -> String {
+    if on {
+        s.cyan().bold().to_string()
+    } else {
+        s.to_owned()
+    }
+}
+
 /// Print a `cmd_list` result to stdout at 80 columns.
 pub fn print_list(rows: &[TaskRow]) {
     if rows.is_empty() {
         println!("(no tasks)");
         return;
     }
-    println!(
+    let on = color_on();
+    let header = format!(
         "{:<6} {:<9} {:<8} {:<6} {}",
         "ID", "STATE", "ESTIMATE", "SPRINT", "TITLE"
     );
-    println!("{}", "-".repeat(78));
+    println!("{}", dim(&header, on));
     for row in rows {
         println!(
-            "{:<6} {:<9} {:<8} {:<6} {}",
-            row.id,
-            row.state,
+            "{} {} {:<8} {:<6} {}",
+            paint_id(&format!("{:<6}", row.id), on),
+            paint_state(&row.state, 9, on),
             row.estimate.as_deref().unwrap_or("-"),
             row.sprint.as_deref().unwrap_or("-"),
             truncate(&row.title, 42),
         );
         if row.blocked && !row.blockers.is_empty() {
             println!(
-                "       blocked by {}",
-                format_blockers_inline(&row.blockers)
+                "       {}",
+                dim(&format!("blocked by {}", format_blockers_inline(&row.blockers)), on)
             );
         }
     }
@@ -829,31 +881,67 @@ pub fn print_next(report: &NextReport, claimed: bool, count: Option<usize>) {
         println!("nothing claimable");
     }
 
+    let on = color_on();
     let visible: Vec<&NextTask> = report.ready.iter().take(n).collect();
     if visible.is_empty() {
-        println!("Ready: none");
+        println!("{} {}", bold("Ready", on), dim("(none)", on));
     } else {
-        println!("Ready:");
+        println!("{} {}", bold("Ready", on), dim(&format!("({})", visible.len()), on));
         for task in &visible {
-            print_next_task(task);
+            print_next_task(task, on);
         }
     }
 
     if !report.blocked.is_empty() {
         println!();
-        println!("Blocked:");
+        println!(
+            "{} {}",
+            bold("Blocked", on),
+            dim(&format!("({})", report.blocked.len()), on)
+        );
         for task in &report.blocked {
-            print_next_task(task);
+            print_next_task(task, on);
         }
     }
 
-    if let Some(bottleneck) = &report.bottleneck {
-        println!();
-        println!("Bottleneck:");
-        println!("  {}", bottleneck.id);
-        println!("       {}", bottleneck.title);
-        println!("       blocks {} task(s)", bottleneck.blocked_count);
+    println!();
+    match &report.bottleneck {
+        Some(b) => {
+            println!(
+                "{} {} {}",
+                bold("Bottleneck:", on),
+                paint_id(&b.id, on),
+                dim(&format!("(blocks {} task(s))", b.blocked_count), on)
+            );
+            println!("  {}", b.title);
+        }
+        None => println!(
+            "{} {}",
+            bold("Bottleneck:", on),
+            dim("none (no ready task is gated by an unfinished dependency)", on)
+        ),
     }
+}
+
+/// The reason a task sits in the Blocked section, if any. Dependency blocks take
+/// precedence over area contention.
+fn blocked_reason(task: &NextTask) -> Option<String> {
+    if !task.blockers.is_empty() {
+        return Some(format!("blocked by {}", format_blockers_inline(&task.blockers)));
+    }
+    if !task.area_conflicts.is_empty() {
+        return Some(format!(
+            "area busy: {} in progress",
+            task.area_conflicts.join(", ")
+        ));
+    }
+    if !task.selected_conflicts.is_empty() {
+        return Some(format!(
+            "area taken this run by {}",
+            task.selected_conflicts.join(", ")
+        ));
+    }
+    None
 }
 
 pub fn print_next_json(repo: &StintRepo, report: &NextReport, claimed: bool, count: Option<usize>) {
@@ -909,17 +997,18 @@ fn blocker_to_json(blocker: &BlockedByRef) -> serde_json::Value {
     json!({ "ref": blocker.to_string() })
 }
 
-fn print_next_task(task: &NextTask) {
-    println!("  {}", task.id);
+fn print_next_task(task: &NextTask, on: bool) {
+    println!("  {}  {}", paint_id(&task.id, on), task.title);
     if !task.area.is_empty() {
-        println!("       areas: {}", task.area.join(", "));
+        println!("        {}", dim(&task.area.join(" · "), on));
     }
-    println!("       {}", task.title);
-    if !task.blockers.is_empty() {
-        println!(
-            "       blocked by {}",
-            format_blockers_inline(&task.blockers)
-        );
+    if let Some(reason) = blocked_reason(task) {
+        let mark = if on {
+            "✗".yellow().to_string()
+        } else {
+            "-".to_owned()
+        };
+        println!("        {} {}", mark, dim(&reason, on));
     }
 }
 

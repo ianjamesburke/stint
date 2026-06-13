@@ -34,7 +34,7 @@ impl TaskState {
     /// Lowercase display label for the state.
     pub fn as_str(self) -> &'static str {
         match self {
-            TaskState::Iced => "iced",
+            TaskState::Iced => "backlog",
             TaskState::Ready => "ready",
             TaskState::Blocked => "blocked",
             TaskState::Active => "active",
@@ -156,7 +156,7 @@ mod tests {
 
     #[test]
     fn as_str_labels() {
-        assert_eq!(TaskState::Iced.as_str(), "iced");
+        assert_eq!(TaskState::Iced.as_str(), "backlog");
         assert_eq!(TaskState::Ready.as_str(), "ready");
         assert_eq!(TaskState::Blocked.as_str(), "blocked");
         assert_eq!(TaskState::Active.as_str(), "active");

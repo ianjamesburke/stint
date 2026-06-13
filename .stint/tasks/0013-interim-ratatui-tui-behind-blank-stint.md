@@ -102,5 +102,7 @@ create one; check failures shown non-blocking in a status bar.
 
 ## References
 
+- `docs/TUI_DESIGN.md` — the full best-case design this task delivers the
+  interim path toward.
 - [[0004-tui-visualization]] — long-term Plexi PGAP version of the board.
 - `NORTH_STAR.md`, `docs/PRD.md` for vision and schema.

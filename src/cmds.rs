@@ -9,23 +9,23 @@ use std::process::Command;
 
 use anyhow::{bail, Context};
 use chrono::{DateTime, SecondsFormat, Utc};
-use stint_core::check::check;
-use stint_core::duration::Duration;
-use stint_core::gate::{
+use stint::check::check;
+use stint::duration::Duration;
+use stint::gate::{
     active_blocker_infos, active_blockers, effective_blocker_infos, gate_applies_to_task,
     BlockerInfo, BlockerSource,
 };
-use stint_core::mutate::{
+use stint::mutate::{
     add_actual, new_sprint_content, new_task_content, next_task_id, resolve_id, restart_task,
     set_actual, set_completed_at, set_started_at_if_absent, set_status, title_to_slug,
 };
-use stint_core::next::{compute_next, NextOptions, NextReport, NextTask};
-use stint_core::schema::{BlockedByRef, Task, TaskStatus};
-use stint_core::serialize::serialize_task;
-use stint_core::sprint::{
+use stint::next::{compute_next, NextOptions, NextReport, NextTask};
+use stint::schema::{BlockedByRef, Task, TaskStatus};
+use stint::serialize::serialize_task;
+use stint::sprint::{
     normalize_sprint_id, numeric_prefix, sprint_add_task, sprint_remove_task,
 };
-use stint_core::status::compute_status;
+use stint::status::compute_status;
 
 use crate::repo::StintRepo;
 
@@ -256,7 +256,7 @@ pub fn cmd_list(
         .map(|t| t.frontmatter.id.as_str())
         .collect();
 
-    let rows = stint_core::filter::filter_tasks(
+    let rows = stint::filter::filter_tasks(
         &tasks,
         status_filter,
         sprint_filter,
@@ -332,7 +332,7 @@ pub struct TaskRow {
 
 fn task_is_blocked(
     task: &Task,
-    gates: &[stint_core::schema::Gate],
+    gates: &[stint::schema::Gate],
     done_ids: &HashSet<&str>,
 ) -> bool {
     !active_blockers(task, gates, done_ids).is_empty()
@@ -610,7 +610,7 @@ fn elapsed_duration(started_at: &str, completed_at: &str) -> anyhow::Result<Dura
     Ok(Duration::from_minutes(minutes))
 }
 
-fn warn_if_variance_large(task: &stint_core::schema::Task) {
+fn warn_if_variance_large(task: &stint::schema::Task) {
     let Some(estimate) = task.frontmatter.estimate else {
         return;
     };
@@ -736,7 +736,7 @@ fn resolve_status_transition_targets(
     ids: &[String],
     sprint: Option<&str>,
     tag: Option<&str>,
-) -> anyhow::Result<Vec<(PathBuf, stint_core::schema::Task)>> {
+) -> anyhow::Result<Vec<(PathBuf, stint::schema::Task)>> {
     if !ids.is_empty() {
         let mut out = Vec::new();
         for id in ids {
@@ -1021,7 +1021,7 @@ pub fn cmd_sprint_show(repo: &StintRepo, id_input: &str) -> anyhow::Result<()> {
     let path = repo.resolve_sprint_path(id_input)?;
     let tasks = repo.load_tasks()?;
     let content = repo.read_sprint_raw(&path)?;
-    let sprint = stint_core::sprint::parse_sprint(&content)
+    let sprint = stint::sprint::parse_sprint(&content)
         .with_context(|| format!("parse {}", path.display()))?;
 
     println!("Sprint: {}", sprint.header.id);
@@ -1086,7 +1086,7 @@ pub fn cmd_sprint_reorder(repo: &StintRepo, id_input: &str) -> anyhow::Result<Pa
     open_editor(&path)?;
     // Validate the file is still parseable after manual edits.
     let content = repo.read_sprint_raw(&path)?;
-    stint_core::sprint::parse_sprint(&content).with_context(|| {
+    stint::sprint::parse_sprint(&content).with_context(|| {
         format!(
             "sprint file is no longer valid after reorder: {}",
             path.display()

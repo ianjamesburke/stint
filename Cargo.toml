@@ -1,21 +1,32 @@
-[workspace]
-members = [
-    "crates/stint-core",
-    "crates/stint-cli",
-]
-resolver = "2"
-
-[workspace.package]
+[package]
+name = "stint"
 version = "0.1.5"
 edition = "2021"
 authors = ["Ian Burke <ianjamesburke@gmail.com>"]
 license = "MIT"
 repository = "https://github.com/ianjamesburke/stint"
+description = "Git-tracked, markdown-backed sprint planning and task tracking CLI"
+readme = "README.md"
+keywords = ["cli", "sprint", "tasks", "planning", "markdown"]
+categories = ["command-line-utilities", "development-tools"]
+exclude = [".stint", ".wtp.yml", ".github", "CLAUDE.md", "install.sh", "apps", "worktrees", ".plexi-beta"]
 
-[workspace.dependencies]
+[lib]
+name = "stint"
+path = "src/lib.rs"
+
+[[bin]]
+name = "stint"
+path = "src/main.rs"
+
+[dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"
 thiserror = "1"
 anyhow = "1"
 chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4", features = ["derive"] }
+
+[dev-dependencies]
+tempfile = "3"

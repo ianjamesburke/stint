@@ -172,20 +172,20 @@ fn find_repo_errors_when_absent() {
 
 #[test]
 fn resolve_id_full() {
-    use stint_core::mutate::resolve_id;
+    use stint::mutate::resolve_id;
     assert_eq!(resolve_id("0001"), "0001");
 }
 
 #[test]
 fn resolve_id_partial() {
-    use stint_core::mutate::resolve_id;
+    use stint::mutate::resolve_id;
     assert_eq!(resolve_id("1"), "0001");
     assert_eq!(resolve_id("42"), "0042");
 }
 
 #[test]
 fn resolve_id_with_slug() {
-    use stint_core::mutate::resolve_id;
+    use stint::mutate::resolve_id;
     assert_eq!(resolve_id("0001-auth-middleware"), "0001");
 }
 
@@ -562,7 +562,7 @@ fn start_restart_replaces_started_at_and_clears_completion() {
     let task = repo.read_task(&path).unwrap();
     assert_eq!(
         task.frontmatter.status,
-        stint_core::schema::TaskStatus::InProgress
+        stint::schema::TaskStatus::InProgress
     );
     assert_eq!(
         task.frontmatter.started_at.as_deref(),
@@ -585,7 +585,7 @@ fn done_computes_actual_from_started_at() {
     let task = repo.read_task(&path).unwrap();
     assert_eq!(
         task.frontmatter.actual,
-        Some(stint_core::duration::Duration::from_minutes(90))
+        Some(stint::duration::Duration::from_minutes(90))
     );
     assert_eq!(
         task.frontmatter.completed_at.as_deref(),
@@ -613,7 +613,7 @@ fn done_uses_started_at_override_when_missing() {
     let task = repo.read_task(&path).unwrap();
     assert_eq!(
         task.frontmatter.actual,
-        Some(stint_core::duration::Duration::from_minutes(45))
+        Some(stint::duration::Duration::from_minutes(45))
     );
     assert_eq!(
         task.frontmatter.started_at.as_deref(),
@@ -641,7 +641,7 @@ fn done_with_actual_records_started_at_override() {
     let task = repo.read_task(&path).unwrap();
     assert_eq!(
         task.frontmatter.actual,
-        Some(stint_core::duration::Duration::from_minutes(30))
+        Some(stint::duration::Duration::from_minutes(30))
     );
     assert_eq!(
         task.frontmatter.started_at.as_deref(),
@@ -756,12 +756,12 @@ fn next_claim_sets_first_ready_task_in_progress() {
         .unwrap();
     assert_eq!(
         claimed.frontmatter.status,
-        stint_core::schema::TaskStatus::InProgress
+        stint::schema::TaskStatus::InProgress
     );
     assert!(claimed.frontmatter.started_at.is_some());
     assert_eq!(
         untouched.frontmatter.status,
-        stint_core::schema::TaskStatus::Todo
+        stint::schema::TaskStatus::Todo
     );
 }
 
@@ -811,7 +811,7 @@ fn next_count_claim_marks_n_tasks_in_progress() {
             .unwrap();
         assert_eq!(
             t.frontmatter.status,
-            stint_core::schema::TaskStatus::InProgress
+            stint::schema::TaskStatus::InProgress
         );
         assert!(t.frontmatter.started_at.is_some());
     }
@@ -819,7 +819,7 @@ fn next_count_claim_marks_n_tasks_in_progress() {
     let t3 = repo
         .read_task(&repo.resolve_task_path("0003").unwrap())
         .unwrap();
-    assert_eq!(t3.frontmatter.status, stint_core::schema::TaskStatus::Todo);
+    assert_eq!(t3.frontmatter.status, stint::schema::TaskStatus::Todo);
 }
 
 #[test]
@@ -975,11 +975,11 @@ fn done_then_log_round_trips_cleanly() {
     let task = repo.read_task(&path).unwrap();
     assert_eq!(
         task.frontmatter.status,
-        stint_core::schema::TaskStatus::Done
+        stint::schema::TaskStatus::Done
     );
     assert_eq!(
         task.frontmatter.actual,
-        Some(stint_core::duration::Duration::from_minutes(120))
+        Some(stint::duration::Duration::from_minutes(120))
     );
     assert!(task.body.contains("Body text."));
 }
@@ -998,11 +998,11 @@ fn done_without_prior_log_records_actual() {
     let task = repo.read_task(&path).unwrap();
     assert_eq!(
         task.frontmatter.status,
-        stint_core::schema::TaskStatus::Done
+        stint::schema::TaskStatus::Done
     );
     assert_eq!(
         task.frontmatter.actual,
-        Some(stint_core::duration::Duration::from_minutes(180))
+        Some(stint::duration::Duration::from_minutes(180))
     );
 }
 

@@ -3,9 +3,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context};
-use stint_core::parse::{parse_gate, parse_task, ParseError};
-use stint_core::schema::{Gate, Sprint, Task};
-use stint_core::sprint::parse_sprint;
+use stint::parse::{parse_gate, parse_task, ParseError};
+use stint::schema::{Gate, Sprint, Task};
+use stint::sprint::parse_sprint;
 
 /// A handle to an initialised `.stint/` workspace.
 pub struct StintRepo {
@@ -191,7 +191,7 @@ impl StintRepo {
     /// against filenames in `.stint/tasks/`.  Returns an error if zero or
     /// more than one match is found.
     pub fn resolve_task_path(&self, id_input: &str) -> anyhow::Result<PathBuf> {
-        let id = stint_core::mutate::resolve_id(id_input);
+        let id = stint::mutate::resolve_id(id_input);
         let dir = self.tasks_dir();
         let mut matches = Vec::new();
         if dir.exists() {
@@ -218,7 +218,7 @@ impl StintRepo {
     ///
     /// The sprint ID may omit the leading `s` (e.g. `"12"` → `"s12"`).
     pub fn resolve_sprint_path(&self, id_input: &str) -> anyhow::Result<PathBuf> {
-        let id = stint_core::sprint::normalize_sprint_id(id_input);
+        let id = stint::sprint::normalize_sprint_id(id_input);
         let path = self.sprints_dir().join(format!("{}.md", id));
         if path.exists() {
             Ok(path)

@@ -844,6 +844,27 @@ fn sprint_add_appends_task() {
 }
 
 #[test]
+fn sprint_add_writes_task_link_when_task_exists() {
+    let (_tmp, repo) = setup();
+    write_task_file(&repo, "0002-dep.md", &task_content("0002", "Dep", "todo"));
+    write_sprint_file(&repo, "s1.md", "# Sprint 1 \u{00B7} Jun 1-14\n\n- 0001\n");
+    cmds::cmd_sprint_add(&repo, "s1", "0002").unwrap();
+    let content = fs::read_to_string(repo.sprints_dir().join("s1.md")).unwrap();
+    assert!(content.contains("- ../tasks/0002-dep.md"));
+}
+
+#[test]
+fn sprint_relink_migrates_bare_ids_to_links() {
+    let (_tmp, repo) = setup();
+    write_task_file(&repo, "0001-scaffold.md", &task_content("0001", "Scaffold", "todo"));
+    write_sprint_file(&repo, "s1.md", "# Sprint 1 \u{00B7} Jun 1-14\n\n- 0001\n");
+    let relinked = cmds::cmd_sprint_relink(&repo, Some("s1")).unwrap();
+    assert_eq!(relinked, vec!["s1".to_owned()]);
+    let content = fs::read_to_string(repo.sprints_dir().join("s1.md")).unwrap();
+    assert!(content.contains("- ../tasks/0001-scaffold.md"));
+}
+
+#[test]
 fn sprint_remove_deletes_task() {
     let (_tmp, repo) = setup();
     write_sprint_file(

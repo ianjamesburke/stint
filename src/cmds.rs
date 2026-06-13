@@ -20,7 +20,8 @@ use stint::next::{compute_next, NextOptions, NextReport, NextTask};
 use stint::schema::{BlockedByRef, TaskStatus};
 use stint::serialize::serialize_task;
 use stint::sprint::{
-    normalize_sprint_id, numeric_prefix, sprint_add_task, sprint_remove_task,
+    normalize_sprint_id, numeric_prefix, relink_sprint, sprint_add_task, sprint_remove_task,
+    task_link,
 };
 use stint::status::compute_status;
 
@@ -1012,7 +1013,14 @@ pub fn cmd_sprint_add(repo: &StintRepo, sprint_id: &str, task_id: &str) -> anyho
     let normalized_sprint_id = normalize_sprint_id(sprint_id);
     let path = repo.resolve_sprint_path(sprint_id)?;
     let content = repo.read_sprint_raw(&path)?;
-    let updated = sprint_add_task(&content, &task_id).map_err(|e| anyhow::anyhow!("{}", e))?;
+
+    // Write the entry as a `../tasks/<filename>` link so editors can `gf` to it.
+    // Fall back to the bare ID if the task file does not exist yet.
+    let entry = match repo.resolve_task_path(&task_id) {
+        Ok(task_path) => task_link(&filename_of(&task_path)),
+        Err(_) => task_id.clone(),
+    };
+    let updated = sprint_add_task(&content, &entry).map_err(|e| anyhow::anyhow!("{}", e))?;
     repo.write_sprint(&path, &updated)?;
 
     // Keep the task's own `sprint` field in sync so filtering/status work.
@@ -1043,6 +1051,36 @@ pub fn cmd_sprint_reorder(repo: &StintRepo, id_input: &str) -> anyhow::Result<Pa
         )
     })?;
     Ok(path)
+}
+
+/// Rewrite sprint files so every task entry is a `../tasks/<filename>` link.
+///
+/// Pass `Some(id)` to relink one sprint, or `None` to relink all of them.
+/// Returns the sprint IDs that were rewritten.
+pub fn cmd_sprint_relink(repo: &StintRepo, id_input: Option<&str>) -> anyhow::Result<Vec<String>> {
+    let tasks = repo.load_tasks()?;
+    let filenames: std::collections::HashMap<String, String> = tasks
+        .iter()
+        .map(|t| (t.frontmatter.id.clone(), t.filename.clone()))
+        .collect();
+
+    let sprints = repo.load_sprints()?;
+    let targets: Vec<String> = match id_input {
+        Some(id) => vec![normalize_sprint_id(id)],
+        None => sprints.iter().map(|s| s.header.id.clone()).collect(),
+    };
+
+    let mut relinked = Vec::new();
+    for sprint_id in targets {
+        let path = repo.resolve_sprint_path(&sprint_id)?;
+        let content = repo.read_sprint_raw(&path)?;
+        let updated = relink_sprint(&content, &filenames);
+        if updated != content {
+            repo.write_sprint(&path, &updated)?;
+            relinked.push(sprint_id);
+        }
+    }
+    Ok(relinked)
 }
 
 /// Remove a task from a sprint file and clear the task's `sprint` frontmatter field.
@@ -1157,6 +1195,13 @@ pub fn open_editor(path: &std::path::Path) -> anyhow::Result<()> {
         bail!("editor exited with status {}", status);
     }
     Ok(())
+}
+
+/// The bare filename (no directory) of a task path, e.g. `0001-slug.md`.
+fn filename_of(path: &Path) -> String {
+    path.file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default()
 }
 
 fn truncate(s: &str, max: usize) -> &str {

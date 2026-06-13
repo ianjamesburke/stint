@@ -111,11 +111,18 @@ Non-obvious constraints, prior attempts, things that will bite you.
 ```markdown
 # Sprint 1 · Jun 9–20 · goal: ship v1
 
-- 0001-auth-middleware
-- 0002-tui-skeleton
+- ../tasks/0001-auth-middleware.md
+- ../tasks/0002-tui-skeleton.md
 ```
 
-Line order is priority order. Edit directly or use `stint sprint reorder`.
+Line order is priority order. Entries are relative links to the task file, so
+in an editor like Vim you can put the cursor on a line and press `gf` to jump
+straight to the task. `stint sprint add` writes this form automatically; run
+`stint sprint relink <id>` (or `--all`) to convert older bare-ID sprint files.
+
+Bare IDs (`- 0001`) and slug forms (`- 0001-auth-middleware`) are still parsed —
+the task ID is read from the entry regardless of form. Edit directly or use
+`stint sprint reorder`.
 
 ## Validation
 

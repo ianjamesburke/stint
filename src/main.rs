@@ -238,6 +238,15 @@ enum SprintCommands {
         /// Sprint ID.
         id: String,
     },
+
+    /// Rewrite task entries as `../tasks/<file>.md` links (so editors can `gf`).
+    Relink {
+        /// Sprint ID. Omit with --all to relink every sprint.
+        id: Option<String>,
+        /// Relink all sprints.
+        #[arg(long)]
+        all: bool,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -444,6 +453,18 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 let repo = find_repo()?;
                 let path = cmds::cmd_sprint_reorder(&repo, &id)?;
                 println!("reordered {}", path.display());
+            }
+            SprintCommands::Relink { id, all } => {
+                if id.is_none() && !all {
+                    anyhow::bail!("provide a sprint ID or --all");
+                }
+                let repo = find_repo()?;
+                let relinked = cmds::cmd_sprint_relink(&repo, id.as_deref())?;
+                if relinked.is_empty() {
+                    println!("nothing to relink (already linked)");
+                } else {
+                    println!("relinked: {}", relinked.join(", "));
+                }
             }
         },
 

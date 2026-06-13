@@ -86,15 +86,19 @@ Non-obvious constraints, prior attempts, things that will bite you.
 ```markdown
 # Sprint 12 · Jun 9–20 · goal: ship TUI skeleton
 
-- 0001-auth-middleware
-- 0004-tui-skeleton
-- 0007-gh-import
-- 0003-docs
+- ../tasks/0001-auth-middleware.md
+- ../tasks/0004-tui-skeleton.md
+- ../tasks/0007-gh-import.md
+- ../tasks/0003-docs.md
 ```
 
 - First line: `# Sprint <id> · <date range> · goal: <goal>` (parsed by core)
-- Remaining lines: ordered task ID list (line order = priority order)
-- Task IDs may omit the slug suffix — core matches on numeric prefix
+- Remaining lines: ordered task entries (line order = priority order)
+- Each entry is a relative link (`../tasks/<id>-<slug>.md`) so editors can `gf`
+  straight to the task file. `stint sprint add` writes this form; `stint sprint
+  relink` migrates older files.
+- The task ID is extracted regardless of form — bare IDs (`0001`), slug forms
+  (`0001-auth-middleware`), and link form are all accepted
 
 ---
 
@@ -124,6 +128,7 @@ Non-obvious constraints, prior attempts, things that will bite you.
 | `stint sprint add <sprint-id> <task-id>` | Append task to sprint |
 | `stint sprint remove <sprint-id> <task-id>` | Remove task from sprint |
 | `stint sprint reorder <id>` | Interactive reorder (uses $EDITOR) |
+| `stint sprint relink [<id>] [--all]` | Rewrite entries as `../tasks/<file>.md` links for editor `gf` |
 
 ### Validation
 

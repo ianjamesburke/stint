@@ -653,6 +653,119 @@ pub fn cmd_archive(repo: &StintRepo, id_input: &str) -> anyhow::Result<PathBuf> 
     Ok(path)
 }
 
+/// Promote backlog tasks to todo (out of icebox). Accepts explicit IDs, or a sprint/tag selector.
+pub fn cmd_ready(
+    repo: &StintRepo,
+    ids: &[String],
+    sprint: Option<&str>,
+    tag: Option<&str>,
+) -> anyhow::Result<Vec<PathBuf>> {
+    let candidates = resolve_status_transition_targets(repo, ids, sprint, tag)?;
+    let mut promoted = Vec::new();
+    for (path, mut task) in candidates {
+        match task.frontmatter.status {
+            TaskStatus::Backlog => {
+                set_status(&mut task, TaskStatus::Todo);
+                let content = serialize_task(&task);
+                repo.write_task(&path, &content)?;
+                promoted.push(path);
+            }
+            TaskStatus::Todo => {
+                // Already in the ready pool — skip silently if selected by sprint/tag,
+                // or error if the caller targeted this task explicitly by ID.
+                if !ids.is_empty() {
+                    anyhow::bail!("task {} is already todo", task.id());
+                }
+            }
+            _ => {
+                if !ids.is_empty() {
+                    anyhow::bail!(
+                        "task {} has status {}; only backlog tasks can be made ready",
+                        task.id(),
+                        task.frontmatter.status
+                    );
+                }
+            }
+        }
+    }
+    Ok(promoted)
+}
+
+/// Send todo tasks back to backlog (icebox). Accepts explicit IDs, or a sprint/tag selector.
+pub fn cmd_defer(
+    repo: &StintRepo,
+    ids: &[String],
+    sprint: Option<&str>,
+    tag: Option<&str>,
+) -> anyhow::Result<Vec<PathBuf>> {
+    let candidates = resolve_status_transition_targets(repo, ids, sprint, tag)?;
+    let mut deferred = Vec::new();
+    for (path, mut task) in candidates {
+        match task.frontmatter.status {
+            TaskStatus::Todo => {
+                set_status(&mut task, TaskStatus::Backlog);
+                let content = serialize_task(&task);
+                repo.write_task(&path, &content)?;
+                deferred.push(path);
+            }
+            TaskStatus::Backlog => {
+                // Already iced — skip silently for bulk selectors, error for explicit IDs.
+                if !ids.is_empty() {
+                    anyhow::bail!("task {} is already backlog", task.id());
+                }
+            }
+            _ => {
+                if !ids.is_empty() {
+                    anyhow::bail!(
+                        "task {} has status {}; only todo tasks can be deferred",
+                        task.id(),
+                        task.frontmatter.status
+                    );
+                }
+            }
+        }
+    }
+    Ok(deferred)
+}
+
+/// Resolve the set of tasks targeted by a ready/defer call.
+///
+/// If explicit `ids` are given they take precedence and the sprint/tag selectors are ignored.
+fn resolve_status_transition_targets(
+    repo: &StintRepo,
+    ids: &[String],
+    sprint: Option<&str>,
+    tag: Option<&str>,
+) -> anyhow::Result<Vec<(PathBuf, stint_core::schema::Task)>> {
+    if !ids.is_empty() {
+        let mut out = Vec::new();
+        for id in ids {
+            let path = repo.resolve_task_path(id)?;
+            let task = repo.read_task(&path)?;
+            out.push((path, task));
+        }
+        return Ok(out);
+    }
+
+    let tasks = repo.load_tasks()?;
+    let mut out = Vec::new();
+    for task in tasks {
+        if let Some(s) = sprint {
+            if task.frontmatter.sprint.as_deref() != Some(s) {
+                continue;
+            }
+        }
+        if let Some(t) = tag {
+            if !task.frontmatter.tags.iter().any(|tg| tg == t) {
+                continue;
+            }
+        }
+        let path = repo.resolve_task_path(&task.frontmatter.id)?;
+        out.push((path, task));
+    }
+    Ok(out)
+}
+
 /// Show or claim the next ready task(s).
 ///
 /// When `claim` is true the operation is protected by an advisory lock at
@@ -662,15 +775,16 @@ pub fn cmd_next(
     repo: &StintRepo,
     sprint: Option<&str>,
     include_area_conflicts: bool,
+    include_backlog: bool,
     claim: bool,
     count: Option<usize>,
 ) -> anyhow::Result<NextReport> {
     if claim {
         with_claim_lock(repo, || {
-            cmd_next_inner(repo, sprint, include_area_conflicts, true, count)
+            cmd_next_inner(repo, sprint, include_area_conflicts, include_backlog, true, count)
         })
     } else {
-        cmd_next_inner(repo, sprint, include_area_conflicts, false, count)
+        cmd_next_inner(repo, sprint, include_area_conflicts, include_backlog, false, count)
     }
 }
 
@@ -678,6 +792,7 @@ fn cmd_next_inner(
     repo: &StintRepo,
     sprint: Option<&str>,
     include_area_conflicts: bool,
+    include_backlog: bool,
     claim: bool,
     count: Option<usize>,
 ) -> anyhow::Result<NextReport> {
@@ -691,6 +806,7 @@ fn cmd_next_inner(
         NextOptions {
             sprint,
             include_area_conflicts,
+            include_backlog,
         },
     );
 
@@ -1087,7 +1203,9 @@ pub fn cmd_status(repo: &StintRepo) -> anyhow::Result<()> {
     let gates = repo.load_gates()?;
     let report = compute_status(&tasks, &sprints, &gates, None);
 
-    println!("Open tasks: {}", report.open_count);
+    let active_count = report.open_count.saturating_sub(report.backlog_count);
+    println!("Active:  {} (todo/in-progress)", active_count);
+    println!("Backlog: {} (icebox)", report.backlog_count);
 
     if report.blocked_tasks.is_empty() {
         println!("Blocked:    none");

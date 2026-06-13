@@ -35,9 +35,11 @@ pub struct SprintProgress {
 /// Top-level status summary returned by [`compute_status`].
 #[derive(Debug)]
 pub struct StatusReport {
-    /// Count of tasks with status backlog, todo, or in-progress.
+    /// Count of tasks with status backlog, todo, or in-progress (total open).
     pub open_count: usize,
-    /// Active tasks (non-done/archived) that have at least one blocker.
+    /// Count of tasks with status backlog (icebox only).
+    pub backlog_count: usize,
+    /// Todo+InProgress tasks that have at least one active blocker.
     pub blocked_tasks: Vec<BlockedTask>,
     /// Progress for the current sprint, if one exists.
     pub sprint_progress: Option<SprintProgress>,
@@ -63,6 +65,11 @@ pub fn compute_status(
         })
         .count();
 
+    let backlog_count = tasks
+        .iter()
+        .filter(|t| matches!(t.frontmatter.status, TaskStatus::Backlog))
+        .count();
+
     let done_ids: HashSet<&str> = tasks
         .iter()
         .filter(|t| matches!(t.frontmatter.status, TaskStatus::Done))
@@ -72,9 +79,10 @@ pub fn compute_status(
     let blocked_tasks = tasks
         .iter()
         .filter(|t| {
-            !matches!(
+            // Backlog tasks are iced; only surface blockers for active tasks.
+            matches!(
                 t.frontmatter.status,
-                TaskStatus::Done | TaskStatus::Archived
+                TaskStatus::Todo | TaskStatus::InProgress
             )
         })
         .filter_map(|t| {
@@ -138,6 +146,7 @@ pub fn compute_status(
 
     StatusReport {
         open_count,
+        backlog_count,
         blocked_tasks,
         sprint_progress,
     }
@@ -299,5 +308,31 @@ mod tests {
         let report = compute_status(&tasks, &[s1, s3], &[], None);
         let progress = report.sprint_progress.unwrap();
         assert_eq!(progress.sprint_id, "s3");
+    }
+
+    #[test]
+    fn backlog_count_reported_separately() {
+        let tasks = vec![
+            make_task_with_sprint("0001", "s1", None, None, TaskStatus::Backlog),
+            make_task_with_sprint("0002", "s1", None, None, TaskStatus::Backlog),
+            make_task_with_sprint("0003", "s1", None, None, TaskStatus::Todo),
+            make_task_with_sprint("0004", "s1", None, None, TaskStatus::Done),
+        ];
+        let report = compute_status(&tasks, &[], &[], None);
+        assert_eq!(report.backlog_count, 2);
+        assert_eq!(report.open_count, 3); // Backlog+Todo still open
+    }
+
+    #[test]
+    fn blocked_tasks_excludes_backlog() {
+        let backlog_blocked = parse_task(
+            "---\nid: \"0001\"\ntitle: \"Iced\"\nstatus: backlog\nblocked_by:\n  - \"0000\"\n---\n",
+            "0001-slug.md",
+        )
+        .unwrap();
+        let active_blocked = make_blocked_task("0002");
+        let report = compute_status(&[backlog_blocked, active_blocked], &[], &[], None);
+        assert_eq!(report.blocked_tasks.len(), 1);
+        assert_eq!(report.blocked_tasks[0].id, "0002");
     }
 }

@@ -11,7 +11,7 @@ use anyhow::{bail, Context};
 use chrono::{DateTime, SecondsFormat, Utc};
 use stint::check::check;
 use stint::duration::Duration;
-use stint::state::{active_blockers, done_ids, is_blocked};
+use stint::state::{active_blockers, classify, done_ids, is_blocked};
 use stint::mutate::{
     add_actual, new_sprint_content, new_task_content, next_task_id, resolve_id, restart_task,
     set_actual, set_completed_at, set_started_at_if_absent, set_status, title_to_slug,
@@ -271,7 +271,7 @@ pub fn cmd_list(
     .map(|t| TaskRow {
         id: t.frontmatter.id.clone(),
         title: t.frontmatter.title.clone(),
-        status: t.frontmatter.status.as_str().to_owned(),
+        state: classify(t, &done).as_str().to_owned(),
         blocked: is_blocked(t, &done),
         blockers: active_blockers(t, &done),
         estimate: t.frontmatter.estimate.map(|d| d.to_string()),
@@ -288,19 +288,18 @@ pub fn print_list(rows: &[TaskRow]) {
         return;
     }
     println!(
-        "{:<6} {:<11} {:<7} {:<8} {:<6} {}",
-        "ID", "STATUS", "BLOCKED", "ESTIMATE", "SPRINT", "TITLE"
+        "{:<6} {:<9} {:<8} {:<6} {}",
+        "ID", "STATE", "ESTIMATE", "SPRINT", "TITLE"
     );
     println!("{}", "-".repeat(78));
     for row in rows {
         println!(
-            "{:<6} {:<11} {:<7} {:<8} {:<6} {}",
+            "{:<6} {:<9} {:<8} {:<6} {}",
             row.id,
-            row.status,
-            if row.blocked { "[x]" } else { "[ ]" },
+            row.state,
             row.estimate.as_deref().unwrap_or("-"),
             row.sprint.as_deref().unwrap_or("-"),
-            truncate(&row.title, 40),
+            truncate(&row.title, 42),
         );
         if row.blocked && !row.blockers.is_empty() {
             println!(
@@ -315,7 +314,7 @@ pub fn print_list(rows: &[TaskRow]) {
 pub struct TaskRow {
     pub id: String,
     pub title: String,
-    pub status: String,
+    pub state: String,
     pub blocked: bool,
     pub blockers: Vec<BlockedByRef>,
     pub estimate: Option<String>,

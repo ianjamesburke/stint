@@ -30,6 +30,20 @@ pub enum TaskState {
     Archived,
 }
 
+impl TaskState {
+    /// Lowercase display label for the state.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            TaskState::Iced => "iced",
+            TaskState::Ready => "ready",
+            TaskState::Blocked => "blocked",
+            TaskState::Active => "active",
+            TaskState::Done => "done",
+            TaskState::Archived => "archived",
+        }
+    }
+}
+
 /// Collect the IDs of all tasks whose status is `done`.
 ///
 /// Returned as a set of borrows for cheap repeated blocker lookups.
@@ -138,5 +152,15 @@ mod tests {
             classify(&task("0007", "archived", ""), &HashSet::new()),
             TaskState::Archived
         );
+    }
+
+    #[test]
+    fn as_str_labels() {
+        assert_eq!(TaskState::Iced.as_str(), "iced");
+        assert_eq!(TaskState::Ready.as_str(), "ready");
+        assert_eq!(TaskState::Blocked.as_str(), "blocked");
+        assert_eq!(TaskState::Active.as_str(), "active");
+        assert_eq!(TaskState::Done.as_str(), "done");
+        assert_eq!(TaskState::Archived.as_str(), "archived");
     }
 }

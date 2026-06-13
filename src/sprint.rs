@@ -178,11 +178,20 @@ fn parse_task_list_entry(line: &str) -> Option<String> {
 
 /// Extract the task ID from a sprint entry, tolerant of every accepted form.
 ///
-/// `"0001"` → `"0001"`, `"0001-auth-middleware"` → `"0001"`,
-/// `"../tasks/0001-auth-middleware.md"` → `"0001"`.
+/// Markdown link `"[0001](../tasks/0001-auth.md)"` → `"0001"`, plain path
+/// `"../tasks/0001-auth.md"` → `"0001"`, `"0001-auth"` → `"0001"`,
+/// `"0001"` → `"0001"`.
 pub fn numeric_prefix(entry: &str) -> &str {
+    // For a markdown link `[label](target)`, read the ID from the target.
+    let core = match entry.find("](") {
+        Some(open) => {
+            let target = &entry[open + 2..];
+            target.strip_suffix(')').unwrap_or(target)
+        }
+        None => entry,
+    };
     // Drop any directory portion ("../tasks/0001-x.md" → "0001-x.md").
-    let base = entry.rsplit('/').next().unwrap_or(entry);
+    let base = core.rsplit('/').next().unwrap_or(core);
     // Drop the ".md" extension if present.
     let base = base.strip_suffix(".md").unwrap_or(base);
     // The ID is everything before the first '-'.
@@ -192,31 +201,11 @@ pub fn numeric_prefix(entry: &str) -> &str {
     }
 }
 
-/// The canonical sprint-file entry for a task, as a relative link from
-/// `.stint/sprints/` to `.stint/tasks/<filename>`. This is what lets editors
-/// like Vim jump straight to the task file with `gf`.
+/// The canonical sprint-file entry for a task: a markdown link from
+/// `.stint/sprints/` to `.stint/tasks/<filename>`. Markdown link syntax makes
+/// it a real, clickable link — cmd-click in VS Code, `gf`/link-follow in Vim.
 pub fn task_link(filename: &str) -> String {
-    format!("../tasks/{}", filename)
-}
-
-/// Rewrite a sprint file's task entries into `../tasks/<filename>` link form.
-///
-/// `filenames` maps task ID → on-disk filename. Entries whose ID is not in the
-/// map (unknown tasks, or non-canonical free-text lines) are left untouched, as
-/// are the header and any blank/other lines. Pure: the caller supplies the map.
-pub fn relink_sprint(content: &str, filenames: &std::collections::HashMap<String, String>) -> String {
-    let mut out = String::new();
-    for line in content.lines() {
-        if let Some(entry) = parse_task_list_entry(line) {
-            if let Some(filename) = filenames.get(numeric_prefix(&entry)) {
-                out.push_str(&format!("- {}\n", task_link(filename)));
-                continue;
-            }
-        }
-        out.push_str(line);
-        out.push('\n');
-    }
-    out
+    format!("[{}](../tasks/{})", numeric_prefix(filename), filename)
 }
 
 // ---------------------------------------------------------------------------
@@ -287,8 +276,8 @@ mod tests {
 
     #[test]
     fn sprint_add_link_entry_dedupes_by_id() {
-        // A link-form entry for a task already present (by bare id) is rejected.
-        let err = sprint_add_task(SPRINT_FILE, "../tasks/0001-auth.md").unwrap_err();
+        // A markdown-link entry for a task already present (by bare id) is rejected.
+        let err = sprint_add_task(SPRINT_FILE, "[0001](../tasks/0001-auth.md)").unwrap_err();
         assert!(matches!(err, SprintAddError::AlreadyPresent(_)));
     }
 
@@ -298,22 +287,15 @@ mod tests {
         assert_eq!(numeric_prefix("0001-auth-middleware"), "0001");
         assert_eq!(numeric_prefix("../tasks/0001-auth-middleware.md"), "0001");
         assert_eq!(numeric_prefix("tasks/0042-x.md"), "0042");
+        assert_eq!(numeric_prefix("[0001](../tasks/0001-auth-middleware.md)"), "0001");
     }
 
     #[test]
-    fn relink_sprint_rewrites_known_entries_only() {
-        let mut filenames = std::collections::HashMap::new();
-        filenames.insert("0001".to_owned(), "0001-auth-middleware.md".to_owned());
-        // 0099 deliberately absent from the map.
-        let content = "# Sprint 1 · Jan 1–15 · goal: x\n\n- 0001\n- 0099\n";
-        let out = relink_sprint(content, &filenames);
-        assert!(out.contains("- ../tasks/0001-auth-middleware.md"));
-        assert!(out.contains("- 0099")); // unknown id left untouched
-        assert!(out.contains("# Sprint 1")); // header preserved
-        // Re-parsing still resolves both IDs.
-        let sprint = parse_sprint(&out).unwrap();
-        assert_eq!(numeric_prefix(&sprint.task_ids[0]), "0001");
-        assert_eq!(numeric_prefix(&sprint.task_ids[1]), "0099");
+    fn task_link_is_a_markdown_link() {
+        assert_eq!(
+            task_link("0001-auth-middleware.md"),
+            "[0001](../tasks/0001-auth-middleware.md)"
+        );
     }
 
     #[test]

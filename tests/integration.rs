@@ -66,12 +66,6 @@ fn write_sprint_file(repo: &StintRepo, filename: &str, content: &str) {
     fs::write(repo.sprints_dir().join(filename), content).unwrap();
 }
 
-/// Write a raw gate file into the repo's gates dir.
-fn write_gate_file(repo: &StintRepo, filename: &str, content: &str) {
-    fs::create_dir_all(repo.gates_dir()).unwrap();
-    fs::write(repo.gates_dir().join(filename), content).unwrap();
-}
-
 /// Minimal valid task content.
 fn task_content(id: &str, title: &str, status: &str) -> String {
     format!("---\nid: \"{id}\"\ntitle: \"{title}\"\nstatus: {status}\n---\n")
@@ -89,7 +83,6 @@ fn init_creates_workspace_layout() {
     assert_eq!(report.repo, tmp.path().join(".stint"));
     assert!(tmp.path().join(".stint/tasks").is_dir());
     assert!(tmp.path().join(".stint/sprints").is_dir());
-    assert!(tmp.path().join(".stint/gates").is_dir());
     assert!(tmp.path().join(".stint/config.toml").is_file());
 }
 
@@ -346,49 +339,22 @@ fn list_filters_blocked_tasks() {
 }
 
 #[test]
-fn list_treats_matching_gate_blocker_as_blocked() {
+fn list_treats_direct_blocker_as_blocked() {
     let (_tmp, repo) = setup();
     write_task_file(
         &repo,
-        "0001-gate-blocker.md",
-        &task_content("0001", "Gate", "todo"),
+        "0001-blocker.md",
+        &task_content("0001", "Blocker", "todo"),
     );
     write_task_file(
         &repo,
-        "0002-v2-task.md",
-        "---\nid: \"0002\"\ntitle: \"V2\"\nstatus: todo\ntags: [\"v2\"]\n---\n",
-    );
-    write_gate_file(
-        &repo,
-        "v2-after-v1.md",
-        "---\nid: v2-after-v1\napplies_to:\n  tags: [\"v2\"]\nblocked_by:\n  - 0001\n---\n",
+        "0002-dep.md",
+        "---\nid: \"0002\"\ntitle: \"Dep\"\nstatus: todo\nblocked_by:\n  - 0001\n---\n",
     );
 
     let blocked = cmds::cmd_list(&repo, None, false, Some(true), None, None, None).unwrap();
     assert_eq!(blocked.len(), 1);
     assert_eq!(blocked[0].id, "0002");
-}
-
-#[test]
-fn gates_list_runs_with_gate_file() {
-    let (_tmp, repo) = setup();
-    write_task_file(
-        &repo,
-        "0001-gate-blocker.md",
-        &task_content("0001", "Gate", "todo"),
-    );
-    write_task_file(
-        &repo,
-        "0002-v2-task.md",
-        "---\nid: \"0002\"\ntitle: \"V2\"\nstatus: todo\ntags: [\"v2\"]\n---\n",
-    );
-    write_gate_file(
-        &repo,
-        "v2-after-v1.md",
-        "---\nid: v2-after-v1\napplies_to:\n  tags: [\"v2\"]\nblocked_by:\n  - 0001\nreason: \"v2 waits\"\n---\n",
-    );
-
-    cmds::cmd_gates_list(&repo).unwrap();
 }
 
 #[test]

@@ -184,15 +184,6 @@ enum Commands {
         command: SprintCommands,
     },
 
-    /// Gate management and explanation.
-    ///
-    /// Gates live in .stint/gates/*.md and apply inherited blockers to tasks
-    /// matching applies_to rules, currently task tags.
-    Gates {
-        #[command(subcommand)]
-        command: GateCommands,
-    },
-
     /// Validate the entire task graph; exit 1 if any errors are found.
     Check {
         /// Walk sibling repositories and validate cross-repo references (stub; not yet implemented).
@@ -247,12 +238,6 @@ enum SprintCommands {
         /// Sprint ID.
         id: String,
     },
-}
-
-#[derive(Subcommand)]
-enum GateCommands {
-    /// List inherited-blocker gates and how many tasks they match.
-    List,
 }
 
 // ---------------------------------------------------------------------------
@@ -459,13 +444,6 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 let repo = find_repo()?;
                 let path = cmds::cmd_sprint_reorder(&repo, &id)?;
                 println!("reordered {}", path.display());
-            }
-        },
-
-        Commands::Gates { command } => match command {
-            GateCommands::List => {
-                let repo = find_repo()?;
-                cmds::cmd_gates_list(&repo)?;
             }
         },
 

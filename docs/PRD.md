@@ -98,28 +98,6 @@ Non-obvious constraints, prior attempts, things that will bite you.
 
 ---
 
-## Gate File Format
-
-Gate files live in `.stint/gates/*.md` and apply inherited blockers to matching
-tasks. This keeps release-lane rules out of dozens of task files.
-
-```yaml
----
-id: v2-after-v1
-applies_to:
-  tags: ["v2"]
-blocked_by:
-  - 0030
-  - 0031
-reason: "v2 work starts after v1 release hardening"
----
-```
-
-`applies_to.tags` currently matches when a task has any listed tag. `blocked_by`
-uses the same syntax and validation as task `blocked_by`.
-
----
-
 ## CLI Commands
 
 ### Task management
@@ -146,12 +124,6 @@ uses the same syntax and validation as task `blocked_by`.
 | `stint sprint add <sprint-id> <task-id>` | Append task to sprint |
 | `stint sprint remove <sprint-id> <task-id>` | Remove task from sprint |
 | `stint sprint reorder <id>` | Interactive reorder (uses $EDITOR) |
-
-### Gate management
-
-| Command | Description |
-|---|---|
-| `stint gates list` | List inherited-blocker gates and match counts |
 
 ### Validation
 
@@ -183,6 +155,7 @@ uses the same syntax and validation as task `blocked_by`.
 8. No circular `blocked_by` references
 9. `id` matches the numeric prefix of the filename
 10. No duplicate IDs across all task files
+11. No `in-progress`/`done` task has an unresolved local-task blocker (only `backlog`/`todo` tasks may carry active blockers)
 
 ---
 
@@ -200,10 +173,9 @@ uses the same syntax and validation as task `blocked_by`.
 | `../path@N` | issue in sibling local directory | format only |
 | quoted string | free-text note | no |
 
-`stint status` renders all active blocker types in a unified list. Gate blockers
-are inherited by matching tasks and labeled as `via gate <id>` in CLI output;
-done local-task blockers are ignored. `stint check --cross-repo` walks sibling
-repos with `.stint/` directories to resolve local-dir and external task refs.
+`stint status` renders all active blocker types in a unified list; done
+local-task blockers are ignored. `stint check --cross-repo` walks sibling repos
+with `.stint/` directories to resolve local-dir and external task refs.
 
 ---
 
@@ -246,7 +218,7 @@ repo = "owner/repo"      # optional, inferred from git remote if absent
 
 - [ ] `stint add`, `list`, `show`, `edit`, `done`, `log`, `archive` all work
 - [ ] `stint sprint new`, `list`, `show`, `add`, `remove` all work
-- [ ] `stint check` validates all 10 rules
+- [ ] `stint check` validates all 11 rules
 - [ ] `stint status` renders blocked summary and sprint progress
 - [ ] String/list coercion works for all polymorphic fields
 - [ ] All core logic has unit tests

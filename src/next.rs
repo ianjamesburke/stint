@@ -1,8 +1,8 @@
 use std::collections::{HashMap, HashSet};
 
-use crate::gate::{active_blocker_infos, effective_blockers, BlockerInfo};
-use crate::schema::{Gate, Sprint, Task, TaskStatus};
+use crate::schema::{BlockedByRef, Sprint, Task, TaskStatus};
 use crate::sprint::numeric_prefix;
+use crate::state::{active_blockers, classify, done_ids, TaskState};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NextOptions<'a> {
@@ -22,7 +22,7 @@ pub struct NextTask {
     pub area: Vec<String>,
     pub gh_issue: Vec<String>,
     pub filename: String,
-    pub blockers: Vec<BlockerInfo>,
+    pub blockers: Vec<BlockedByRef>,
     pub area_conflicts: Vec<String>,
 }
 
@@ -40,21 +40,12 @@ pub struct NextReport {
     pub bottleneck: Option<Bottleneck>,
 }
 
-pub fn compute_next(
-    tasks: &[Task],
-    sprints: &[Sprint],
-    gates: &[Gate],
-    options: NextOptions<'_>,
-) -> NextReport {
+pub fn compute_next(tasks: &[Task], sprints: &[Sprint], options: NextOptions<'_>) -> NextReport {
     let task_by_id: HashMap<&str, &Task> = tasks
         .iter()
         .map(|task| (task.frontmatter.id.as_str(), task))
         .collect();
-    let done_ids: HashSet<&str> = tasks
-        .iter()
-        .filter(|task| matches!(task.frontmatter.status, TaskStatus::Done))
-        .map(|task| task.frontmatter.id.as_str())
-        .collect();
+    let done = done_ids(tasks);
     let active_area_tasks = active_area_tasks(tasks);
     let sprint_task_ids = sprint_task_ids(sprints, options.sprint);
     let ordered = ordered_tasks(tasks, sprints, options.sprint);
@@ -68,7 +59,7 @@ pub fn compute_next(
             continue;
         }
 
-        let blockers = blockers(task, gates, &done_ids);
+        let blockers = active_blockers(task, &done);
         let mut area_conflicts = area_conflicts(task, &active_area_tasks);
         area_conflicts.sort();
         area_conflicts.dedup();
@@ -111,7 +102,7 @@ pub fn compute_next(
     NextReport {
         ready,
         blocked,
-        bottleneck: bottleneck(tasks, gates, &task_by_id, &done_ids, sprint_task_ids.as_ref()),
+        bottleneck: bottleneck(tasks, &task_by_id, &done, sprint_task_ids.as_ref()),
     }
 }
 
@@ -135,10 +126,6 @@ fn is_candidate(
         return sprint_task_ids.contains(&task.frontmatter.id);
     }
     true
-}
-
-fn blockers(task: &Task, gates: &[Gate], done_ids: &HashSet<&str>) -> Vec<BlockerInfo> {
-    active_blocker_infos(task, gates, done_ids)
 }
 
 fn active_area_tasks(tasks: &[Task]) -> HashMap<String, Vec<String>> {
@@ -218,20 +205,16 @@ fn sprint_number(id: &str) -> u64 {
 
 fn bottleneck(
     tasks: &[Task],
-    gates: &[Gate],
     task_by_id: &HashMap<&str, &Task>,
     done_ids: &HashSet<&str>,
     sprint_task_ids: Option<&HashSet<String>>,
 ) -> Option<Bottleneck> {
-    use crate::schema::BlockedByRef;
     let mut counts: HashMap<String, usize> = HashMap::new();
     for task in tasks {
-        // Only count dependents that are active (Todo or InProgress).
-        // Backlog dependents are iced and must not inflate the bottleneck score.
-        if !matches!(
-            task.frontmatter.status,
-            TaskStatus::Todo | TaskStatus::InProgress
-        ) {
+        // Only Blocked tasks (todo with an active blocker) are genuinely
+        // waiting. Backlog dependents are iced; in-progress dependents are
+        // already moving and should never have been started while blocked.
+        if classify(task, done_ids) != TaskState::Blocked {
             continue;
         }
         if let Some(sprint_task_ids) = sprint_task_ids {
@@ -240,11 +223,19 @@ fn bottleneck(
             }
         }
         let mut counted_for_task = HashSet::new();
-        for blocker in effective_blockers(task, gates) {
+        for blocker in active_blockers(task, done_ids) {
             let BlockedByRef::LocalTask(id) = blocker else {
                 continue;
             };
-            if done_ids.contains(id.as_str()) || !task_by_id.contains_key(id.as_str()) {
+            let Some(blocker_task) = task_by_id.get(id.as_str()) else {
+                continue;
+            };
+            // A bottleneck must itself be resolvable next: todo or backlog.
+            // In-progress work is the current focus, not a bottleneck.
+            if matches!(
+                classify(blocker_task, done_ids),
+                TaskState::Active | TaskState::Done | TaskState::Archived
+            ) {
                 continue;
             }
             if counted_for_task.insert(id.clone()) {
@@ -272,7 +263,7 @@ fn bottleneck(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::parse::{parse_gate, parse_task};
+    use crate::parse::parse_task;
     use crate::sprint::parse_sprint;
 
     fn task(id: &str, title: &str, status: &str, extra: &str) -> Task {
@@ -289,7 +280,6 @@ mod tests {
         ];
         let report = compute_next(
             &tasks,
-            &[],
             &[],
             NextOptions {
                 sprint: None,
@@ -317,7 +307,6 @@ mod tests {
         let report = compute_next(
             &tasks,
             &[],
-            &[],
             NextOptions {
                 sprint: None,
                 include_area_conflicts: false,
@@ -336,7 +325,6 @@ mod tests {
         ];
         let report = compute_next(
             &tasks,
-            &[],
             &[],
             NextOptions {
                 sprint: None,
@@ -362,7 +350,6 @@ mod tests {
         let report = compute_next(
             &tasks,
             &[sprint],
-            &[],
             NextOptions {
                 sprint: Some("s1"),
                 include_area_conflicts: false,
@@ -389,7 +376,6 @@ mod tests {
         let report = compute_next(
             &tasks,
             &[],
-            &[],
             NextOptions {
                 sprint: None,
                 include_area_conflicts: false,
@@ -400,30 +386,23 @@ mod tests {
     }
 
     #[test]
-    fn gate_blockers_make_matching_tasks_blocked() {
+    fn in_progress_blocker_is_not_a_bottleneck() {
+        // Regression: an in-progress task that another (illegally in-progress)
+        // task lists as a blocker must not surface as a bottleneck.
         let tasks = vec![
-            task("0001", "A", "todo", ""),
-            task("0002", "B", "todo", "tags: [\"v2\"]"),
+            task("0001", "A", "in-progress", ""),
+            task("0002", "B", "in-progress", "blocked_by: [\"0001\"]"),
         ];
-        let gate = parse_gate(
-            "---\nid: v2-after-v1\napplies_to:\n  tags: [\"v2\"]\nblocked_by:\n  - 0001\n---\n",
-            "v2-after-v1.md",
-        )
-        .unwrap();
         let report = compute_next(
             &tasks,
             &[],
-            &[gate],
             NextOptions {
                 sprint: None,
                 include_area_conflicts: false,
                 include_backlog: false,
             },
         );
-        assert_eq!(report.ready[0].id, "0001");
-        assert_eq!(report.blocked[0].id, "0002");
-        assert_eq!(report.blocked[0].blockers[0].reference.to_string(), "0001");
-        assert_eq!(report.bottleneck.unwrap().id, "0001");
+        assert_eq!(report.bottleneck, None);
     }
 
     #[test]
@@ -434,7 +413,6 @@ mod tests {
         ];
         let report = compute_next(
             &tasks,
-            &[],
             &[],
             NextOptions {
                 sprint: None,
@@ -456,7 +434,6 @@ mod tests {
         let report = compute_next(
             &tasks,
             &[sprint],
-            &[],
             NextOptions {
                 sprint: Some("s1"),
                 include_area_conflicts: false,
@@ -476,7 +453,6 @@ mod tests {
         )];
         let report = compute_next(
             &tasks,
-            &[],
             &[],
             NextOptions {
                 sprint: None,
@@ -498,7 +474,6 @@ mod tests {
         let report = compute_next(
             &tasks,
             &[],
-            &[],
             NextOptions {
                 sprint: None,
                 include_area_conflicts: false,
@@ -516,7 +491,6 @@ mod tests {
         ];
         let report = compute_next(
             &tasks,
-            &[],
             &[],
             NextOptions {
                 sprint: None,
@@ -536,7 +510,6 @@ mod tests {
         ];
         let report = compute_next(
             &tasks,
-            &[],
             &[],
             NextOptions {
                 sprint: None,
@@ -558,7 +531,6 @@ mod tests {
         let report = compute_next(
             &tasks,
             &[],
-            &[],
             NextOptions {
                 sprint: None,
                 include_area_conflicts: false,
@@ -577,7 +549,6 @@ mod tests {
         ];
         let report = compute_next(
             &tasks,
-            &[],
             &[],
             NextOptions {
                 sprint: None,

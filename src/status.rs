@@ -1,8 +1,6 @@
 /// Compute the `stint status` summary from a task graph.
-use std::collections::HashSet;
-
-use crate::gate::{active_blocker_infos, BlockerInfo};
-use crate::schema::{Gate, Sprint, Task, TaskStatus};
+use crate::schema::{BlockedByRef, Sprint, Task, TaskStatus};
+use crate::state::{active_blockers, done_ids};
 
 /// A task that has at least one blocker set.
 #[derive(Debug, Clone)]
@@ -11,8 +9,8 @@ pub struct BlockedTask {
     pub id: String,
     /// Task title.
     pub title: String,
-    /// All blocker references for this task.
-    pub blocked_by: Vec<BlockerInfo>,
+    /// All active blocker references for this task.
+    pub blocked_by: Vec<BlockedByRef>,
 }
 
 /// Sprint-level time progress.
@@ -52,7 +50,6 @@ pub struct StatusReport {
 pub fn compute_status(
     tasks: &[Task],
     sprints: &[Sprint],
-    gates: &[Gate],
     current_sprint: Option<&str>,
 ) -> StatusReport {
     let open_count = tasks
@@ -70,11 +67,7 @@ pub fn compute_status(
         .filter(|t| matches!(t.frontmatter.status, TaskStatus::Backlog))
         .count();
 
-    let done_ids: HashSet<&str> = tasks
-        .iter()
-        .filter(|t| matches!(t.frontmatter.status, TaskStatus::Done))
-        .map(|t| t.frontmatter.id.as_str())
-        .collect();
+    let done = done_ids(tasks);
 
     let blocked_tasks = tasks
         .iter()
@@ -86,7 +79,7 @@ pub fn compute_status(
             )
         })
         .filter_map(|t| {
-            let blocked_by = active_blocker_infos(t, gates, &done_ids);
+            let blocked_by = active_blockers(t, &done);
             if blocked_by.is_empty() {
                 return None;
             }
@@ -163,7 +156,7 @@ fn sprint_number(id: &str) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::parse::{parse_gate, parse_task};
+    use crate::parse::parse_task;
     use crate::schema::{TaskFrontmatter, TaskStatus};
     use crate::sprint::parse_sprint;
 
@@ -214,7 +207,7 @@ mod tests {
             make_task_with_sprint("0002", "s1", None, None, TaskStatus::Done),
             make_task_with_sprint("0003", "s1", None, None, TaskStatus::InProgress),
         ];
-        let report = compute_status(&tasks, &[], &[], None);
+        let report = compute_status(&tasks, &[], None);
         assert_eq!(report.open_count, 2);
     }
 
@@ -226,49 +219,41 @@ mod tests {
             t
         };
         let active = make_blocked_task("0002");
-        let report = compute_status(&[done, active], &[], &[], None);
+        let report = compute_status(&[done, active], &[], None);
         assert_eq!(report.blocked_tasks.len(), 1);
         assert_eq!(report.blocked_tasks[0].id, "0002");
     }
 
     #[test]
-    fn blocked_tasks_include_matching_gate_blockers() {
+    fn blocked_tasks_report_active_local_blockers() {
+        let blocker = parse_task(
+            "---\nid: \"0030\"\ntitle: \"Blocker\"\nstatus: todo\n---\n",
+            "0030-blocker.md",
+        )
+        .unwrap();
         let task = parse_task(
-            "---\nid: \"0001\"\ntitle: \"V2\"\nstatus: todo\ntags: [\"v2\"]\n---\n",
-            "0001-v2.md",
+            "---\nid: \"0001\"\ntitle: \"Dep\"\nstatus: todo\nblocked_by:\n  - 0030\n---\n",
+            "0001-dep.md",
         )
         .unwrap();
-        let gate = parse_gate(
-            "---\nid: v2-after-v1\napplies_to:\n  tags: [\"v2\"]\nblocked_by:\n  - 0030\n---\n",
-            "v2-after-v1.md",
-        )
-        .unwrap();
-        let report = compute_status(&[task], &[], &[gate], None);
+        let report = compute_status(&[blocker, task], &[], None);
         assert_eq!(report.blocked_tasks.len(), 1);
-        assert_eq!(
-            report.blocked_tasks[0].blocked_by[0].reference.to_string(),
-            "0030"
-        );
+        assert_eq!(report.blocked_tasks[0].blocked_by[0].to_string(), "0030");
     }
 
     #[test]
-    fn blocked_tasks_ignore_done_gate_blockers() {
+    fn blocked_tasks_ignore_done_local_blockers() {
         let done = parse_task(
             "---\nid: \"0030\"\ntitle: \"Done\"\nstatus: done\n---\n",
             "0030-done.md",
         )
         .unwrap();
         let task = parse_task(
-            "---\nid: \"0001\"\ntitle: \"V2\"\nstatus: todo\ntags: [\"v2\"]\n---\n",
-            "0001-v2.md",
+            "---\nid: \"0001\"\ntitle: \"Dep\"\nstatus: todo\nblocked_by:\n  - 0030\n---\n",
+            "0001-dep.md",
         )
         .unwrap();
-        let gate = parse_gate(
-            "---\nid: v2-after-v1\napplies_to:\n  tags: [\"v2\"]\nblocked_by:\n  - 0030\n---\n",
-            "v2-after-v1.md",
-        )
-        .unwrap();
-        let report = compute_status(&[done, task], &[], &[gate], None);
+        let report = compute_status(&[done, task], &[], None);
         assert!(report.blocked_tasks.is_empty());
     }
 
@@ -279,7 +264,7 @@ mod tests {
             make_task_with_sprint("0001", "s1", Some("4h"), Some("2h"), TaskStatus::InProgress),
             make_task_with_sprint("0002", "s1", Some("2h"), None, TaskStatus::Done),
         ];
-        let report = compute_status(&tasks, &[sprint], &[], Some("s1"));
+        let report = compute_status(&tasks, &[sprint], Some("s1"));
         let progress = report.sprint_progress.unwrap();
         assert_eq!(progress.committed_minutes, 360);
         assert_eq!(progress.logged_minutes, 120);
@@ -290,7 +275,7 @@ mod tests {
 
     #[test]
     fn no_sprints_returns_none_progress() {
-        let report = compute_status(&[], &[], &[], None);
+        let report = compute_status(&[], &[], None);
         assert!(report.sprint_progress.is_none());
     }
 
@@ -305,7 +290,7 @@ mod tests {
             None,
             TaskStatus::Todo,
         )];
-        let report = compute_status(&tasks, &[s1, s3], &[], None);
+        let report = compute_status(&tasks, &[s1, s3], None);
         let progress = report.sprint_progress.unwrap();
         assert_eq!(progress.sprint_id, "s3");
     }
@@ -318,7 +303,7 @@ mod tests {
             make_task_with_sprint("0003", "s1", None, None, TaskStatus::Todo),
             make_task_with_sprint("0004", "s1", None, None, TaskStatus::Done),
         ];
-        let report = compute_status(&tasks, &[], &[], None);
+        let report = compute_status(&tasks, &[], None);
         assert_eq!(report.backlog_count, 2);
         assert_eq!(report.open_count, 3); // Backlog+Todo still open
     }
@@ -331,7 +316,7 @@ mod tests {
         )
         .unwrap();
         let active_blocked = make_blocked_task("0002");
-        let report = compute_status(&[backlog_blocked, active_blocked], &[], &[], None);
+        let report = compute_status(&[backlog_blocked, active_blocked], &[], None);
         assert_eq!(report.blocked_tasks.len(), 1);
         assert_eq!(report.blocked_tasks[0].id, "0002");
     }

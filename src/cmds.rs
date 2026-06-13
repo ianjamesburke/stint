@@ -11,16 +11,13 @@ use anyhow::{bail, Context};
 use chrono::{DateTime, SecondsFormat, Utc};
 use stint::check::check;
 use stint::duration::Duration;
-use stint::gate::{
-    active_blocker_infos, active_blockers, effective_blocker_infos, gate_applies_to_task,
-    BlockerInfo, BlockerSource,
-};
+use stint::state::{active_blockers, done_ids, is_blocked};
 use stint::mutate::{
     add_actual, new_sprint_content, new_task_content, next_task_id, resolve_id, restart_task,
     set_actual, set_completed_at, set_started_at_if_absent, set_status, title_to_slug,
 };
 use stint::next::{compute_next, NextOptions, NextReport, NextTask};
-use stint::schema::{BlockedByRef, Task, TaskStatus};
+use stint::schema::{BlockedByRef, TaskStatus};
 use stint::serialize::serialize_task;
 use stint::sprint::{
     normalize_sprint_id, numeric_prefix, sprint_add_task, sprint_remove_task,
@@ -249,12 +246,7 @@ pub fn cmd_list(
     tag_filter: Option<&str>,
 ) -> anyhow::Result<Vec<TaskRow>> {
     let tasks = repo.load_tasks()?;
-    let gates = repo.load_gates()?;
-    let done_ids: HashSet<&str> = tasks
-        .iter()
-        .filter(|t| matches!(t.frontmatter.status, TaskStatus::Done))
-        .map(|t| t.frontmatter.id.as_str())
-        .collect();
+    let done = done_ids(&tasks);
 
     let rows = stint::filter::filter_tasks(
         &tasks,
@@ -273,15 +265,15 @@ pub fn cmd_list(
             )
     })
     .filter(|t| match blocked_filter {
-        Some(blocked) => task_is_blocked(t, &gates, &done_ids) == blocked,
+        Some(blocked) => is_blocked(t, &done) == blocked,
         None => true,
     })
     .map(|t| TaskRow {
         id: t.frontmatter.id.clone(),
         title: t.frontmatter.title.clone(),
         status: t.frontmatter.status.as_str().to_owned(),
-        blocked: task_is_blocked(t, &gates, &done_ids),
-        blockers: active_blocker_infos(t, &gates, &done_ids),
+        blocked: is_blocked(t, &done),
+        blockers: active_blockers(t, &done),
         estimate: t.frontmatter.estimate.map(|d| d.to_string()),
         sprint: t.frontmatter.sprint.clone(),
     })
@@ -325,17 +317,9 @@ pub struct TaskRow {
     pub title: String,
     pub status: String,
     pub blocked: bool,
-    pub blockers: Vec<BlockerInfo>,
+    pub blockers: Vec<BlockedByRef>,
     pub estimate: Option<String>,
     pub sprint: Option<String>,
-}
-
-fn task_is_blocked(
-    task: &Task,
-    gates: &[stint::schema::Gate],
-    done_ids: &HashSet<&str>,
-) -> bool {
-    !active_blockers(task, gates, done_ids).is_empty()
 }
 
 /// Print a full task (frontmatter table + body) to stdout.
@@ -343,13 +327,8 @@ pub fn cmd_show(repo: &StintRepo, id_input: &str) -> anyhow::Result<()> {
     let path = repo.resolve_task_path(id_input)?;
     let task = repo.read_task(&path)?;
     let tasks = repo.load_tasks()?;
-    let gates = repo.load_gates()?;
-    let done_ids: HashSet<&str> = tasks
-        .iter()
-        .filter(|t| matches!(t.frontmatter.status, TaskStatus::Done))
-        .map(|t| t.frontmatter.id.as_str())
-        .collect();
-    let active_blockers = active_blocker_infos(&task, &gates, &done_ids);
+    let done = done_ids(&tasks);
+    let active = active_blockers(&task, &done);
     let fm = &task.frontmatter;
 
     println!("ID:          {}", fm.id);
@@ -370,28 +349,8 @@ pub fn cmd_show(repo: &StintRepo, id_input: &str) -> anyhow::Result<()> {
     if let Some(s) = &fm.sprint {
         println!("Sprint:      {}", s);
     }
-    if !active_blockers.is_empty() {
-        println!("Blocked by:");
-        let direct: Vec<&BlockerInfo> = active_blockers
-            .iter()
-            .filter(|blocker| matches!(blocker.source, BlockerSource::Direct))
-            .collect();
-        let inherited: Vec<&BlockerInfo> = active_blockers
-            .iter()
-            .filter(|blocker| matches!(blocker.source, BlockerSource::Gate(_)))
-            .collect();
-        if direct.is_empty() {
-            println!("  direct:    none");
-        } else {
-            println!("  direct:    {}", format_blocker_refs(&direct));
-        }
-        if inherited.is_empty() {
-            println!("  inherited: none");
-        } else {
-            for blocker in inherited {
-                println!("  inherited: {}", format_blocker(blocker));
-            }
-        }
+    if !active.is_empty() {
+        println!("Blocked by:  {}", format_blockers_inline(&active));
     }
     if !fm.area.is_empty() {
         println!("Area:        {}", fm.area.join(", "));
@@ -531,12 +490,7 @@ pub fn tasks_unblocked_by_done(
     let done_task = repo.read_task(&done_path)?;
     let done_id = done_task.frontmatter.id;
     let tasks = repo.load_tasks()?;
-    let gates = repo.load_gates()?;
-    let done_ids: HashSet<&str> = tasks
-        .iter()
-        .filter(|t| t.frontmatter.status == TaskStatus::Done)
-        .map(|t| t.frontmatter.id.as_str())
-        .collect();
+    let done = done_ids(&tasks);
 
     let mut unblocked = Vec::new();
     for task in &tasks {
@@ -547,10 +501,10 @@ pub fn tasks_unblocked_by_done(
             continue;
         }
 
-        let waits_on_done_task = effective_blocker_infos(&task, &gates).iter().any(
-            |blocker| matches!(&blocker.reference, BlockedByRef::LocalTask(id) if id == &done_id),
+        let waits_on_done_task = task.frontmatter.blocked_by.iter().any(
+            |blocker| matches!(blocker, BlockedByRef::LocalTask(id) if *id == done_id),
         );
-        if waits_on_done_task && active_blocker_infos(&task, &gates, &done_ids).is_empty() {
+        if waits_on_done_task && active_blockers(task, &done).is_empty() {
             unblocked.push(UnblockedTask {
                 id: task.frontmatter.id.clone(),
                 title: task.frontmatter.title.clone(),
@@ -798,11 +752,9 @@ fn cmd_next_inner(
 ) -> anyhow::Result<NextReport> {
     let tasks = repo.load_tasks()?;
     let sprints = repo.load_sprints()?;
-    let gates = repo.load_gates()?;
     let report = compute_next(
         &tasks,
         &sprints,
-        &gates,
         NextOptions {
             sprint,
             include_area_conflicts,
@@ -888,6 +840,14 @@ pub fn print_next(report: &NextReport, claimed: bool, count: Option<usize>) {
         }
     }
 
+    if !report.blocked.is_empty() {
+        println!();
+        println!("Blocked:");
+        for task in &report.blocked {
+            print_next_task(task);
+        }
+    }
+
     if let Some(bottleneck) = &report.bottleneck {
         println!();
         println!("Bottleneck:");
@@ -945,19 +905,9 @@ pub fn print_next_json(repo: &StintRepo, report: &NextReport, claimed: bool, cou
     println!("{}", serde_json::to_string_pretty(&obj).unwrap());
 }
 
-fn blocker_to_json(blocker: &BlockerInfo) -> serde_json::Value {
+fn blocker_to_json(blocker: &BlockedByRef) -> serde_json::Value {
     use serde_json::json;
-    match &blocker.source {
-        BlockerSource::Direct => json!({
-            "ref": blocker.reference.to_string(),
-            "source": "direct",
-        }),
-        BlockerSource::Gate(gate_id) => json!({
-            "ref": blocker.reference.to_string(),
-            "source": "gate",
-            "gate": gate_id,
-        }),
-    }
+    json!({ "ref": blocker.to_string() })
 }
 
 fn print_next_task(task: &NextTask) {
@@ -1119,49 +1069,6 @@ pub fn cmd_sprint_remove(
 }
 
 // ---------------------------------------------------------------------------
-// Gate commands
-// ---------------------------------------------------------------------------
-
-pub fn cmd_gates_list(repo: &StintRepo) -> anyhow::Result<()> {
-    let gates = repo.load_gates()?;
-    if gates.is_empty() {
-        println!("No gates.");
-        println!("Gates live in .stint/gates/*.md and add inherited blockers to matching tasks.");
-        return Ok(());
-    }
-
-    let tasks = repo.load_tasks()?;
-    println!("Gates:");
-    for gate in &gates {
-        let matched = tasks
-            .iter()
-            .filter(|task| gate_applies_to_task(gate, task))
-            .count();
-        let tags = if gate.applies_to.tags.is_empty() {
-            "-".to_owned()
-        } else {
-            gate.applies_to.tags.join(",")
-        };
-        let blockers: Vec<String> = gate
-            .blocked_by
-            .iter()
-            .map(|blocker| blocker.to_string())
-            .collect();
-        println!(
-            "  {} tags=[{}] blocked_by=[{}] matches={}",
-            gate.id,
-            tags,
-            blockers.join(","),
-            matched
-        );
-        if let Some(reason) = &gate.reason {
-            println!("       {}", reason);
-        }
-    }
-    Ok(())
-}
-
-// ---------------------------------------------------------------------------
 // Validation & status
 // ---------------------------------------------------------------------------
 
@@ -1177,22 +1084,12 @@ pub fn cmd_check(repo: &StintRepo, cross_repo: bool) -> anyhow::Result<Vec<Strin
         eprintln!("cross-repo resolution not yet implemented");
     }
     let (tasks, parse_errors) = repo.load_tasks_with_errors()?;
-    let (gates, gate_parse_errors) = repo.load_gates_with_errors()?;
     let sprints = repo.load_sprints()?;
     let mut errors: Vec<String> = parse_errors
         .iter()
         .map(|e| format!("{}: {}", e.path.display(), e.error))
         .collect();
-    errors.extend(
-        gate_parse_errors
-            .iter()
-            .map(|e| format!("{}: {}", e.path.display(), e.error)),
-    );
-    errors.extend(
-        check(&tasks, &sprints, &gates)
-            .iter()
-            .map(|e| e.to_string()),
-    );
+    errors.extend(check(&tasks, &sprints).iter().map(|e| e.to_string()));
     Ok(errors)
 }
 
@@ -1200,8 +1097,7 @@ pub fn cmd_check(repo: &StintRepo, cross_repo: bool) -> anyhow::Result<Vec<Strin
 pub fn cmd_status(repo: &StintRepo) -> anyhow::Result<()> {
     let tasks = repo.load_tasks()?;
     let sprints = repo.load_sprints()?;
-    let gates = repo.load_gates()?;
-    let report = compute_status(&tasks, &sprints, &gates, None);
+    let report = compute_status(&tasks, &sprints, None);
 
     let active_count = report.open_count.saturating_sub(report.backlog_count);
     println!("Active:  {} (todo/in-progress)", active_count);
@@ -1273,27 +1169,10 @@ fn truncate(s: &str, max: usize) -> &str {
     }
 }
 
-fn format_blockers_inline(blockers: &[BlockerInfo]) -> String {
+fn format_blockers_inline(blockers: &[BlockedByRef]) -> String {
     blockers
         .iter()
-        .map(format_blocker)
-        .collect::<Vec<_>>()
-        .join(", ")
-}
-
-fn format_blocker(blocker: &BlockerInfo) -> String {
-    match &blocker.source {
-        BlockerSource::Direct => blocker.reference.to_string(),
-        BlockerSource::Gate(gate_id) => {
-            format!("{} via gate {}", blocker.reference, gate_id)
-        }
-    }
-}
-
-fn format_blocker_refs(blockers: &[&BlockerInfo]) -> String {
-    blockers
-        .iter()
-        .map(|blocker| blocker.reference.to_string())
+        .map(|blocker| blocker.to_string())
         .collect::<Vec<_>>()
         .join(", ")
 }

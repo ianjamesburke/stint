@@ -2,16 +2,13 @@
 
 ## What This Is
 
-Stint is a Rust CLI tool + library for git-tracked, markdown-backed sprint planning. Read `NORTH_STAR.md` for vision, `docs/PRD.md` for full spec.
+Stint is a Rust CLI for task and sprint tracking as markdown files in your repo. Read `NORTH_STAR.md` for vision, `docs/PRD.md` for full spec.
 
-## Crate Responsibilities
-
-- `stint-core` — pure library. Schema types, YAML frontmatter parsing, validation, mutation. Zero I/O side effects. All business logic lives here.
-- `stint-cli` — thin binary. Clap command definitions, I/O, calls into core. No business logic.
+Single crate with `[lib]` and `[[bin]]` targets. Library modules handle schema, parsing, validation, mutation. `src/main.rs` is a thin Clap shell with no business logic.
 
 ## Key Invariants
 
-- `stint-core` must have zero I/O. All file operations are the CLI's job.
+- Library modules must have zero I/O. All file operations are `main.rs`'s job.
 - `blocked_by`, `blocked_by_gh`, `gh_issue`, `area`, `tags` are all polymorphic: accept string or list in YAML, always stored as `Vec<T>` internally.
 - `stint check` is the source of truth for schema validity. Add a new field = add a new check rule.
 - Duration strings: `h` for hours, `m` for minutes, decimals allowed ("1.5h", "30m"). Parse at the core level.

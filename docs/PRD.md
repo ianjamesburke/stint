@@ -2,7 +2,7 @@
 
 ## Overview
 
-Stint is a Rust CLI tool + library for git-tracked, markdown-backed sprint planning and task tracking. It stores all state as individual markdown files with YAML frontmatter inside a `.stint/` directory at the root of any git repository.
+Stint is a Rust CLI for task and sprint tracking as markdown files in your repo. All state lives as individual markdown files with YAML frontmatter inside a `.stint/` directory at the root of any git repository.
 
 ---
 
@@ -26,14 +26,10 @@ Stint is a Rust CLI tool + library for git-tracked, markdown-backed sprint plann
 
 ### Crate layout
 
-```
-stint/
-  crates/
-    stint-core/    ← library: schema, parsing, validation, mutation
-    stint-cli/     ← binary: clap CLI, thin shell over core
-  apps/
-    stint-plexi/   ← future Plexi PGAP visualization app
-```
+Single crate with both `[lib]` and `[[bin]]` targets:
+
+- `src/lib.rs` — library: schema, parsing, validation, mutation, check
+- `src/main.rs` — binary: Clap CLI, thin shell over the library
 
 ---
 
@@ -58,7 +54,7 @@ tags: []                          # optional, list OR string of arbitrary tags
 ---
 ```
 
-**Coercion rule:** `blocked_by`, `gh_issue`, `area`, `tags` accept either a single scalar value or a list. `stint-core` normalizes all of these internally at parse time. `stint check` validates types after coercion.
+**Coercion rule:** `blocked_by`, `gh_issue`, `area`, `tags` accept either a single scalar value or a list. The library normalizes all of these internally at parse time. `stint check` validates types after coercion.
 
 ### Body
 
@@ -226,6 +222,6 @@ repo = "owner/repo"      # optional, inferred from git remote if absent
 - [ ] `stint status` renders blocked summary and sprint progress
 - [ ] String/list coercion works for all polymorphic fields
 - [ ] All core logic has unit tests
-- [ ] `stint-core` is a pure library with no I/O side effects
-- [ ] `stint-cli` is a thin shell — no business logic
+- [ ] Library modules have no I/O side effects
+- [ ] `src/main.rs` is a thin shell — no business logic
 - [ ] Builds cleanly with `cargo build`

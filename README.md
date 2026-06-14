@@ -1,8 +1,10 @@
 # stint
 
-Git-tracked, markdown-backed sprint planning and task tracking.
+Task and sprint tracking as markdown files in your repo. An alternative to GitHub Issues for teams who want their plan versioned with their code.
 
-Tasks are individual markdown files. Sprints are ordered lists. Everything lives in `.stint/` inside your repo — versioned, diffable, readable in any editor.
+Tasks live in `.stint/tasks/`. Sprints are ordered lists. Includes a CLI and TUI.
+
+`.stint/` commits alongside your code, or gitignore it to keep tasks private, or initialize it as a separate git repo inside the same directory for clean separation.
 
 ```
 .stint/
@@ -19,16 +21,11 @@ Tasks are individual markdown files. Sprints are ordered lists. Everything lives
 cargo install stint --locked
 ```
 
-Update to the latest crates.io release with:
+To update:
 
 ```bash
 stint update
-```
-
-The underlying Cargo convention is:
-
-```bash
-cargo install stint --locked --force
+# same as: cargo install stint --locked --force
 ```
 
 ## Release
@@ -165,18 +162,8 @@ the entry regardless of form. Edit directly or use `stint sprint reorder`.
 
 Returns exit 0 on a clean graph, exit 1 with all errors listed.
 
-## Architecture
-
-Two crates:
-
-- `stint-core` — pure library, zero I/O. Schema types, parsing, validation, mutation.
-- `stint-cli` — thin Clap shell. All business logic lives in core.
-
-The separation means `stint-core` can be embedded in other tools (a Plexi TUI app, an editor plugin, an agent) without pulling in CLI concerns.
-
 ## Roadmap
 
 - [ ] `stint gh import` — pull GitHub issues as tasks
 - [ ] `stint gh sync` — push task status back to GitHub
 - [ ] `stint check --cross-repo` — resolve cross-repo blockers
-- [ ] Plexi app — TUI visualization backed by `stint-core`

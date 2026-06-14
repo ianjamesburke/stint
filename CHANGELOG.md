@@ -1,6 +1,12 @@
 # Changelog
 
 Newest releases appear first.
+## [0.2.5] - 2026-06-14
+
+### Changes
+- Simplify architecture docs and clarify single-crate layout
+- Fix changelog release boundaries
+- Clarify docs-only release bump rule
 ## [0.2.4] - 2026-06-14
 
 ### Changes

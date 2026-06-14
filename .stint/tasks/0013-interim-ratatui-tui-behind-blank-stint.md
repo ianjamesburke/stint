@@ -1,16 +1,18 @@
 ---
 id: "0013"
 title: "Interim ratatui TUI behind blank stint"
-status: backlog
+status: done
 estimate: "16h"
+completed_at: "2026-06-14T17:31:51Z"
+blocked_by: []
+gh_issue: []
 area:
   - "cli"
 tags:
   - "tui"
   - "ux"
-blocked_by: []
-gh_issue: []
 ---
+
 
 ## Why
 

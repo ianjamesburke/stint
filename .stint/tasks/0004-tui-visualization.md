@@ -1,17 +1,18 @@
 ---
 id: "0004"
 title: "TUI sprint board visualization"
-status: backlog
+status: archived
 estimate: "12h"
+blocked_by:
+  - 3
+gh_issue: []
 area:
   - "apps"
 tags:
   - "tui"
   - "plexi"
-blocked_by:
-  - "0003"
-gh_issue: []
 ---
+
 
 ## Why
 

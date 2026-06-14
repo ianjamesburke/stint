@@ -26,7 +26,7 @@ use stint::sprint::{
 };
 use stint::status::compute_status;
 
-use crate::repo::StintRepo;
+use stint::repo::StintRepo;
 
 // ---------------------------------------------------------------------------
 // Init command

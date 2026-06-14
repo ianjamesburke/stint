@@ -1,0 +1,12 @@
+[project]
+name = "tui-fixture"
+default_sprint = "s1"
+
+[gh]
+repo = ""
+
+[[command]]
+key = "z"
+name = "Agent on task"
+run = "agent --id {id} --slug {slug} --path {path} --title {title} --sprint {sprint} --estimate {estimate}"
+claim = true

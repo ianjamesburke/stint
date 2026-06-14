@@ -13,10 +13,8 @@ use tempfile::TempDir;
 // attribute to include them here.
 #[path = "../src/cmds.rs"]
 mod cmds;
-#[path = "../src/repo.rs"]
-mod repo;
 
-use repo::StintRepo;
+use stint::repo::StintRepo;
 
 // ---------------------------------------------------------------------------
 // Helpers

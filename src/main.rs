@@ -1,13 +1,14 @@
 mod cmds;
-mod repo;
 
 use std::env;
+use std::io::IsTerminal;
 use std::process;
 
 use anyhow::Context;
 use clap::{Parser, Subcommand};
 
-use repo::StintRepo;
+use stint::repo::StintRepo;
+use stint::tui;
 
 // ---------------------------------------------------------------------------
 // CLI definition
@@ -21,7 +22,7 @@ use repo::StintRepo;
 )]
 struct Cli {
     #[command(subcommand)]
-    command: Commands,
+    command: Option<Commands>,
 }
 
 #[derive(Subcommand)]
@@ -254,11 +255,19 @@ fn main() {
 
 fn run(cli: Cli) -> anyhow::Result<()> {
     match cli.command {
-        Commands::Init {
+        None => {
+            let repo = find_repo()?;
+            if std::io::stdout().is_terminal() {
+                tui::run(repo)?;
+            } else {
+                cmds::cmd_status(&repo)?;
+            }
+        }
+        Some(Commands::Init {
             force,
             with_github,
             repo,
-        } => {
+        }) => {
             let cwd = env::current_dir().context("get current directory")?;
             let report = cmds::cmd_init(&cwd, force, with_github, repo.as_deref())?;
             println!("initialized: {}", report.repo.display());
@@ -270,13 +279,13 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             }
         }
 
-        Commands::Add { title } => {
+        Some(Commands::Add { title }) => {
             let repo = find_repo()?;
             let path = cmds::cmd_add(&repo, &title)?;
             println!("{}", path.display());
         }
 
-        Commands::List {
+        Some(Commands::List {
             status,
             all,
             blocked,
@@ -284,7 +293,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             sprint,
             area,
             tag,
-        } => {
+        }) => {
             let repo = find_repo()?;
             if blocked && hide_blocked {
                 anyhow::bail!("--blocked and --hide-blocked cannot be used together");
@@ -308,17 +317,17 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             cmds::print_list(&rows);
         }
 
-        Commands::Show { id } => {
+        Some(Commands::Show { id }) => {
             let repo = find_repo()?;
             cmds::cmd_show(&repo, &id)?;
         }
 
-        Commands::Edit { id } => {
+        Some(Commands::Edit { id }) => {
             let repo = find_repo()?;
             cmds::cmd_edit(&repo, &id)?;
         }
 
-        Commands::Remove { ids } => {
+        Some(Commands::Remove { ids }) => {
             let repo = find_repo()?;
             let paths = cmds::cmd_remove(&repo, &ids)?;
             for path in paths {
@@ -326,22 +335,22 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             }
         }
 
-        Commands::Start {
+        Some(Commands::Start {
             id,
             restart,
             started_at,
-        } => {
+        }) => {
             let repo = find_repo()?;
             let path = cmds::cmd_start(&repo, &id, restart, started_at.as_deref())?;
             println!("started: {}", path.display());
         }
 
-        Commands::Done {
+        Some(Commands::Done {
             id,
             actual,
             started_at,
             completed_at,
-        } => {
+        }) => {
             let repo = find_repo()?;
             let path = cmds::cmd_done(
                 &repo,
@@ -360,26 +369,26 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             }
         }
 
-        Commands::Log { id, duration } => {
+        Some(Commands::Log { id, duration }) => {
             let repo = find_repo()?;
             let path = cmds::cmd_log(&repo, &id, &duration)?;
             println!("logged: {}", path.display());
         }
 
-        Commands::Archive { id } => {
+        Some(Commands::Archive { id }) => {
             let repo = find_repo()?;
             let path = cmds::cmd_archive(&repo, &id)?;
             println!("archived: {}", path.display());
         }
 
-        Commands::Next {
+        Some(Commands::Next {
             sprint,
             include_area_conflicts,
             include_backlog,
             claim,
             count,
             json,
-        } => {
+        }) => {
             let repo = find_repo()?;
             let report = cmds::cmd_next(
                 &repo,
@@ -396,7 +405,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             }
         }
 
-        Commands::Ready { ids, sprint, tag } => {
+        Some(Commands::Ready { ids, sprint, tag }) => {
             let repo = find_repo()?;
             let paths = cmds::cmd_ready(&repo, &ids, sprint.as_deref(), tag.as_deref())?;
             for path in paths {
@@ -404,7 +413,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             }
         }
 
-        Commands::Defer { ids, sprint, tag } => {
+        Some(Commands::Defer { ids, sprint, tag }) => {
             let repo = find_repo()?;
             let paths = cmds::cmd_defer(&repo, &ids, sprint.as_deref(), tag.as_deref())?;
             for path in paths {
@@ -412,7 +421,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             }
         }
 
-        Commands::Sprint { command } => match command {
+        Some(Commands::Sprint { command }) => match command {
             SprintCommands::New {
                 id,
                 date_range,
@@ -447,7 +456,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             }
         },
 
-        Commands::Check { cross_repo } => {
+        Some(Commands::Check { cross_repo }) => {
             let repo = find_repo()?;
             let errors = cmds::cmd_check(&repo, cross_repo)?;
             if errors.is_empty() {
@@ -460,7 +469,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             }
         }
 
-        Commands::Status => {
+        Some(Commands::Status) => {
             let repo = find_repo()?;
             cmds::cmd_status(&repo)?;
         }

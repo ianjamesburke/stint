@@ -64,6 +64,16 @@ fn renders_views_detail_navigation_and_quit() {
     let screen = tui.render_text().unwrap();
     assert!(screen.contains("Dashboard"));
     assert!(screen.contains("CLI argument parsing"));
+    assert!(screen.contains("? shortcuts"));
+    assert!(!screen.contains("c claim - d done"));
+
+    tui.press_char('?').unwrap();
+    let screen = tui.render_text().unwrap();
+    assert!(screen.contains("Shortcuts"));
+    assert!(screen.contains("Task actions"));
+    assert!(screen.contains("c claim"));
+    tui.press_char('?').unwrap();
+    assert!(!tui.render_text().unwrap().contains("Shortcuts"));
 
     press(&mut tui, KeyCode::Tab);
     let screen = tui.render_text().unwrap();
@@ -165,6 +175,9 @@ fn status_shortcuts_update_markdown_and_undo_redo() {
     let content = task(&repo, "0001-project-scaffold.md");
     assert!(content.contains("status: in-progress"));
     assert!(content.contains("started_at:"));
+    assert!(tui.render_text().unwrap().contains("claim: 0001"));
+    tui.age_message();
+    assert!(!tui.render_text().unwrap().contains("claim: 0001"));
 
     tui.press_char('u').unwrap();
     let content = task(&repo, "0001-project-scaffold.md");
@@ -286,6 +299,19 @@ fn command_palette_and_custom_commands_run_against_selected_task() {
     enter(&mut tui);
     assert!(task(&repo, "0001-project-scaffold.md").contains("status: in-progress"));
 
+    tui.press_char('u').unwrap();
+    assert!(task(&repo, "0001-project-scaffold.md").contains("status: todo"));
+
+    tui.press_char(':').unwrap();
+    let screen = tui.render_text().unwrap();
+    assert!(screen.contains("Search: type to filter commands"));
+    tui.type_text("done").unwrap();
+    let screen = tui.render_text().unwrap();
+    assert!(screen.contains("Search: done"));
+    assert!(screen.contains("> mark selected task done"));
+    assert!(!screen.contains("claim selected task"));
+    enter(&mut tui);
+    assert!(task(&repo, "0001-project-scaffold.md").contains("status: done"));
     tui.press_char('u').unwrap();
     assert!(task(&repo, "0001-project-scaffold.md").contains("status: todo"));
 

@@ -36,6 +36,7 @@ use stint::status::{compute_status, StatusReport};
 use crate::repo::StintRepo;
 
 type Term = Terminal<CrosstermBackend<Stdout>>;
+const MESSAGE_TTL: StdDuration = StdDuration::from_secs(3);
 
 pub fn run(repo: StintRepo) -> anyhow::Result<()> {
     let mut terminal = enter_terminal()?;
@@ -303,6 +304,7 @@ struct App {
     prompt: Option<PromptKind>,
     input: String,
     show_detail: bool,
+    show_help: bool,
     command_index: usize,
     custom_menu: bool,
     custom_index: usize,
@@ -331,6 +333,7 @@ impl App {
             prompt: None,
             input: String::new(),
             show_detail: false,
+            show_help: false,
             command_index: 0,
             custom_menu: false,
             custom_index: 0,
@@ -483,7 +486,7 @@ impl App {
             .constraints([
                 Constraint::Length(3),
                 Constraint::Min(5),
-                Constraint::Length(4),
+                Constraint::Length(2),
             ])
             .split(area);
 
@@ -499,8 +502,16 @@ impl App {
         if self.show_detail {
             self.render_detail(frame, centered_rect(78, 82, area));
         }
+        if self.show_help {
+            self.render_help(frame, centered_rect(70, 70, area));
+        }
         if self.prompt.is_some() {
-            self.render_prompt(frame, prompt_rect(area));
+            let prompt_area = if self.prompt == Some(PromptKind::Command) {
+                centered_rect(62, 62, area)
+            } else {
+                prompt_rect(area)
+            };
+            self.render_prompt(frame, prompt_area);
         }
         if self.custom_menu {
             self.render_custom_menu(frame, centered_rect(64, 60, area));
@@ -741,31 +752,31 @@ impl App {
     }
 
     fn render_footer(&self, frame: &mut Frame<'_>, area: Rect) {
-        let lines = if self.message.is_empty() || self.message_at.elapsed().as_secs() > 8 {
+        let lines = if self.message.is_empty() || self.message_at.elapsed() > MESSAGE_TTL {
             vec![
                 Line::styled(
-                    "tab view - shift-tab back - hjkl/arrows move - enter detail - e edit",
-                    Style::default().fg(Color::Gray),
-                ),
-                Line::styled(
-                    "c claim - d done - r ready - b defer - a archive - n new - N new+edit",
+                    "tab views - arrows/hjkl move - enter detail - ? shortcuts - q quit",
                     Style::default().fg(Color::Gray),
                 ),
                 Line::from(vec![
                     Span::styled(
-                        "/ search - f filter - s sort - x commands - : palette - u undo - ctrl-r redo - q quit",
-                        Style::default().fg(Color::Gray),
+                        format!(
+                            "search:{}  filter:{}  sort:{}",
+                            empty_dash(&self.search),
+                            empty_dash(&self.filter),
+                            self.sort.label()
+                        ),
+                        Style::default().fg(Color::DarkGray),
                     ),
                     Span::raw("  "),
                     Span::styled(
-                        format!(
-                            "search:{} filter:{} undo:{} redo:{}",
-                            empty_dash(&self.search),
-                            empty_dash(&self.filter),
-                            self.undo.len(),
-                            self.redo.len()
-                        ),
+                        format!("undo:{} redo:{}", self.undo.len(), self.redo.len()),
                         Style::default().fg(Color::DarkGray),
+                    ),
+                    Span::raw("  "),
+                    Span::styled(
+                        selected_summary(self.selected_task()),
+                        Style::default().fg(Color::Gray),
                     ),
                 ]),
             ]
@@ -834,6 +845,49 @@ impl App {
         );
     }
 
+    fn render_help(&self, frame: &mut Frame<'_>, area: Rect) {
+        frame.render_widget(Clear, area);
+        let lines = vec![
+            Line::styled(
+                "Navigation",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Line::from("tab / shift-tab  switch views"),
+            Line::from("arrows or hjkl    move selection"),
+            Line::from("enter            open task detail"),
+            Line::from("esc              close overlays"),
+            Line::from("q / ctrl-c       quit"),
+            Line::from(""),
+            Line::styled(
+                "Task actions",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Line::from("c claim          d done          r ready"),
+            Line::from("b defer          a archive       e edit"),
+            Line::from("n new            N new + edit"),
+            Line::from(""),
+            Line::styled(
+                "Tools",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Line::from("/ search         f filter        s sort"),
+            Line::from("x custom cmds    : command pal.  u undo"),
+            Line::from("ctrl-r redo      ? shortcuts"),
+        ];
+        frame.render_widget(
+            Paragraph::new(lines)
+                .block(Block::default().borders(Borders::ALL).title("Shortcuts"))
+                .wrap(Wrap { trim: true }),
+            area,
+        );
+    }
+
     fn render_prompt(&self, frame: &mut Frame<'_>, area: Rect) {
         frame.render_widget(Clear, area);
         let title = match self.prompt {
@@ -844,26 +898,47 @@ impl App {
             Some(PromptKind::Command) => "Command palette",
             None => "",
         };
-        let body = if self.prompt == Some(PromptKind::Command) {
-            let items = CommandPaletteItem::all();
-            items
-                .iter()
-                .enumerate()
-                .filter(|(_, item)| item.label().contains(&self.input))
-                .map(|(index, item)| {
-                    if index == self.command_index {
-                        format!("> {}", item.label())
+        let lines = if self.prompt == Some(PromptKind::Command) {
+            let items = self.palette_items();
+            let mut lines = vec![Line::from(vec![
+                Span::styled("Search: ", Style::default().fg(Color::Gray)),
+                Span::raw(if self.input.is_empty() {
+                    "type to filter commands"
+                } else {
+                    &self.input
+                }),
+            ])];
+            lines.push(Line::from(""));
+            if items.is_empty() {
+                lines.push(Line::styled(
+                    "No matching commands",
+                    Style::default().fg(Color::Yellow),
+                ));
+            } else {
+                lines.extend(items.iter().enumerate().map(|(index, item)| {
+                    let marker = if index == self.command_index {
+                        "> "
                     } else {
-                        format!("  {}", item.label())
-                    }
-                })
-                .collect::<Vec<_>>()
-                .join("\n")
+                        "  "
+                    };
+                    Line::from(format!("{marker}{}", item.label()))
+                }));
+            }
+            lines
         } else {
-            self.input.clone()
+            let label = match self.prompt {
+                Some(PromptKind::Search) => "Search",
+                Some(PromptKind::Filter) => "Filter",
+                Some(PromptKind::NewTask { .. }) => "Title",
+                _ => "Input",
+            };
+            vec![Line::from(vec![
+                Span::styled(format!("{label}: "), Style::default().fg(Color::Gray)),
+                Span::raw(&self.input),
+            ])]
         };
         frame.render_widget(
-            Paragraph::new(body)
+            Paragraph::new(lines)
                 .block(Block::default().borders(Borders::ALL).title(title))
                 .wrap(Wrap { trim: false }),
             area,
@@ -912,6 +987,18 @@ impl App {
         }
         if self.prompt.is_some() {
             return self.handle_prompt_key(key, terminal);
+        }
+        if self.show_help {
+            match key.code {
+                KeyCode::Esc => self.show_help = false,
+                KeyCode::Char('?') if plain_key(key) => self.show_help = false,
+                KeyCode::Char('q') if plain_key(key) => self.should_quit = true,
+                KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    self.should_quit = true
+                }
+                _ => {}
+            }
+            return Ok(false);
         }
         if self.show_detail && key.code == KeyCode::Esc {
             self.show_detail = false;
@@ -975,6 +1062,7 @@ impl App {
             }
             KeyCode::Char('x') if plain_key(key) => self.custom_menu = true,
             KeyCode::Char(':') if plain_key(key) => self.open_prompt(PromptKind::Command, ""),
+            KeyCode::Char('?') if plain_key(key) => self.show_help = !self.show_help,
             KeyCode::Char('u') if plain_key(key) => return self.undo(),
             _ => {}
         }
@@ -997,42 +1085,52 @@ impl App {
             KeyCode::Enter => {
                 let value = self.input.trim().to_owned();
                 self.prompt = None;
-                self.input.clear();
                 match prompt {
                     PromptKind::Search => {
+                        self.input.clear();
                         self.search = value;
                         self.selected = 0;
                     }
                     PromptKind::Filter => {
+                        self.input.clear();
                         self.filter = value;
                         self.selected = 0;
                     }
                     PromptKind::NewTask { edit_after } => {
+                        self.input.clear();
                         if !value.is_empty() {
                             return self.create_task(&value, edit_after, terminal);
                         }
                     }
-                    PromptKind::Command => return self.run_palette_item(terminal),
+                    PromptKind::Command => {
+                        let result = self.run_palette_item(terminal);
+                        if self.prompt.is_none() {
+                            self.input.clear();
+                        }
+                        return result;
+                    }
                 }
             }
             KeyCode::Backspace => {
                 self.input.pop();
+                if prompt == PromptKind::Command {
+                    self.command_index = 0;
+                }
             }
-            KeyCode::Down if prompt == PromptKind::Command => {
-                self.command_index = (self.command_index + 1) % CommandPaletteItem::all().len();
-            }
+            KeyCode::Down if prompt == PromptKind::Command => self.move_palette_selection(1),
             KeyCode::Char('j') if prompt == PromptKind::Command && plain_key(key) => {
-                self.command_index = (self.command_index + 1) % CommandPaletteItem::all().len();
+                self.move_palette_selection(1);
             }
-            KeyCode::Up if prompt == PromptKind::Command => {
-                let len = CommandPaletteItem::all().len();
-                self.command_index = (self.command_index + len - 1) % len;
-            }
+            KeyCode::Up if prompt == PromptKind::Command => self.move_palette_selection(-1),
             KeyCode::Char('k') if prompt == PromptKind::Command && plain_key(key) => {
-                let len = CommandPaletteItem::all().len();
-                self.command_index = (self.command_index + len - 1) % len;
+                self.move_palette_selection(-1);
             }
-            KeyCode::Char(ch) if plain_key(key) => self.input.push(ch),
+            KeyCode::Char(ch) if plain_key(key) => {
+                self.input.push(ch);
+                if prompt == PromptKind::Command {
+                    self.command_index = 0;
+                }
+            }
             _ => {}
         }
         Ok(false)
@@ -1085,7 +1183,12 @@ impl App {
     }
 
     fn run_palette_item<H: TerminalHost>(&mut self, terminal: &mut H) -> anyhow::Result<bool> {
-        match CommandPaletteItem::all()[self.command_index] {
+        let items = self.palette_items();
+        let Some(item) = items.get(self.command_index).copied() else {
+            self.set_message("no matching command".to_owned());
+            return Ok(false);
+        };
+        match item {
             CommandPaletteItem::Claim => {
                 self.transition_selected("claim", TaskStatus::InProgress, true)
             }
@@ -1151,6 +1254,21 @@ impl App {
     fn open_prompt(&mut self, prompt: PromptKind, value: &str) {
         self.prompt = Some(prompt);
         self.input = value.to_owned();
+        if prompt == PromptKind::Command {
+            self.command_index = 0;
+        }
+    }
+
+    fn palette_items(&self) -> Vec<CommandPaletteItem> {
+        let needle = self.input.to_lowercase();
+        CommandPaletteItem::all()
+            .into_iter()
+            .filter(|item| needle.is_empty() || item.label().contains(&needle))
+            .collect()
+    }
+
+    fn move_palette_selection(&mut self, delta: isize) {
+        self.command_index = wrap_index(self.command_index, self.palette_items().len(), delta);
     }
 
     fn edit_selected<H: TerminalHost>(&mut self, terminal: &mut H) -> anyhow::Result<()> {
@@ -1397,6 +1515,10 @@ impl TuiTestDriver {
     pub fn commands_run(&self) -> &[String] {
         &self.host.commands_run
     }
+
+    pub fn age_message(&mut self) {
+        self.app.message_at = Instant::now() - MESSAGE_TTL - StdDuration::from_millis(1);
+    }
 }
 
 struct TestHost {
@@ -1641,6 +1763,16 @@ fn empty_dash(value: &str) -> &str {
         "-"
     } else {
         value
+    }
+}
+
+fn selected_summary(task: Option<&Task>) -> String {
+    match task {
+        Some(task) => format!(
+            "selected:{} {}",
+            task.frontmatter.id, task.frontmatter.title
+        ),
+        None => "selected:-".to_owned(),
     }
 }
 

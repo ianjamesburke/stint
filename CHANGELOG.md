@@ -1,6 +1,10 @@
 # Changelog
 
 Newest releases appear first.
+## [0.2.8] - 2026-06-14
+
+### Changes
+- feat: make sprint index the sole source of truth for sprint membership (#8)
 ## [0.2.7] - 2026-06-14
 
 ### Changes

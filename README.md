@@ -38,7 +38,7 @@ Release notes are generated with `git-cliff`.
 ```bash
 just bump          # patch bump, changelog, release commit
 just publish-check # crates.io dry run
-git push origin main
+git push origin main --follow-tags
 ```
 
 Pushes to `main` publish the new `Cargo.toml` version to crates.io when that

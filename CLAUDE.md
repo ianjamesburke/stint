@@ -30,7 +30,8 @@ Use `just --list` for release/install helper commands.
 
 - Bump the patch version after Rust code changes that affect the crate/binary behavior, or after installing a local build for testing a Rust change.
 - Do not bump the patch version for docs-only, comments-only, changelog-only, or agent-instruction-only changes.
-- Use `just bump [patch|minor|major]` for release bumps. It updates `Cargo.toml`, `Cargo.lock`, and `CHANGELOG.md`, then commits `chore: release vX.Y.Z`.
+- Use `just bump [patch|minor|major]` for release bumps. It updates `Cargo.toml`, `Cargo.lock`, and `CHANGELOG.md`, commits `chore: release vX.Y.Z`, and tags `vX.Y.Z`.
+- Push release commits with `git push origin main --follow-tags` so future changelog generation has a previous-version boundary.
 
 ## Source of Truth
 

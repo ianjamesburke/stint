@@ -162,6 +162,14 @@ the entry regardless of form. Edit directly or use `stint sprint reorder`.
 
 Returns exit 0 on a clean graph, exit 1 with all errors listed.
 
+## Agent skill
+
+`skills/stint/SKILL.md` ships with the repo. Symlink it so Claude Code picks it up in any project that uses stint:
+
+```bash
+ln -s /path/to/stint/skills/stint ~/.agents/skills/stint
+```
+
 ## Roadmap
 
 - [ ] `stint gh import` — pull GitHub issues as tasks

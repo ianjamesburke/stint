@@ -31,6 +31,19 @@ The underlying Cargo convention is:
 cargo install stint --locked --force
 ```
 
+## Release
+
+Release notes are generated with `git-cliff`.
+
+```bash
+just bump          # patch bump, changelog, release commit
+just publish-check # crates.io dry run
+git push origin main
+```
+
+Pushes to `main` publish the new `Cargo.toml` version to crates.io when that
+version does not already exist.
+
 ## Usage
 
 ```bash

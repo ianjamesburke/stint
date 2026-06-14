@@ -28,6 +28,7 @@ No `just` file yet — use cargo directly.
 ## Releases
 
 - After any user-facing behavior change or installed local build, bump the patch version before committing.
+- Use `just bump [patch|minor|major]` for release bumps. It updates `Cargo.toml`, `Cargo.lock`, and `CHANGELOG.md`, then commits `chore: release vX.Y.Z`.
 
 ## Source of Truth
 

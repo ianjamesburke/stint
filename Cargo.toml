@@ -27,6 +27,7 @@ thiserror = "1"
 anyhow = "1"
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive"] }
+clap_complete = "4"
 owo-colors = "4"
 crossterm = "0.28"
 notify = "8"

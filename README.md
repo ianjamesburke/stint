@@ -21,6 +21,14 @@ Tasks live in `.stint/tasks/`. Sprints are ordered lists. Includes a CLI and TUI
 cargo install stint --locked
 ```
 
+For zsh tab completion (cargo install users only — the shell installer handles this automatically):
+
+```bash
+mkdir -p ~/.zsh/completions
+stint completions zsh > ~/.zsh/completions/_stint
+# ensure ~/.zshrc has: fpath=(~/.zsh/completions $fpath) && autoload -U compinit && compinit
+```
+
 To update:
 
 ```bash

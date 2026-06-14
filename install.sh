@@ -73,3 +73,17 @@ case ":${PATH}:" in
 esac
 
 "${INSTALL_DIR}/${BIN}" --version
+
+# Install zsh completions if zsh is the current shell
+if [ -n "$ZSH_VERSION" ] || [ "$(basename "$SHELL")" = "zsh" ]; then
+  COMP_DIR="${HOME}/.zsh/completions"
+  mkdir -p "$COMP_DIR"
+  "${INSTALL_DIR}/${BIN}" completions zsh > "${COMP_DIR}/_${BIN}"
+  echo "Zsh completions installed: ${COMP_DIR}/_${BIN}"
+  echo ""
+  echo "Make sure your ~/.zshrc includes:"
+  echo "  fpath=(~/.zsh/completions \$fpath)"
+  echo "  autoload -U compinit && compinit"
+  echo ""
+  echo "Then run: source ~/.zshrc"
+fi

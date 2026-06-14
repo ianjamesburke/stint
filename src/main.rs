@@ -5,7 +5,8 @@ use std::io::IsTerminal;
 use std::process::{self, Command};
 
 use anyhow::Context;
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
+use clap_complete::{generate, Shell};
 
 use stint::repo::StintRepo;
 use stint::tui;
@@ -197,6 +198,12 @@ enum Commands {
 
     /// Update stint from crates.io through cargo install.
     Update,
+
+    /// Print shell completion script to stdout.
+    Completions {
+        /// Shell to generate completions for.
+        shell: Shell,
+    },
 }
 
 #[derive(Subcommand)]
@@ -479,6 +486,10 @@ fn run(cli: Cli) -> anyhow::Result<()> {
 
         Some(Commands::Update) => {
             cmd_update()?;
+        }
+
+        Some(Commands::Completions { shell }) => {
+            generate(shell, &mut Cli::command(), "stint", &mut std::io::stdout());
         }
     }
     Ok(())

@@ -68,6 +68,9 @@ struct RawFrontmatter {
     created_at: Option<String>,
     started_at: Option<String>,
     completed_at: Option<String>,
+    /// Silently ignored if present in old task files (sprint membership is now
+    /// determined exclusively by the sprint index files).
+    #[allow(dead_code)]
     sprint: Option<String>,
     /// Unified blocker field: integers, strings, or mixed lists.
     #[serde(default)]
@@ -162,7 +165,6 @@ pub fn parse_task(content: &str, filename: &str) -> Result<Task, ParseError> {
         created_at: raw.created_at.filter(|s| !s.is_empty()),
         started_at: raw.started_at.filter(|s| !s.is_empty()),
         completed_at: raw.completed_at.filter(|s| !s.is_empty()),
-        sprint: raw.sprint.filter(|s| !s.is_empty()),
         blocked_by,
         gh_issue,
         area,
@@ -338,7 +340,8 @@ So users can authenticate.
         assert_eq!(fm.created_at.as_deref(), Some("2026-06-10T11:00:00Z"));
         assert_eq!(fm.started_at.as_deref(), Some("2026-06-10T12:00:00Z"));
         assert_eq!(fm.completed_at.as_deref(), Some("2026-06-10T12:30:00Z"));
-        assert_eq!(fm.sprint.as_deref(), Some("s12"));
+        // sprint: "s12" is present in the YAML but silently ignored — sprint membership
+        // is now determined exclusively by the sprint index files.
         assert_eq!(
             fm.blocked_by,
             vec![

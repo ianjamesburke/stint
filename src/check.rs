@@ -73,16 +73,6 @@ pub enum CheckError {
         entry: String,
     },
 
-    // Rule 6 — sprint reference
-    /// The task's `sprint` field references a sprint that does not exist.
-    #[error("task {task_id}: sprint field references unknown sprint '{sprint_id}'")]
-    UnresolvedSprint {
-        /// Task ID.
-        task_id: String,
-        /// Sprint ID that was not found.
-        sprint_id: String,
-    },
-
     // Rule 7 — sprint task references
     /// A sprint index file lists a task ID that does not exist.
     #[error("sprint {sprint_id}: references unknown task '{task_entry}'")]
@@ -146,37 +136,6 @@ pub enum CheckError {
         blockers: Vec<String>,
     },
 
-    // Rule 13 — sprint index / frontmatter mismatch (listed but field wrong or absent)
-    /// A task is listed in a sprint's index file but its `sprint` frontmatter field
-    /// does not match that sprint's ID. This causes status counts and sprint show
-    /// to disagree on how many tasks belong to the sprint.
-    #[error(
-        "sprint {sprint_id}: task '{task_id}' is listed in the index but \
-         its sprint frontmatter is {actual} (expected \"{sprint_id}\")"
-    )]
-    SprintIndexFrontmatterMismatch {
-        /// Sprint ID.
-        sprint_id: String,
-        /// Task ID.
-        task_id: String,
-        /// The actual `sprint` frontmatter value, quoted, or `"none"`.
-        actual: String,
-    },
-
-    // Rule 14 — frontmatter / sprint index mismatch (field set but not listed)
-    /// A task's `sprint` frontmatter field names a sprint that does not list
-    /// the task in its index file. This causes status counts and sprint show
-    /// to disagree on how many tasks belong to the sprint.
-    #[error(
-        "task {task_id}: sprint field is \"{sprint_id}\" but task is not listed \
-         in that sprint's index"
-    )]
-    SprintFrontmatterNotInIndex {
-        /// Task ID.
-        task_id: String,
-        /// Sprint ID referenced by the task.
-        sprint_id: String,
-    },
 }
 
 // ---------------------------------------------------------------------------
@@ -196,22 +155,7 @@ pub fn check(tasks: &[Task], sprints: &[Sprint]) -> Vec<CheckError> {
         .collect();
 
     let known_task_ids: HashSet<&str> = task_id_to_file.keys().copied().collect();
-    let known_sprint_ids: HashSet<&str> = sprints.iter().map(|s| s.header.id.as_str()).collect();
     let done = done_ids(tasks);
-
-    // Map sprint_id -> set of numeric task IDs listed in that sprint's index.
-    // Used by Rules 13 and 14 to enforce bidirectional consistency.
-    let sprint_task_index: HashMap<&str, HashSet<String>> = sprints
-        .iter()
-        .map(|s| {
-            let ids: HashSet<String> = s
-                .task_ids
-                .iter()
-                .map(|e| numeric_prefix(e).to_owned())
-                .collect();
-            (s.header.id.as_str(), ids)
-        })
-        .collect();
 
     // Rule 10 — duplicate IDs
     check_duplicate_ids(tasks, &mut errors);
@@ -252,16 +196,6 @@ pub fn check(tasks: &[Task], sprints: &[Sprint]) -> Vec<CheckError> {
             validate_blocker_ref(id, r, &known_task_ids, &mut errors);
         }
 
-        // Rule 6 — sprint reference
-        if let Some(sprint_id) = &task.frontmatter.sprint {
-            if !known_sprint_ids.contains(sprint_id.as_str()) {
-                errors.push(CheckError::UnresolvedSprint {
-                    task_id: id.to_owned(),
-                    sprint_id: sprint_id.clone(),
-                });
-            }
-        }
-
         // Rule 11 — task state machine: in-progress/done tasks may not carry
         // unresolved local-task blockers.
         if matches!(
@@ -290,7 +224,6 @@ pub fn check(tasks: &[Task], sprints: &[Sprint]) -> Vec<CheckError> {
     }
 
     // Rule 7 — sprint task references
-    // Rule 13 — task listed in sprint index but sprint frontmatter doesn't match
     for sprint in sprints {
         for entry in &sprint.task_ids {
             let prefix = numeric_prefix(entry);
@@ -299,33 +232,6 @@ pub fn check(tasks: &[Task], sprints: &[Sprint]) -> Vec<CheckError> {
                     sprint_id: sprint.header.id.clone(),
                     task_entry: entry.clone(),
                 });
-            } else if let Some(task) = tasks.iter().find(|t| t.frontmatter.id.as_str() == prefix) {
-                if task.frontmatter.sprint.as_deref() != Some(sprint.header.id.as_str()) {
-                    let actual = match &task.frontmatter.sprint {
-                        Some(s) => format!("\"{}\"", s),
-                        None => "none".to_owned(),
-                    };
-                    errors.push(CheckError::SprintIndexFrontmatterMismatch {
-                        sprint_id: sprint.header.id.clone(),
-                        task_id: prefix.to_owned(),
-                        actual,
-                    });
-                }
-            }
-        }
-    }
-
-    // Rule 14 — task has sprint frontmatter field but is not listed in that sprint's index
-    for task in tasks {
-        if let Some(sprint_id) = &task.frontmatter.sprint {
-            // Only enforce when the sprint is known (unknown sprint already caught by Rule 6).
-            if let Some(indexed_ids) = sprint_task_index.get(sprint_id.as_str()) {
-                if !indexed_ids.contains(task.frontmatter.id.as_str()) {
-                    errors.push(CheckError::SprintFrontmatterNotInIndex {
-                        task_id: task.frontmatter.id.clone(),
-                        sprint_id: sprint_id.clone(),
-                    });
-                }
             }
         }
     }
@@ -547,7 +453,6 @@ mod tests {
                 created_at: None,
                 started_at: None,
                 completed_at: None,
-                sprint: None,
                 blocked_by: vec![],
                 gh_issue: vec![],
                 area: vec![],
@@ -575,7 +480,6 @@ mod tests {
                 created_at: None,
                 started_at: None,
                 completed_at: None,
-                sprint: None,
                 blocked_by: vec![],
                 gh_issue: vec![],
                 area: vec![],
@@ -671,25 +575,6 @@ mod tests {
         assert!(errors
             .iter()
             .all(|e| !matches!(e, CheckError::InvalidBlockedByRef { .. })));
-    }
-
-    #[test]
-    fn unresolved_sprint_reference() {
-        let tasks = vec![make_task("0001", "Task A", "sprint: \"s99\"")];
-        let errors = check(&tasks, &[]);
-        assert!(errors.iter().any(
-            |e| matches!(e, CheckError::UnresolvedSprint { sprint_id, .. } if sprint_id == "s99")
-        ));
-    }
-
-    #[test]
-    fn sprint_references_existing_sprint() {
-        let tasks = vec![make_task("0001", "Task A", "sprint: \"s1\"")];
-        let sprints = vec![make_sprint(1, &["0001"])];
-        let errors = check(&tasks, &sprints);
-        assert!(errors
-            .iter()
-            .all(|e| !matches!(e, CheckError::UnresolvedSprint { .. })));
     }
 
     #[test]
@@ -805,81 +690,4 @@ mod tests {
             .any(|e| matches!(e, CheckError::UnresolvedBlockedBy { .. })));
     }
 
-    // Rule 13 tests
-
-    #[test]
-    fn sprint_index_lists_task_with_matching_frontmatter_is_ok() {
-        let tasks = vec![make_task("0001", "A", "sprint: \"s1\"")];
-        let sprints = vec![make_sprint(1, &["0001"])];
-        let errors = check(&tasks, &sprints);
-        assert!(errors
-            .iter()
-            .all(|e| !matches!(e, CheckError::SprintIndexFrontmatterMismatch { .. })));
-    }
-
-    #[test]
-    fn sprint_index_lists_task_with_no_sprint_frontmatter_is_error() {
-        // Task is in the sprint index but has no sprint field → mismatch.
-        let tasks = vec![make_task("0001", "A", "")];
-        let sprints = vec![make_sprint(1, &["0001"])];
-        let errors = check(&tasks, &sprints);
-        assert!(errors.iter().any(|e| matches!(
-            e,
-            CheckError::SprintIndexFrontmatterMismatch { sprint_id, task_id, actual }
-                if sprint_id == "s1" && task_id == "0001" && actual == "none"
-        )));
-    }
-
-    #[test]
-    fn sprint_index_lists_task_with_wrong_sprint_frontmatter_is_error() {
-        // Task is listed in s1 but its frontmatter says s2 → mismatch.
-        let tasks = vec![make_task("0001", "A", "sprint: \"s2\"")];
-        let s1 = make_sprint(1, &["0001"]);
-        let s2 = make_sprint(2, &[]);
-        let errors = check(&tasks, &[s1, s2]);
-        assert!(errors.iter().any(|e| matches!(
-            e,
-            CheckError::SprintIndexFrontmatterMismatch { sprint_id, task_id, actual }
-                if sprint_id == "s1" && task_id == "0001" && actual == "\"s2\""
-        )));
-    }
-
-    // Rule 14 tests
-
-    #[test]
-    fn task_with_sprint_frontmatter_listed_in_index_is_ok() {
-        let tasks = vec![make_task("0001", "A", "sprint: \"s1\"")];
-        let sprints = vec![make_sprint(1, &["0001"])];
-        let errors = check(&tasks, &sprints);
-        assert!(errors
-            .iter()
-            .all(|e| !matches!(e, CheckError::SprintFrontmatterNotInIndex { .. })));
-    }
-
-    #[test]
-    fn task_with_sprint_frontmatter_not_in_index_is_error() {
-        // Task has sprint: s1 but the s1 sprint index does not list it.
-        let tasks = vec![make_task("0001", "A", "sprint: \"s1\"")];
-        let sprints = vec![make_sprint(1, &[])]; // empty index
-        let errors = check(&tasks, &sprints);
-        assert!(errors.iter().any(|e| matches!(
-            e,
-            CheckError::SprintFrontmatterNotInIndex { task_id, sprint_id }
-                if task_id == "0001" && sprint_id == "s1"
-        )));
-    }
-
-    #[test]
-    fn task_with_unknown_sprint_frontmatter_does_not_trigger_rule14() {
-        // Rule 6 catches the unknown sprint; Rule 14 should not double-fire.
-        let tasks = vec![make_task("0001", "A", "sprint: \"s99\"")];
-        let errors = check(&tasks, &[]);
-        assert!(errors
-            .iter()
-            .all(|e| !matches!(e, CheckError::SprintFrontmatterNotInIndex { .. })));
-        // But Rule 6 fires.
-        assert!(errors
-            .iter()
-            .any(|e| matches!(e, CheckError::UnresolvedSprint { .. })));
-    }
 }

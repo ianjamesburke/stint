@@ -1,5 +1,8 @@
 /// Compute the `stint status` summary from a task graph.
+use std::collections::HashSet;
+
 use crate::schema::{BlockedByRef, Sprint, Task, TaskStatus};
+use crate::sprint::numeric_prefix;
 use crate::state::{active_blockers, done_ids};
 
 /// A task that has at least one blocker set.
@@ -99,13 +102,17 @@ pub fn compute_status(
     });
 
     let sprint_progress = sprint_id.and_then(|sid| {
-        if !sprints.iter().any(|s| s.header.id == sid) {
-            return None;
-        }
+        let sprint = sprints.iter().find(|s| s.header.id == sid)?;
+
+        let sprint_task_ids: HashSet<&str> = sprint
+            .task_ids
+            .iter()
+            .map(|e| numeric_prefix(e))
+            .collect();
 
         let sprint_tasks: Vec<&Task> = tasks
             .iter()
-            .filter(|t| t.frontmatter.sprint.as_deref() == Some(sid))
+            .filter(|t| sprint_task_ids.contains(t.frontmatter.id.as_str()))
             .collect();
 
         let committed_minutes: u32 = sprint_tasks
@@ -157,36 +164,21 @@ fn sprint_number(id: &str) -> u64 {
 mod tests {
     use super::*;
     use crate::parse::parse_task;
-    use crate::schema::{TaskFrontmatter, TaskStatus};
     use crate::sprint::parse_sprint;
 
-    fn make_task_with_sprint(
-        id: &str,
-        sprint: &str,
-        estimate: Option<&str>,
-        actual: Option<&str>,
-        status: TaskStatus,
-    ) -> Task {
-        use crate::schema::Task;
-        Task {
-            frontmatter: TaskFrontmatter {
-                id: id.to_owned(),
-                title: format!("Task {}", id),
-                status,
-                estimate: estimate.map(|s| s.parse().unwrap()),
-                actual: actual.map(|s| s.parse().unwrap()),
-                created_at: None,
-                started_at: None,
-                completed_at: None,
-                sprint: Some(sprint.to_owned()),
-                blocked_by: vec![],
-                gh_issue: vec![],
-                area: vec![],
-                tags: vec![],
-            },
-            body: String::new(),
-            filename: format!("{}-slug.md", id),
+    fn make_task(id: &str, estimate: Option<&str>, actual: Option<&str>, status: TaskStatus) -> Task {
+        let mut fields = String::new();
+        if let Some(e) = estimate {
+            fields.push_str(&format!("estimate: \"{e}\"\n"));
         }
+        if let Some(a) = actual {
+            fields.push_str(&format!("actual: \"{a}\"\n"));
+        }
+        let content = format!(
+            "---\nid: \"{id}\"\ntitle: \"Task {id}\"\nstatus: {}\n{fields}---\n",
+            status.as_str()
+        );
+        parse_task(&content, &format!("{id}-slug.md")).unwrap()
     }
 
     fn make_blocked_task(id: &str) -> Task {
@@ -196,17 +188,18 @@ mod tests {
         parse_task(&content, &format!("{id}-slug.md")).unwrap()
     }
 
-    fn make_sprint_file(number: u32) -> crate::schema::Sprint {
-        let content = format!("# Sprint {number} · Jan 1–15 · goal: test\n\n- 0001\n");
+    fn make_sprint_file(number: u32, task_ids: &[&str]) -> crate::schema::Sprint {
+        let entries: String = task_ids.iter().map(|id| format!("- {id}\n")).collect();
+        let content = format!("# Sprint {number} · Jan 1–15 · goal: test\n\n{entries}");
         parse_sprint(&content).unwrap()
     }
 
     #[test]
     fn open_count() {
         let tasks = vec![
-            make_task_with_sprint("0001", "s1", None, None, TaskStatus::Backlog),
-            make_task_with_sprint("0002", "s1", None, None, TaskStatus::Done),
-            make_task_with_sprint("0003", "s1", None, None, TaskStatus::InProgress),
+            make_task("0001", None, None, TaskStatus::Backlog),
+            make_task("0002", None, None, TaskStatus::Done),
+            make_task("0003", None, None, TaskStatus::InProgress),
         ];
         let report = compute_status(&tasks, &[], None);
         assert_eq!(report.open_count, 2);
@@ -260,10 +253,11 @@ mod tests {
 
     #[test]
     fn sprint_progress_basic() {
-        let sprint = make_sprint_file(1);
+        // Sprint index lists 0001 and 0002.
+        let sprint = make_sprint_file(1, &["0001", "0002"]);
         let tasks = vec![
-            make_task_with_sprint("0001", "s1", Some("4h"), Some("2h"), TaskStatus::InProgress),
-            make_task_with_sprint("0002", "s1", Some("2h"), None, TaskStatus::Done),
+            make_task("0001", Some("4h"), Some("2h"), TaskStatus::InProgress),
+            make_task("0002", Some("2h"), None, TaskStatus::Done),
         ];
         let report = compute_status(&tasks, &[sprint], Some("s1"));
         let progress = report.sprint_progress.unwrap();
@@ -282,15 +276,10 @@ mod tests {
 
     #[test]
     fn latest_sprint_selected_when_unspecified() {
-        let s1 = make_sprint_file(1);
-        let s3 = make_sprint_file(3);
-        let tasks = vec![make_task_with_sprint(
-            "0001",
-            "s3",
-            Some("1h"),
-            None,
-            TaskStatus::Todo,
-        )];
+        // s3 is the latest; it lists 0001.
+        let s1 = make_sprint_file(1, &[]);
+        let s3 = make_sprint_file(3, &["0001"]);
+        let tasks = vec![make_task("0001", Some("1h"), None, TaskStatus::Todo)];
         let report = compute_status(&tasks, &[s1, s3], None);
         let progress = report.sprint_progress.unwrap();
         assert_eq!(progress.sprint_id, "s3");
@@ -299,10 +288,10 @@ mod tests {
     #[test]
     fn backlog_count_reported_separately() {
         let tasks = vec![
-            make_task_with_sprint("0001", "s1", None, None, TaskStatus::Backlog),
-            make_task_with_sprint("0002", "s1", None, None, TaskStatus::Backlog),
-            make_task_with_sprint("0003", "s1", None, None, TaskStatus::Todo),
-            make_task_with_sprint("0004", "s1", None, None, TaskStatus::Done),
+            make_task("0001", None, None, TaskStatus::Backlog),
+            make_task("0002", None, None, TaskStatus::Backlog),
+            make_task("0003", None, None, TaskStatus::Todo),
+            make_task("0004", None, None, TaskStatus::Done),
         ];
         let report = compute_status(&tasks, &[], None);
         assert_eq!(report.backlog_count, 2);
@@ -320,5 +309,19 @@ mod tests {
         let report = compute_status(&[backlog_blocked, active_blocked], &[], None);
         assert_eq!(report.blocked_tasks.len(), 1);
         assert_eq!(report.blocked_tasks[0].id, "0002");
+    }
+
+    #[test]
+    fn sprint_progress_only_counts_tasks_in_index() {
+        // Task 0002 is NOT in the sprint index — should not be counted.
+        let sprint = make_sprint_file(1, &["0001"]);
+        let tasks = vec![
+            make_task("0001", Some("1h"), None, TaskStatus::Todo),
+            make_task("0002", Some("2h"), None, TaskStatus::Todo),
+        ];
+        let report = compute_status(&tasks, &[sprint], Some("s1"));
+        let progress = report.sprint_progress.unwrap();
+        assert_eq!(progress.task_count, 1);
+        assert_eq!(progress.committed_minutes, 60);
     }
 }

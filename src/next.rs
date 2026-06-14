@@ -54,6 +54,16 @@ pub fn compute_next(tasks: &[Task], sprints: &[Sprint], options: NextOptions<'_>
     let sprint_task_ids = sprint_task_ids(sprints, options.sprint);
     let ordered = ordered_tasks(tasks, sprints, options.sprint);
 
+    // Build task_id -> sprint_id lookup from sprint index files.
+    let task_sprint: HashMap<&str, &str> = sprints
+        .iter()
+        .flat_map(|s| {
+            s.task_ids
+                .iter()
+                .map(move |e| (numeric_prefix(e), s.header.id.as_str()))
+        })
+        .collect();
+
     let mut ready = Vec::new();
     let mut blocked = Vec::new();
     // area name -> id of the ready task that first claimed it this run.
@@ -82,7 +92,7 @@ pub fn compute_next(tasks: &[Task], sprints: &[Sprint], options: NextOptions<'_>
             id: task.frontmatter.id.clone(),
             title: task.frontmatter.title.clone(),
             status: task.frontmatter.status.clone(),
-            sprint: task.frontmatter.sprint.clone(),
+            sprint: task_sprint.get(task.frontmatter.id.as_str()).map(|s| s.to_string()),
             area: task.frontmatter.area.clone(),
             gh_issue: task.frontmatter.gh_issue.clone(),
             filename: task.filename.clone(),

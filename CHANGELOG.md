@@ -1,6 +1,11 @@
 # Changelog
 
 Newest releases appear first.
+## [0.2.6] - 2026-06-14
+
+### Changes
+- feat: improve tui table task visibility
+- Add stint agent skill and symlink install instructions
 ## [0.2.5] - 2026-06-14
 
 ### Changes

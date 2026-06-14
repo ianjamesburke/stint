@@ -33,6 +33,10 @@ message = "^chore: promote"
 skip = true
 
 [[git.commit_parsers]]
+message = "^chore"
+skip = true
+
+[[git.commit_parsers]]
 message = "^- "
 skip = true
 

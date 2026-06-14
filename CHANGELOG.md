@@ -1,6 +1,11 @@
 # Changelog
 
 Newest releases appear first.
+## [0.2.7] - 2026-06-14
+
+### Changes
+- feat: add Rules 13+14 to enforce sprint index/frontmatter bidirectional consistency
+- Update task statuses: complete interim TUI, archive sprint board
 ## [0.2.6] - 2026-06-14
 
 ### Changes

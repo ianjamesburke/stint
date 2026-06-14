@@ -36,6 +36,7 @@ sed -i '' "s/^version = \"$current\"/version = \"$new\"/" "$TREE/Cargo.toml"
 (cd "$TREE" && cargo generate-lockfile --quiet 2>/dev/null || cargo generate-lockfile)
 
 echo "Generating changelog..."
+touch "$TREE/CHANGELOG.md"
 (cd "$TREE" && git-cliff \
     --config cliff.toml \
     --unreleased \

@@ -28,9 +28,6 @@ pub fn serialize_task(task: &Task) -> String {
     if let Some(completed_at) = &fm.completed_at {
         out.push_str(&format!("completed_at: {}\n", yaml_quote(completed_at)));
     }
-    if let Some(s) = &fm.sprint {
-        out.push_str(&format!("sprint: \"{}\"\n", s));
-    }
 
     write_blocker_list(&mut out, "blocked_by", &fm.blocked_by);
 
@@ -141,7 +138,6 @@ actual: "30m"
 created_at: "2026-06-10T11:00:00Z"
 started_at: "2026-06-10T12:00:00Z"
 completed_at: "2026-06-10T12:30:00Z"
-sprint: "s12"
 blocked_by:
   - 2
   - "@7"
@@ -172,7 +168,6 @@ So users can authenticate.
         assert_eq!(fm.created_at.as_deref(), Some("2026-06-10T11:00:00Z"));
         assert_eq!(fm.started_at.as_deref(), Some("2026-06-10T12:00:00Z"));
         assert_eq!(fm.completed_at.as_deref(), Some("2026-06-10T12:30:00Z"));
-        assert_eq!(fm.sprint.as_deref(), Some("s12"));
         assert_eq!(
             fm.blocked_by,
             vec![

@@ -473,15 +473,25 @@ impl App {
             let needle = self.search.to_lowercase();
             tasks.retain(|task| task_matches_text(task, &needle));
         }
+        // Build task_id -> sprint_id lookup from sprint index files.
+        let task_sprint: HashMap<&str, &str> = self
+            .data
+            .sprints
+            .iter()
+            .flat_map(|s| {
+                s.task_ids
+                    .iter()
+                    .map(move |e| (numeric_prefix(e), s.header.id.as_str()))
+            })
+            .collect();
+
         if !self.filter.is_empty() {
             let needle = self.filter.to_lowercase();
             tasks.retain(|task| {
                 classify(task, &done).as_str().contains(&needle)
-                    || task
-                        .frontmatter
-                        .sprint
-                        .as_deref()
-                        .unwrap_or("")
+                    || task_sprint
+                        .get(task.frontmatter.id.as_str())
+                        .unwrap_or(&"")
                         .to_lowercase()
                         .contains(&needle)
                     || task
@@ -507,9 +517,9 @@ impl App {
                     .then(a.frontmatter.id.cmp(&b.frontmatter.id))
             }),
             SortMode::Sprint => tasks.sort_by(|a, b| {
-                a.frontmatter
-                    .sprint
-                    .cmp(&b.frontmatter.sprint)
+                task_sprint
+                    .get(a.frontmatter.id.as_str())
+                    .cmp(&task_sprint.get(b.frontmatter.id.as_str()))
                     .then(a.frontmatter.id.cmp(&b.frontmatter.id))
             }),
         }
@@ -713,6 +723,16 @@ impl App {
         let tasks = self.visible_tasks();
         let visible_rows = table_body_rows(area);
         let start = viewport_start(self.selected, tasks.len(), visible_rows);
+        let task_sprint: HashMap<&str, &str> = self
+            .data
+            .sprints
+            .iter()
+            .flat_map(|s| {
+                s.task_ids
+                    .iter()
+                    .map(move |e| (numeric_prefix(e), s.header.id.as_str()))
+            })
+            .collect();
         let rows = tasks
             .iter()
             .enumerate()
@@ -724,6 +744,10 @@ impl App {
                 } else {
                     Style::default()
                 };
+                let sprint_label = task_sprint
+                    .get(task.frontmatter.id.as_str())
+                    .copied()
+                    .unwrap_or("-");
                 Row::new(vec![
                     Cell::from(task.frontmatter.id.clone()),
                     Cell::from(classify(task, &done).as_str()),
@@ -734,12 +758,7 @@ impl App {
                             .map(|value| value.to_string())
                             .unwrap_or_else(|| "-".to_owned()),
                     ),
-                    Cell::from(
-                        task.frontmatter
-                            .sprint
-                            .clone()
-                            .unwrap_or_else(|| "-".to_owned()),
-                    ),
+                    Cell::from(sprint_label),
                     Cell::from(task.frontmatter.area.join(",")),
                     Cell::from(task.frontmatter.title.clone()),
                 ])
@@ -781,7 +800,7 @@ impl App {
             .split(area);
 
         if let Some(sprint) = self.data.sprints.get(self.sprint_index) {
-            let progress = sprint_progress_for(&self.data.tasks, &sprint.header.id);
+            let progress = sprint_progress_for(&self.data.tasks, &self.data.sprints, &sprint.header.id);
             let ratio = if progress.task_count == 0 {
                 0.0
             } else {
@@ -874,6 +893,13 @@ impl App {
         let done = done_ids(&self.data.tasks);
         let active = active_blockers(task, &done);
         let fm = &task.frontmatter;
+        let sprint_label = self
+            .data
+            .sprints
+            .iter()
+            .find(|s| s.task_ids.iter().any(|e| numeric_prefix(e) == fm.id.as_str()))
+            .map(|s| s.header.id.as_str())
+            .unwrap_or("-");
         let mut lines = vec![
             Line::styled(
                 format!("{} {}", fm.id, fm.title),
@@ -895,7 +921,7 @@ impl App {
                     .map(|value| value.to_string())
                     .unwrap_or_else(|| "-".to_owned())
             )),
-            Line::from(format!("sprint: {}", fm.sprint.as_deref().unwrap_or("-"))),
+            Line::from(format!("sprint: {}", sprint_label)),
             Line::from(format!("area: {}", empty_dash(&fm.area.join(", ")))),
             Line::from(format!("tags: {}", empty_dash(&fm.tags.join(", ")))),
             Line::from(format!(
@@ -1511,7 +1537,7 @@ impl App {
         }
 
         let path = self.repo.resolve_task_path(&task.frontmatter.id)?;
-        let run = expand_command(&command.run, &task, &path);
+        let run = expand_command(&command.run, &task, &path, &self.data.sprints);
         let status = terminal.run_command(&run)?;
         if status {
             self.set_message(format!("command finished: {}", command.name));
@@ -1867,36 +1893,16 @@ fn parse_timestamp(value: Option<&str>) -> Option<chrono::DateTime<chrono::Fixed
     value.and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
 }
 
-fn sprint_progress_for(tasks: &[Task], sprint_id: &str) -> stint::status::SprintProgress {
-    compute_status(tasks, &[], Some(sprint_id))
+fn sprint_progress_for(tasks: &[Task], sprints: &[Sprint], sprint_id: &str) -> stint::status::SprintProgress {
+    compute_status(tasks, sprints, Some(sprint_id))
         .sprint_progress
-        .unwrap_or_else(|| {
-            let sprint_tasks = tasks
-                .iter()
-                .filter(|task| task.frontmatter.sprint.as_deref() == Some(sprint_id))
-                .collect::<Vec<_>>();
-            let committed_minutes = sprint_tasks
-                .iter()
-                .filter_map(|task| task.frontmatter.estimate)
-                .map(|duration| duration.minutes())
-                .sum();
-            let logged_minutes = sprint_tasks
-                .iter()
-                .filter_map(|task| task.frontmatter.actual)
-                .map(|duration| duration.minutes())
-                .sum();
-            let done_count = sprint_tasks
-                .iter()
-                .filter(|task| matches!(task.frontmatter.status, TaskStatus::Done))
-                .count();
-            stint::status::SprintProgress {
-                sprint_id: sprint_id.to_owned(),
-                committed_minutes,
-                logged_minutes,
-                remaining_minutes: committed_minutes.saturating_sub(logged_minutes),
-                task_count: sprint_tasks.len(),
-                done_count,
-            }
+        .unwrap_or_else(|| stint::status::SprintProgress {
+            sprint_id: sprint_id.to_owned(),
+            committed_minutes: 0,
+            logged_minutes: 0,
+            remaining_minutes: 0,
+            task_count: 0,
+            done_count: 0,
         })
 }
 
@@ -2073,14 +2079,19 @@ fn open_editor_path(path: &PathBuf) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn expand_command(template: &str, task: &Task, path: &PathBuf) -> String {
+fn expand_command(template: &str, task: &Task, path: &PathBuf, sprints: &[Sprint]) -> String {
     let fm = &task.frontmatter;
+    let sprint_id = sprints
+        .iter()
+        .find(|s| s.task_ids.iter().any(|e| numeric_prefix(e) == fm.id.as_str()))
+        .map(|s| s.header.id.as_str())
+        .unwrap_or("");
     template
         .replace("{id}", &fm.id)
         .replace("{slug}", &title_to_slug(&fm.title))
         .replace("{path}", &shell_quote(&path.to_string_lossy()))
         .replace("{title}", &shell_quote(&fm.title))
-        .replace("{sprint}", fm.sprint.as_deref().unwrap_or(""))
+        .replace("{sprint}", sprint_id)
         .replace(
             "{estimate}",
             &fm.estimate

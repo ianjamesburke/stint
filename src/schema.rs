@@ -209,8 +209,6 @@ pub struct TaskFrontmatter {
     pub started_at: Option<String>,
     /// UTC RFC3339 timestamp for when work completed.
     pub completed_at: Option<String>,
-    /// Sprint this task belongs to (e.g. "s12").
-    pub sprint: Option<String>,
     /// Unified blocker references (local tasks, issues, external refs, notes).
     pub blocked_by: Vec<BlockedByRef>,
     /// Linked GitHub issue numbers (as strings for uniformity).

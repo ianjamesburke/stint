@@ -1,7 +1,7 @@
 /// All command implementations.  Each function takes a `&StintRepo` and
 /// whatever arguments the command needs.  No `std::process::exit` here —
 /// callers handle exit codes.
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
@@ -18,7 +18,7 @@ use stint::mutate::{
     set_actual, set_completed_at, set_started_at_if_absent, set_status, title_to_slug,
 };
 use stint::next::{compute_next, NextOptions, NextReport, NextTask};
-use stint::schema::{BlockedByRef, TaskStatus};
+use stint::schema::{BlockedByRef, Sprint, TaskStatus};
 use stint::serialize::serialize_task;
 use stint::sprint::{
     normalize_sprint_id, numeric_prefix, sprint_add_task, sprint_remove_task, task_link,
@@ -250,10 +250,15 @@ pub fn cmd_list(
     tag_filter: Option<&str>,
 ) -> anyhow::Result<Vec<TaskRow>> {
     let tasks = repo.load_tasks()?;
+    let sprints = repo.load_sprints()?;
     let done = done_ids(&tasks);
+
+    // Build a task_id -> sprint_id lookup from the sprint index files.
+    let task_sprint_map = task_to_sprint_map(&sprints);
 
     let rows = stint::filter::filter_tasks(
         &tasks,
+        &sprints,
         status_filter,
         sprint_filter,
         area_filter,
@@ -279,7 +284,7 @@ pub fn cmd_list(
         blocked: is_blocked(t, &done),
         blockers: active_blockers(t, &done),
         estimate: t.frontmatter.estimate.map(|d| d.to_string()),
-        sprint: t.frontmatter.sprint.clone(),
+        sprint: task_sprint_map.get(t.frontmatter.id.as_str()).cloned(),
     })
     .collect();
     Ok(rows)
@@ -383,9 +388,15 @@ pub fn cmd_show(repo: &StintRepo, id_input: &str) -> anyhow::Result<()> {
     let path = repo.resolve_task_path(id_input)?;
     let task = repo.read_task(&path)?;
     let tasks = repo.load_tasks()?;
+    let sprints = repo.load_sprints()?;
     let done = done_ids(&tasks);
     let active = active_blockers(&task, &done);
     let fm = &task.frontmatter;
+
+    // Look up sprint membership from the index files.
+    let sprint_id = task_to_sprint_map(&sprints)
+        .get(fm.id.as_str())
+        .cloned();
 
     println!("ID:          {}", fm.id);
     println!("Title:       {}", fm.title);
@@ -402,7 +413,7 @@ pub fn cmd_show(repo: &StintRepo, id_input: &str) -> anyhow::Result<()> {
     if let Some(completed_at) = &fm.completed_at {
         println!("Completed at:{}", completed_at);
     }
-    if let Some(s) = &fm.sprint {
+    if let Some(s) = &sprint_id {
         println!("Sprint:      {}", s);
     }
     if !active.is_empty() {
@@ -760,12 +771,25 @@ fn resolve_status_transition_targets(
     }
 
     let tasks = repo.load_tasks()?;
+    let sprints = repo.load_sprints()?;
+
+    // Build sprint task ID set if a sprint filter was requested.
+    let sprint_task_ids: Option<std::collections::HashSet<String>> = sprint.and_then(|sp| {
+        sprints
+            .iter()
+            .find(|s| s.header.id == sp)
+            .map(|s| s.task_ids.iter().map(|e| numeric_prefix(e).to_owned()).collect())
+    });
+
     let mut out = Vec::new();
     for task in tasks {
-        if let Some(s) = sprint {
-            if task.frontmatter.sprint.as_deref() != Some(s) {
+        if let Some(ref ids_set) = sprint_task_ids {
+            if !ids_set.contains(task.frontmatter.id.as_str()) {
                 continue;
             }
+        } else if sprint.is_some() {
+            // Sprint was requested but not found — no tasks match.
+            continue;
         }
         if let Some(t) = tag {
             if !task.frontmatter.tags.iter().any(|tg| tg == t) {
@@ -1125,10 +1149,10 @@ pub fn cmd_sprint_show(repo: &StintRepo, id_input: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Append a task to a sprint file and update the task's `sprint` frontmatter field.
+/// Append a task to a sprint file. Sprint membership is recorded only in the
+/// sprint index — no `sprint` field is written to the task frontmatter.
 pub fn cmd_sprint_add(repo: &StintRepo, sprint_id: &str, task_id: &str) -> anyhow::Result<PathBuf> {
     let task_id = resolve_id(task_id);
-    let normalized_sprint_id = normalize_sprint_id(sprint_id);
     let path = repo.resolve_sprint_path(sprint_id)?;
     let content = repo.read_sprint_raw(&path)?;
 
@@ -1140,14 +1164,6 @@ pub fn cmd_sprint_add(repo: &StintRepo, sprint_id: &str, task_id: &str) -> anyho
     };
     let updated = sprint_add_task(&content, &entry).map_err(|e| anyhow::anyhow!("{}", e))?;
     repo.write_sprint(&path, &updated)?;
-
-    // Keep the task's own `sprint` field in sync so filtering/status work.
-    if let Ok(task_path) = repo.resolve_task_path(&task_id) {
-        let mut task = repo.read_task(&task_path)?;
-        task.frontmatter.sprint = Some(normalized_sprint_id);
-        let task_content = serialize_task(&task);
-        repo.write_task(&task_path, &task_content)?;
-    }
 
     Ok(path)
 }
@@ -1171,7 +1187,8 @@ pub fn cmd_sprint_reorder(repo: &StintRepo, id_input: &str) -> anyhow::Result<Pa
     Ok(path)
 }
 
-/// Remove a task from a sprint file and clear the task's `sprint` frontmatter field.
+/// Remove a task from a sprint file. Sprint membership is recorded only in the
+/// sprint index — no task frontmatter is modified.
 pub fn cmd_sprint_remove(
     repo: &StintRepo,
     sprint_id: &str,
@@ -1182,14 +1199,6 @@ pub fn cmd_sprint_remove(
     let content = repo.read_sprint_raw(&path)?;
     let updated = sprint_remove_task(&content, &task_id).map_err(|e| anyhow::anyhow!("{}", e))?;
     repo.write_sprint(&path, &updated)?;
-
-    // Clear the task's `sprint` field so filtering/status stay consistent.
-    if let Ok(task_path) = repo.resolve_task_path(&task_id) {
-        let mut task = repo.read_task(&task_path)?;
-        task.frontmatter.sprint = None;
-        let task_content = serialize_task(&task);
-        repo.write_task(&task_path, &task_content)?;
-    }
 
     Ok(path)
 }
@@ -1264,6 +1273,21 @@ pub fn cmd_status(repo: &StintRepo) -> anyhow::Result<()> {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// Build a map from task ID → sprint ID by scanning all sprint index files.
+///
+/// If a task appears in multiple sprint indexes (which would be a data error),
+/// the last sprint listed wins.
+fn task_to_sprint_map(sprints: &[Sprint]) -> HashMap<String, String> {
+    let mut map: HashMap<String, String> = HashMap::new();
+    for sprint in sprints {
+        for entry in &sprint.task_ids {
+            let task_id = numeric_prefix(entry).to_owned();
+            map.insert(task_id, sprint.header.id.clone());
+        }
+    }
+    map
+}
 
 /// Open `path` in `$EDITOR`.  If `$EDITOR` is not set, falls back to `vi`.
 ///

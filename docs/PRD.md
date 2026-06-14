@@ -158,6 +158,8 @@ Non-obvious constraints, prior attempts, things that will bite you.
 10. No duplicate IDs across all task files
 11. No `in-progress`/`done` task has an unresolved local-task blocker (only `backlog`/`todo` tasks may carry active blockers)
 12. Timestamp fields (`created_at`, `started_at`, `completed_at`) are valid RFC3339 if present
+13. A task listed in a sprint's index file must have a matching `sprint` frontmatter field (bidirectional consistency)
+14. A task with a `sprint` frontmatter field must be listed in that sprint's index file (bidirectional consistency)
 
 ---
 

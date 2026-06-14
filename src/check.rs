@@ -73,16 +73,6 @@ pub enum CheckError {
         entry: String,
     },
 
-    // Rule 6 — sprint reference
-    /// The task's `sprint` field references a sprint that does not exist.
-    #[error("task {task_id}: sprint field references unknown sprint '{sprint_id}'")]
-    UnresolvedSprint {
-        /// Task ID.
-        task_id: String,
-        /// Sprint ID that was not found.
-        sprint_id: String,
-    },
-
     // Rule 7 — sprint task references
     /// A sprint index file lists a task ID that does not exist.
     #[error("sprint {sprint_id}: references unknown task '{task_entry}'")]
@@ -145,6 +135,7 @@ pub enum CheckError {
         /// The unresolved local-task blocker IDs.
         blockers: Vec<String>,
     },
+
 }
 
 // ---------------------------------------------------------------------------
@@ -164,7 +155,6 @@ pub fn check(tasks: &[Task], sprints: &[Sprint]) -> Vec<CheckError> {
         .collect();
 
     let known_task_ids: HashSet<&str> = task_id_to_file.keys().copied().collect();
-    let known_sprint_ids: HashSet<&str> = sprints.iter().map(|s| s.header.id.as_str()).collect();
     let done = done_ids(tasks);
 
     // Rule 10 — duplicate IDs
@@ -204,16 +194,6 @@ pub fn check(tasks: &[Task], sprints: &[Sprint]) -> Vec<CheckError> {
         // Rule 5 — external refs must be structurally valid
         for r in task.frontmatter.blocked_by.iter() {
             validate_blocker_ref(id, r, &known_task_ids, &mut errors);
-        }
-
-        // Rule 6 — sprint reference
-        if let Some(sprint_id) = &task.frontmatter.sprint {
-            if !known_sprint_ids.contains(sprint_id.as_str()) {
-                errors.push(CheckError::UnresolvedSprint {
-                    task_id: id.to_owned(),
-                    sprint_id: sprint_id.clone(),
-                });
-            }
         }
 
         // Rule 11 — task state machine: in-progress/done tasks may not carry
@@ -473,7 +453,6 @@ mod tests {
                 created_at: None,
                 started_at: None,
                 completed_at: None,
-                sprint: None,
                 blocked_by: vec![],
                 gh_issue: vec![],
                 area: vec![],
@@ -501,7 +480,6 @@ mod tests {
                 created_at: None,
                 started_at: None,
                 completed_at: None,
-                sprint: None,
                 blocked_by: vec![],
                 gh_issue: vec![],
                 area: vec![],
@@ -597,25 +575,6 @@ mod tests {
         assert!(errors
             .iter()
             .all(|e| !matches!(e, CheckError::InvalidBlockedByRef { .. })));
-    }
-
-    #[test]
-    fn unresolved_sprint_reference() {
-        let tasks = vec![make_task("0001", "Task A", "sprint: \"s99\"")];
-        let errors = check(&tasks, &[]);
-        assert!(errors.iter().any(
-            |e| matches!(e, CheckError::UnresolvedSprint { sprint_id, .. } if sprint_id == "s99")
-        ));
-    }
-
-    #[test]
-    fn sprint_references_existing_sprint() {
-        let tasks = vec![make_task("0001", "Task A", "sprint: \"s1\"")];
-        let sprints = vec![make_sprint(1, &["0001"])];
-        let errors = check(&tasks, &sprints);
-        assert!(errors
-            .iter()
-            .all(|e| !matches!(e, CheckError::UnresolvedSprint { .. })));
     }
 
     #[test]
@@ -730,4 +689,5 @@ mod tests {
             .iter()
             .any(|e| matches!(e, CheckError::UnresolvedBlockedBy { .. })));
     }
+
 }

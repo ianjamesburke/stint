@@ -358,10 +358,13 @@ fn list_treats_direct_blocker_as_blocked() {
 #[test]
 fn list_filters_by_sprint() {
     let (_tmp, repo) = setup();
-    let t1 = "---\nid: \"0001\"\ntitle: \"A\"\nstatus: todo\nsprint: \"s1\"\n---\n";
-    let t2 = "---\nid: \"0002\"\ntitle: \"B\"\nstatus: todo\nsprint: \"s2\"\n---\n";
+    let t1 = "---\nid: \"0001\"\ntitle: \"A\"\nstatus: todo\n---\n";
+    let t2 = "---\nid: \"0002\"\ntitle: \"B\"\nstatus: todo\n---\n";
     write_task_file(&repo, "0001-a.md", t1);
     write_task_file(&repo, "0002-b.md", t2);
+    // Sprint membership is determined by the sprint index, not task frontmatter.
+    write_sprint_file(&repo, "s1.md", "# Sprint 1 · Jan 1–15\n\n- 0001\n");
+    write_sprint_file(&repo, "s2.md", "# Sprint 2 · Jan 16–31\n\n- 0002\n");
     let rows = cmds::cmd_list(&repo, None, false, None, Some("s1"), None, None).unwrap();
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].id, "0001");

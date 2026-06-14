@@ -19,6 +19,9 @@ pub fn serialize_task(task: &Task) -> String {
     if let Some(a) = &fm.actual {
         out.push_str(&format!("actual: \"{}\"\n", a));
     }
+    if let Some(created_at) = &fm.created_at {
+        out.push_str(&format!("created_at: {}\n", yaml_quote(created_at)));
+    }
     if let Some(started_at) = &fm.started_at {
         out.push_str(&format!("started_at: {}\n", yaml_quote(started_at)));
     }
@@ -135,6 +138,7 @@ title: "Auth middleware"
 status: in-progress
 estimate: "4h"
 actual: "30m"
+created_at: "2026-06-10T11:00:00Z"
 started_at: "2026-06-10T12:00:00Z"
 completed_at: "2026-06-10T12:30:00Z"
 sprint: "s12"
@@ -165,6 +169,7 @@ So users can authenticate.
         let fm = &reparsed.frontmatter;
         assert_eq!(fm.id, "0001");
         assert_eq!(fm.title, "Auth middleware");
+        assert_eq!(fm.created_at.as_deref(), Some("2026-06-10T11:00:00Z"));
         assert_eq!(fm.started_at.as_deref(), Some("2026-06-10T12:00:00Z"));
         assert_eq!(fm.completed_at.as_deref(), Some("2026-06-10T12:30:00Z"));
         assert_eq!(fm.sprint.as_deref(), Some("s12"));

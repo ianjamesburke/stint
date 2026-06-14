@@ -773,10 +773,7 @@ fn next_count_claim_marks_n_tasks_in_progress() {
         let t = repo
             .read_task(&repo.resolve_task_path(&format!("{:04}", i)).unwrap())
             .unwrap();
-        assert_eq!(
-            t.frontmatter.status,
-            stint::schema::TaskStatus::InProgress
-        );
+        assert_eq!(t.frontmatter.status, stint::schema::TaskStatus::InProgress);
         assert!(t.frontmatter.started_at.is_some());
     }
 
@@ -947,10 +944,7 @@ fn done_then_log_round_trips_cleanly() {
 
     let path = repo.resolve_task_path("0001").unwrap();
     let task = repo.read_task(&path).unwrap();
-    assert_eq!(
-        task.frontmatter.status,
-        stint::schema::TaskStatus::Done
-    );
+    assert_eq!(task.frontmatter.status, stint::schema::TaskStatus::Done);
     assert_eq!(
         task.frontmatter.actual,
         Some(stint::duration::Duration::from_minutes(120))
@@ -970,10 +964,7 @@ fn done_without_prior_log_records_actual() {
     cmds::cmd_done(&repo, "0001", Some("3h"), None, None).unwrap();
     let path = repo.resolve_task_path("0001").unwrap();
     let task = repo.read_task(&path).unwrap();
-    assert_eq!(
-        task.frontmatter.status,
-        stint::schema::TaskStatus::Done
-    );
+    assert_eq!(task.frontmatter.status, stint::schema::TaskStatus::Done);
     assert_eq!(
         task.frontmatter.actual,
         Some(stint::duration::Duration::from_minutes(180))

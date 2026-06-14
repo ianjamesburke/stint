@@ -46,6 +46,7 @@ title: "Auth middleware"          # required, string
 status: backlog                   # required, enum: backlog|todo|in-progress|done|archived
 estimate: "4h"                    # optional, string (e.g. "2h", "30m", "1.5h")
 actual: "0h"                      # optional, string, time logged so far
+created_at: "2026-06-14T12:00:00Z" # optional, RFC3339 UTC timestamp
 sprint: "s12"                     # optional, string, sprint ID this task belongs to
 blocked_by: []                    # optional, unified blocker list (see Blocker Model)
 gh_issue: []                      # optional, list OR single int/string of GH issue numbers
@@ -156,6 +157,7 @@ Non-obvious constraints, prior attempts, things that will bite you.
 9. `id` matches the numeric prefix of the filename
 10. No duplicate IDs across all task files
 11. No `in-progress`/`done` task has an unresolved local-task blocker (only `backlog`/`todo` tasks may carry active blockers)
+12. Timestamp fields (`created_at`, `started_at`, `completed_at`) are valid RFC3339 if present
 
 ---
 

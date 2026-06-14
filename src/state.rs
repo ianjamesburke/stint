@@ -101,8 +101,7 @@ mod tests {
     use crate::parse::parse_task;
 
     fn task(id: &str, status: &str, extra: &str) -> Task {
-        let content =
-            format!("---\nid: \"{id}\"\ntitle: \"T\"\nstatus: {status}\n{extra}\n---\n");
+        let content = format!("---\nid: \"{id}\"\ntitle: \"T\"\nstatus: {status}\n{extra}\n---\n");
         parse_task(&content, &format!("{id}-t.md")).unwrap()
     }
 
@@ -147,7 +146,10 @@ mod tests {
 
     #[test]
     fn done_and_archived_map_directly() {
-        assert_eq!(classify(&task("0006", "done", ""), &HashSet::new()), TaskState::Done);
+        assert_eq!(
+            classify(&task("0006", "done", ""), &HashSet::new()),
+            TaskState::Done
+        );
         assert_eq!(
             classify(&task("0007", "archived", ""), &HashSet::new()),
             TaskState::Archived

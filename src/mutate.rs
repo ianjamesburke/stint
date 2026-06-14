@@ -99,9 +99,12 @@ pub fn title_to_slug(title: &str) -> String {
 ///
 /// Produces valid frontmatter with the minimum required fields.  `$EDITOR`
 /// will be opened on this content so the user can fill in the body.
-pub fn new_task_content(id: &str, title: &str) -> String {
+pub fn new_task_content(id: &str, title: &str, created_at: Option<&str>) -> String {
+    let created_at = created_at
+        .map(|timestamp| format!("created_at: \"{timestamp}\"\n"))
+        .unwrap_or_default();
     format!(
-        "---\nid: \"{id}\"\ntitle: \"{title}\"\nstatus: backlog\n---\n\n## Why\n\n\n## Gotchas\n\n\n## References\n\n"
+        "---\nid: \"{id}\"\ntitle: \"{title}\"\nstatus: backlog\n{created_at}---\n\n## Why\n\n\n## Gotchas\n\n\n## References\n\n"
     )
 }
 
@@ -125,6 +128,7 @@ pub fn minimal_frontmatter(id: &str, title: &str) -> TaskFrontmatter {
         status: TaskStatus::Backlog,
         estimate: None,
         actual: None,
+        created_at: None,
         started_at: None,
         completed_at: None,
         sprint: None,

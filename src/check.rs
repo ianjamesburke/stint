@@ -4,6 +4,7 @@
 /// first error.  Pass in every `Task` and `Sprint` that exists in the repo.
 use std::collections::{HashMap, HashSet};
 
+use chrono::DateTime;
 use thiserror::Error;
 
 use crate::schema::{BlockedByRef, Sprint, Task, TaskStatus};
@@ -40,6 +41,15 @@ pub enum CheckError {
         /// Task ID.
         task_id: String,
         /// Field name (`estimate` or `actual`).
+        field: &'static str,
+    },
+
+    /// A timestamp field is not valid RFC3339.
+    #[error("task {task_id}: field '{field}' is not a valid RFC3339 timestamp")]
+    InvalidTimestamp {
+        /// Task ID.
+        task_id: String,
+        /// Field name.
         field: &'static str,
     },
 
@@ -180,6 +190,16 @@ pub fn check(tasks: &[Task], sprints: &[Sprint]) -> Vec<CheckError> {
         // Rule 9 — id matches filename prefix
         check_id_filename_match(task, &mut errors);
 
+        // Rule 12 — timestamp fields are RFC3339 when present
+        check_timestamp(id, "created_at", &task.frontmatter.created_at, &mut errors);
+        check_timestamp(id, "started_at", &task.frontmatter.started_at, &mut errors);
+        check_timestamp(
+            id,
+            "completed_at",
+            &task.frontmatter.completed_at,
+            &mut errors,
+        );
+
         // Rule 4 — LocalTask blockers must resolve to known task IDs
         // Rule 5 — external refs must be structurally valid
         for r in task.frontmatter.blocked_by.iter() {
@@ -240,6 +260,22 @@ pub fn check(tasks: &[Task], sprints: &[Sprint]) -> Vec<CheckError> {
     check_cycles(tasks, &mut errors);
 
     errors
+}
+
+fn check_timestamp(
+    task_id: &str,
+    field: &'static str,
+    value: &Option<String>,
+    errors: &mut Vec<CheckError>,
+) {
+    if let Some(value) = value {
+        if DateTime::parse_from_rfc3339(value).is_err() {
+            errors.push(CheckError::InvalidTimestamp {
+                task_id: task_id.to_owned(),
+                field,
+            });
+        }
+    }
 }
 
 fn validate_blocker_ref(
@@ -434,6 +470,7 @@ mod tests {
                 status: TaskStatus::Backlog,
                 estimate: None,
                 actual: None,
+                created_at: None,
                 started_at: None,
                 completed_at: None,
                 sprint: None,
@@ -461,6 +498,7 @@ mod tests {
                 status: TaskStatus::Backlog,
                 estimate: None,
                 actual: None,
+                created_at: None,
                 started_at: None,
                 completed_at: None,
                 sprint: None,
@@ -476,6 +514,25 @@ mod tests {
         assert!(errors
             .iter()
             .any(|e| matches!(e, CheckError::MissingRequiredField { field: "title", .. })));
+    }
+
+    #[test]
+    fn invalid_timestamp_fields_are_reported() {
+        let task = parse_task(
+            "---\nid: \"0001\"\ntitle: \"Task\"\nstatus: backlog\ncreated_at: nope\n---\n",
+            "0001-task.md",
+        )
+        .unwrap();
+        let errors = check(&[task], &[]);
+        assert!(errors.iter().any(|e| {
+            matches!(
+                e,
+                CheckError::InvalidTimestamp {
+                    task_id,
+                    field: "created_at"
+                } if task_id == "0001"
+            )
+        }));
     }
 
     #[test]

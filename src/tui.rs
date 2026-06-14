@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{self, Stdout};
 use std::path::PathBuf;
@@ -168,8 +168,50 @@ impl View {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BoardColumn {
+    Backlog,
+    Ready,
+    Blocked,
+    Active,
+    Done,
+}
+
+impl BoardColumn {
+    fn all() -> [Self; 5] {
+        [
+            Self::Backlog,
+            Self::Ready,
+            Self::Blocked,
+            Self::Active,
+            Self::Done,
+        ]
+    }
+
+    fn state(self) -> TaskState {
+        match self {
+            Self::Backlog => TaskState::Iced,
+            Self::Ready => TaskState::Ready,
+            Self::Blocked => TaskState::Blocked,
+            Self::Active => TaskState::Active,
+            Self::Done => TaskState::Done,
+        }
+    }
+
+    fn index(self) -> usize {
+        match self {
+            Self::Backlog => 0,
+            Self::Ready => 1,
+            Self::Blocked => 2,
+            Self::Active => 3,
+            Self::Done => 4,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SortMode {
     Id,
+    Created,
     State,
     Sprint,
 }
@@ -177,7 +219,8 @@ enum SortMode {
 impl SortMode {
     fn next(self) -> Self {
         match self {
-            SortMode::Id => SortMode::State,
+            SortMode::Id => SortMode::Created,
+            SortMode::Created => SortMode::State,
             SortMode::State => SortMode::Sprint,
             SortMode::Sprint => SortMode::Id,
         }
@@ -186,6 +229,7 @@ impl SortMode {
     fn label(self) -> &'static str {
         match self {
             SortMode::Id => "id",
+            SortMode::Created => "created",
             SortMode::State => "state",
             SortMode::Sprint => "sprint",
         }
@@ -296,9 +340,10 @@ struct App {
     data: AppData,
     view: View,
     selected: usize,
-    board_column: usize,
+    board_column: BoardColumn,
     sprint_index: usize,
     sort: SortMode,
+    table_show_done: bool,
     search: String,
     filter: String,
     prompt: Option<PromptKind>,
@@ -325,9 +370,10 @@ impl App {
             data,
             view: View::Dashboard,
             selected: 0,
-            board_column: 0,
+            board_column: BoardColumn::Backlog,
             sprint_index: 0,
             sort: SortMode::Id,
+            table_show_done: false,
             search: String::new(),
             filter: String::new(),
             prompt: None,
@@ -386,25 +432,43 @@ impl App {
 
     fn visible_tasks(&self) -> Vec<&Task> {
         let done = done_ids(&self.data.tasks);
-        let mut tasks: Vec<&Task> = match self.view {
+        let tasks: Vec<&Task> = match self.view {
             View::Dashboard => self
                 .data
                 .tasks
                 .iter()
                 .filter(|task| matches!(task.frontmatter.status, TaskStatus::InProgress))
                 .collect(),
-            View::Board => {
-                let state = board_states()[self.board_column];
-                self.data
-                    .tasks
-                    .iter()
-                    .filter(|task| classify(task, &done) == state)
-                    .collect()
-            }
+            View::Board => self.board_tasks_for_state(self.board_column, &done),
             View::Sprint => self.sprint_tasks(),
-            View::Table => self.data.tasks.iter().collect(),
+            View::Table => self
+                .data
+                .tasks
+                .iter()
+                .filter(|task| self.table_show_done || !is_closed_task(task))
+                .collect(),
         };
 
+        self.filtered_sorted_tasks(tasks, &done)
+    }
+
+    fn board_tasks_for_state<'a>(
+        &'a self,
+        column: BoardColumn,
+        done: &HashSet<&str>,
+    ) -> Vec<&'a Task> {
+        self.data
+            .tasks
+            .iter()
+            .filter(|task| classify(task, done) == column.state())
+            .collect()
+    }
+
+    fn filtered_sorted_tasks<'a>(
+        &self,
+        mut tasks: Vec<&'a Task>,
+        done: &HashSet<&str>,
+    ) -> Vec<&'a Task> {
         if !self.search.is_empty() {
             let needle = self.search.to_lowercase();
             tasks.retain(|task| task_matches_text(task, &needle));
@@ -435,6 +499,7 @@ impl App {
 
         match self.sort {
             SortMode::Id => tasks.sort_by(|a, b| a.frontmatter.id.cmp(&b.frontmatter.id)),
+            SortMode::Created => tasks.sort_by(|a, b| compare_created_at(a, b)),
             SortMode::State => tasks.sort_by(|a, b| {
                 classify(a, &done)
                     .as_str()
@@ -449,6 +514,12 @@ impl App {
             }),
         }
         tasks
+    }
+
+    fn board_column_has_visible_tasks(&self, column: BoardColumn, done: &HashSet<&str>) -> bool {
+        !self
+            .filtered_sorted_tasks(self.board_tasks_for_state(column, done), done)
+            .is_empty()
     }
 
     fn sprint_tasks(&self) -> Vec<&Task> {
@@ -614,39 +685,39 @@ impl App {
     }
 
     fn render_board(&self, frame: &mut Frame<'_>, area: Rect) {
-        let states = board_states();
-        let constraints = states.map(|_| Constraint::Percentage(20));
-        let columns = Layout::default()
+        let board_columns = BoardColumn::all();
+        let constraints = board_columns.map(|_| Constraint::Percentage(20));
+        let areas = Layout::default()
             .direction(Direction::Horizontal)
             .constraints(constraints)
             .split(area);
         let done = done_ids(&self.data.tasks);
-        for (index, state) in states.iter().enumerate() {
-            let tasks = self
-                .data
-                .tasks
-                .iter()
-                .filter(|task| classify(task, &done) == *state)
-                .collect::<Vec<_>>();
-            let selected = if index == self.board_column {
+        for (index, column) in board_columns.iter().enumerate() {
+            let tasks =
+                self.filtered_sorted_tasks(self.board_tasks_for_state(*column, &done), &done);
+            let selected = if *column == self.board_column {
                 self.selected
             } else {
                 usize::MAX
             };
-            let title = format!("{} {}", state.as_str(), tasks.len());
+            let title = format!("{} {}", column.state().as_str(), tasks.len());
             frame.render_widget(
-                task_list(&title, &tasks, selected, &self.data.tasks),
-                columns[index],
+                board_task_list(&title, &tasks, selected, &self.data.tasks),
+                areas[index],
             );
         }
     }
 
     fn render_table(&self, frame: &mut Frame<'_>, area: Rect) {
         let done = done_ids(&self.data.tasks);
-        let rows = self
-            .visible_tasks()
+        let tasks = self.visible_tasks();
+        let visible_rows = table_body_rows(area);
+        let start = viewport_start(self.selected, tasks.len(), visible_rows);
+        let rows = tasks
             .iter()
             .enumerate()
+            .skip(start)
+            .take(visible_rows)
             .map(|(index, task)| {
                 let style = if index == self.selected {
                     Style::default().bg(Color::DarkGray)
@@ -656,6 +727,7 @@ impl App {
                 Row::new(vec![
                     Cell::from(task.frontmatter.id.clone()),
                     Cell::from(classify(task, &done).as_str()),
+                    Cell::from(task.frontmatter.created_at.as_deref().unwrap_or("-")),
                     Cell::from(
                         task.frontmatter
                             .estimate
@@ -679,6 +751,7 @@ impl App {
             [
                 Constraint::Length(6),
                 Constraint::Length(10),
+                Constraint::Length(20),
                 Constraint::Length(8),
                 Constraint::Length(8),
                 Constraint::Length(16),
@@ -686,14 +759,18 @@ impl App {
             ],
         )
         .header(
-            Row::new(["ID", "STATE", "EST", "SPRINT", "AREA", "TITLE"])
+            Row::new(["ID", "STATE", "CREATED", "EST", "SPRINT", "AREA", "TITLE"])
                 .style(Style::default().fg(Color::Gray)),
         )
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(format!("Table - sort {}", self.sort.label())),
-        );
+        .block(Block::default().borders(Borders::ALL).title(format!(
+            "Table - sort {} - done {}",
+            self.sort.label(),
+            if self.table_show_done {
+                "shown"
+            } else {
+                "hidden"
+            }
+        )));
         frame.render_widget(table, area);
     }
 
@@ -877,8 +954,8 @@ impl App {
                     .add_modifier(Modifier::BOLD),
             ),
             Line::from("/ search         f filter        s sort"),
-            Line::from("x custom cmds    : command pal.  u undo"),
-            Line::from("ctrl-r redo      ? shortcuts"),
+            Line::from("D show done      x custom cmds    : command pal."),
+            Line::from("u undo           ctrl-r redo      ? shortcuts"),
         ];
         frame.render_widget(
             Paragraph::new(lines)
@@ -1032,6 +1109,18 @@ impl App {
                 return self.transition_selected("claim", TaskStatus::InProgress, true)
             }
             KeyCode::Char('d') if plain_key(key) => return self.transition_done(),
+            KeyCode::Char('D') if plain_key(key) => {
+                self.table_show_done = !self.table_show_done;
+                self.selected = 0;
+                self.set_message(format!(
+                    "done: {}",
+                    if self.table_show_done {
+                        "shown"
+                    } else {
+                        "hidden"
+                    }
+                ));
+            }
             KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 return self.redo()
             }
@@ -1237,8 +1326,7 @@ impl App {
     fn move_horizontal(&mut self, delta: isize) {
         match self.view {
             View::Board => {
-                self.board_column = wrap_index(self.board_column, board_states().len(), delta);
-                self.selected = 0;
+                self.move_board_column(delta);
             }
             View::Sprint => {
                 if !self.data.sprints.is_empty() {
@@ -1248,6 +1336,29 @@ impl App {
                 }
             }
             _ => self.move_selection(delta),
+        }
+    }
+
+    fn move_board_column(&mut self, delta: isize) {
+        let columns = BoardColumn::all();
+        if delta == 0 {
+            return;
+        }
+
+        let done = done_ids(&self.data.tasks);
+        let direction = if delta.is_negative() { -1 } else { 1 };
+        for offset in 1..=columns.len() {
+            let candidate_index = wrap_index(
+                self.board_column.index(),
+                columns.len(),
+                direction * offset as isize,
+            );
+            let candidate = columns[candidate_index];
+            if self.board_column_has_visible_tasks(candidate, &done) {
+                self.board_column = candidate;
+                self.selected = 0;
+                return;
+            }
         }
     }
 
@@ -1364,7 +1475,8 @@ impl App {
             format!("{id}-{slug}.md")
         };
         let path = self.repo.tasks_dir().join(filename);
-        let content = new_task_content(&id, title);
+        let created_at = now_timestamp();
+        let content = new_task_content(&id, title, Some(&created_at));
         self.repo.write_task(&path, &content)?;
         if edit_after {
             terminal.edit_path(&path)?;
@@ -1658,6 +1770,52 @@ fn task_list<'a>(title: &str, tasks: &[&'a Task], selected: usize, all_tasks: &[
     )
 }
 
+fn board_task_list<'a>(
+    title: &str,
+    tasks: &[&'a Task],
+    selected: usize,
+    all_tasks: &[Task],
+) -> List<'a> {
+    let done = done_ids(all_tasks);
+    let items = tasks
+        .iter()
+        .enumerate()
+        .map(|(index, task)| {
+            let state = classify(task, &done);
+            let marker = if index == selected { "> " } else { "  " };
+            let style = if index == selected {
+                Style::default().bg(Color::DarkGray)
+            } else {
+                Style::default()
+            };
+            let reason = if state == TaskState::Blocked {
+                let blockers = active_blockers(task, &done);
+                format!(" - {}", format_blockers_inline(&blockers))
+            } else {
+                String::new()
+            };
+            ListItem::new(Line::from(vec![
+                Span::styled(marker, Style::default().fg(Color::Gray)),
+                Span::styled(
+                    task.frontmatter.id.clone(),
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(" "),
+                Span::raw(truncate(&task.frontmatter.title, 56)),
+                Span::styled(reason, Style::default().fg(Color::Yellow)),
+            ]))
+            .style(style)
+        })
+        .collect::<Vec<_>>();
+    List::new(items).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(title.to_owned()),
+    )
+}
+
 fn state_style(state: TaskState) -> Style {
     match state {
         TaskState::Iced => Style::default().fg(Color::DarkGray),
@@ -1684,14 +1842,29 @@ fn task_matches_text(task: &Task, needle: &str) -> bool {
             .any(|tag| tag.to_lowercase().contains(needle))
 }
 
-fn board_states() -> [TaskState; 5] {
-    [
-        TaskState::Iced,
-        TaskState::Ready,
-        TaskState::Blocked,
-        TaskState::Active,
-        TaskState::Done,
-    ]
+fn is_closed_task(task: &Task) -> bool {
+    matches!(
+        task.frontmatter.status,
+        TaskStatus::Done | TaskStatus::Archived
+    )
+}
+
+fn compare_created_at(a: &Task, b: &Task) -> std::cmp::Ordering {
+    match (
+        parse_timestamp(a.frontmatter.created_at.as_deref()),
+        parse_timestamp(b.frontmatter.created_at.as_deref()),
+    ) {
+        (Some(a_created), Some(b_created)) => a_created
+            .cmp(&b_created)
+            .then(a.frontmatter.id.cmp(&b.frontmatter.id)),
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (None, None) => a.frontmatter.id.cmp(&b.frontmatter.id),
+    }
+}
+
+fn parse_timestamp(value: Option<&str>) -> Option<chrono::DateTime<chrono::FixedOffset>> {
+    value.and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
 }
 
 fn sprint_progress_for(tasks: &[Task], sprint_id: &str) -> stint::status::SprintProgress {
@@ -1774,6 +1947,23 @@ fn selected_summary(task: Option<&Task>) -> String {
         ),
         None => "selected:-".to_owned(),
     }
+}
+
+fn table_body_rows(area: Rect) -> usize {
+    // Table block borders take two rows and the header takes one.
+    usize::from(area.height.saturating_sub(3))
+}
+
+fn viewport_start(selected: usize, total: usize, visible_rows: usize) -> usize {
+    if total == 0 || visible_rows == 0 {
+        return 0;
+    }
+    let max_start = total.saturating_sub(visible_rows);
+    let selected = selected.min(total - 1);
+    selected
+        .saturating_add(1)
+        .saturating_sub(visible_rows)
+        .min(max_start)
 }
 
 fn truncate(value: &str, width: usize) -> String {
@@ -1910,4 +2100,24 @@ fn run_shell_command(command: &str) -> anyhow::Result<bool> {
         .status()
         .with_context(|| format!("run custom command {command:?}"))?;
     Ok(status.success())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::viewport_start;
+
+    #[test]
+    fn viewport_start_keeps_selected_row_visible() {
+        assert_eq!(viewport_start(0, 20, 5), 0);
+        assert_eq!(viewport_start(4, 20, 5), 0);
+        assert_eq!(viewport_start(5, 20, 5), 1);
+        assert_eq!(viewport_start(19, 20, 5), 15);
+    }
+
+    #[test]
+    fn viewport_start_handles_empty_and_oversized_inputs() {
+        assert_eq!(viewport_start(0, 0, 5), 0);
+        assert_eq!(viewport_start(0, 20, 0), 0);
+        assert_eq!(viewport_start(99, 3, 10), 0);
+    }
 }

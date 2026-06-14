@@ -287,7 +287,10 @@ mod tests {
         assert_eq!(numeric_prefix("0001-auth-middleware"), "0001");
         assert_eq!(numeric_prefix("../tasks/0001-auth-middleware.md"), "0001");
         assert_eq!(numeric_prefix("tasks/0042-x.md"), "0042");
-        assert_eq!(numeric_prefix("[0001](../tasks/0001-auth-middleware.md)"), "0001");
+        assert_eq!(
+            numeric_prefix("[0001](../tasks/0001-auth-middleware.md)"),
+            "0001"
+        );
     }
 
     #[test]

@@ -203,6 +203,8 @@ pub struct TaskFrontmatter {
     pub estimate: Option<Duration>,
     /// Time logged so far.
     pub actual: Option<Duration>,
+    /// UTC RFC3339 timestamp for when the task was created.
+    pub created_at: Option<String>,
     /// UTC RFC3339 timestamp for when work started.
     pub started_at: Option<String>,
     /// UTC RFC3339 timestamp for when work completed.

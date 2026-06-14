@@ -13,7 +13,6 @@ use anyhow::{bail, Context};
 use chrono::{DateTime, SecondsFormat, Utc};
 use stint::check::check;
 use stint::duration::Duration;
-use stint::state::{active_blockers, classify, done_ids, is_blocked};
 use stint::mutate::{
     add_actual, new_sprint_content, new_task_content, next_task_id, resolve_id, restart_task,
     set_actual, set_completed_at, set_started_at_if_absent, set_status, title_to_slug,
@@ -24,6 +23,7 @@ use stint::serialize::serialize_task;
 use stint::sprint::{
     normalize_sprint_id, numeric_prefix, sprint_add_task, sprint_remove_task, task_link,
 };
+use stint::state::{active_blockers, classify, done_ids, is_blocked};
 use stint::status::compute_status;
 
 use stint::repo::StintRepo;
@@ -172,7 +172,7 @@ pub(crate) fn import_github_issues(
         let id = next_task_id(&tasks);
         let filename = format!("{}-{}.md", id, title_to_slug(&issue.title));
         let path = repo.tasks_dir().join(filename);
-        let content = github_issue_task_content(&id, issue);
+        let content = github_issue_task_content(&id, issue)?;
         repo.write_task(&path, &content)?;
         let task = repo.read_task(&path)?;
         tasks.push(task);
@@ -183,8 +183,9 @@ pub(crate) fn import_github_issues(
     Ok(GithubImportReport { imported, skipped })
 }
 
-fn github_issue_task_content(id: &str, issue: &GithubIssue) -> String {
-    let mut task = new_task_content(id, &issue.title);
+fn github_issue_task_content(id: &str, issue: &GithubIssue) -> anyhow::Result<String> {
+    let created_at = timestamp_or_now(None)?;
+    let mut task = new_task_content(id, &issue.title, Some(&created_at));
     let mut imported_fields = string_list_yaml("gh_issue", std::slice::from_ref(&issue.number));
     if !issue.labels.is_empty() {
         imported_fields.push_str(&string_list_yaml("tags", &issue.labels));
@@ -200,7 +201,7 @@ fn github_issue_task_content(id: &str, issue: &GithubIssue) -> String {
         task.push('\n');
     }
 
-    task
+    Ok(task)
 }
 
 fn string_list_yaml(key: &str, values: &[String]) -> String {
@@ -231,7 +232,8 @@ pub fn cmd_add(repo: &StintRepo, title: &str) -> anyhow::Result<PathBuf> {
         format!("{}-{}.md", id, slug)
     };
     let path = repo.tasks_dir().join(&filename);
-    let content = new_task_content(&id, title);
+    let created_at = timestamp_or_now(None)?;
+    let content = new_task_content(&id, title, Some(&created_at));
     repo.write_task(&path, &content)?;
     open_editor(&path)?;
     Ok(path)
@@ -356,7 +358,10 @@ pub fn print_list(rows: &[TaskRow]) {
         if row.blocked && !row.blockers.is_empty() {
             println!(
                 "       {}",
-                dim(&format!("blocked by {}", format_blockers_inline(&row.blockers)), on)
+                dim(
+                    &format!("blocked by {}", format_blockers_inline(&row.blockers)),
+                    on
+                )
             );
         }
     }
@@ -552,9 +557,11 @@ pub fn tasks_unblocked_by_done(
             continue;
         }
 
-        let waits_on_done_task = task.frontmatter.blocked_by.iter().any(
-            |blocker| matches!(blocker, BlockedByRef::LocalTask(id) if *id == done_id),
-        );
+        let waits_on_done_task = task
+            .frontmatter
+            .blocked_by
+            .iter()
+            .any(|blocker| matches!(blocker, BlockedByRef::LocalTask(id) if *id == done_id));
         if waits_on_done_task && active_blockers(task, &done).is_empty() {
             unblocked.push(UnblockedTask {
                 id: task.frontmatter.id.clone(),
@@ -786,10 +793,24 @@ pub fn cmd_next(
 ) -> anyhow::Result<NextReport> {
     if claim {
         with_claim_lock(repo, || {
-            cmd_next_inner(repo, sprint, include_area_conflicts, include_backlog, true, count)
+            cmd_next_inner(
+                repo,
+                sprint,
+                include_area_conflicts,
+                include_backlog,
+                true,
+                count,
+            )
         })
     } else {
-        cmd_next_inner(repo, sprint, include_area_conflicts, include_backlog, false, count)
+        cmd_next_inner(
+            repo,
+            sprint,
+            include_area_conflicts,
+            include_backlog,
+            false,
+            count,
+        )
     }
 }
 
@@ -886,7 +907,11 @@ pub fn print_next(report: &NextReport, claimed: bool, count: Option<usize>) {
     if visible.is_empty() {
         println!("{} {}", bold("Ready", on), dim("(none)", on));
     } else {
-        println!("{} {}", bold("Ready", on), dim(&format!("({})", visible.len()), on));
+        println!(
+            "{} {}",
+            bold("Ready", on),
+            dim(&format!("({})", visible.len()), on)
+        );
         for task in &visible {
             print_next_task(task, on);
         }
@@ -918,7 +943,10 @@ pub fn print_next(report: &NextReport, claimed: bool, count: Option<usize>) {
         None => println!(
             "{} {}",
             bold("Bottleneck:", on),
-            dim("none (no ready task is gated by an unfinished dependency)", on)
+            dim(
+                "none (no ready task is gated by an unfinished dependency)",
+                on
+            )
         ),
     }
 }
@@ -927,7 +955,10 @@ pub fn print_next(report: &NextReport, claimed: bool, count: Option<usize>) {
 /// precedence over area contention.
 fn blocked_reason(task: &NextTask) -> Option<String> {
     if !task.blockers.is_empty() {
-        return Some(format!("blocked by {}", format_blockers_inline(&task.blockers)));
+        return Some(format!(
+            "blocked by {}",
+            format_blockers_inline(&task.blockers)
+        ));
     }
     if !task.area_conflicts.is_empty() {
         return Some(format!(

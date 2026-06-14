@@ -175,6 +175,7 @@ mod tests {
                 status,
                 estimate: estimate.map(|s| s.parse().unwrap()),
                 actual: actual.map(|s| s.parse().unwrap()),
+                created_at: None,
                 started_at: None,
                 completed_at: None,
                 sprint: Some(sprint.to_owned()),

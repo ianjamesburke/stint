@@ -56,9 +56,31 @@ fn replace_task_status(repo: &StintRepo, name: &str, from: &str, to: &str) {
     fs::write(path, content).unwrap();
 }
 
+fn write_task(repo: &StintRepo, id: &str, title: &str, status: &str) {
+    let slug = title.to_lowercase().replace(' ', "-");
+    let path = repo.tasks_dir().join(format!("{id}-{slug}.md"));
+    fs::write(
+        path,
+        format!("---\nid: \"{id}\"\ntitle: \"{title}\"\nstatus: {status}\n---\n"),
+    )
+    .unwrap();
+}
+
+fn insert_created_at(repo: &StintRepo, name: &str, timestamp: &str) {
+    let path = repo.tasks_dir().join(name);
+    let content = fs::read_to_string(&path).unwrap();
+    let updated = content.replacen(
+        "\nstatus: ",
+        &format!("\ncreated_at: \"{}\"\nstatus: ", timestamp),
+        1,
+    );
+    fs::write(path, updated).unwrap();
+}
+
 #[test]
 fn renders_views_detail_navigation_and_quit() {
     let (_tmp, repo) = setup();
+    replace_task_status(&repo, "0007-readme.md", "status: done", "status: archived");
     let mut tui = driver(repo);
 
     let screen = tui.render_text().unwrap();
@@ -80,17 +102,27 @@ fn renders_views_detail_navigation_and_quit() {
     assert!(screen.contains("backlog"));
     assert!(screen.contains("ready"));
     assert!(screen.contains("blocked"));
+    assert!(screen.contains("0006 Cache API responses on disk"));
+    assert!(screen.contains("0001"));
+    assert!(!screen.contains("0006 backlog"));
+    assert!(!screen.contains("0001 ready"));
 
-    press(&mut tui, KeyCode::Right);
+    tui.press_char('l').unwrap();
     assert_eq!(tui.selected_task_id(), Some("0001"));
-    press(&mut tui, KeyCode::Left);
+    tui.press_char('l').unwrap();
+    assert_eq!(tui.selected_task_id(), Some("0002"));
+    tui.press_char('l').unwrap();
+    assert_eq!(tui.selected_task_id(), Some("0004"));
+    tui.press_char('l').unwrap();
     assert_eq!(tui.selected_task_id(), Some("0006"));
-    press(&mut tui, KeyCode::Right);
-    assert_eq!(tui.selected_task_id(), Some("0001"));
+    press(&mut tui, KeyCode::Left);
+    assert_eq!(tui.selected_task_id(), Some("0004"));
+    tui.press_char('l').unwrap();
+    assert_eq!(tui.selected_task_id(), Some("0006"));
 
     press(&mut tui, KeyCode::Tab);
     let screen = tui.render_text().unwrap();
-    assert!(screen.contains("Table - sort id"));
+    assert!(screen.contains("Table - sort id - done hidden"));
     assert!(screen.contains("Project scaffold"));
     press(&mut tui, KeyCode::Down);
     assert_eq!(tui.selected_task_id(), Some("0002"));
@@ -102,7 +134,10 @@ fn renders_views_detail_navigation_and_quit() {
     assert!(screen.contains("Sprint tasks"));
     assert!(screen.contains("exercise the TUI"));
     press(&mut tui, KeyCode::BackTab);
-    assert!(tui.render_text().unwrap().contains("Table - sort id"));
+    assert!(tui
+        .render_text()
+        .unwrap()
+        .contains("Table - sort id - done hidden"));
     press(&mut tui, KeyCode::Tab);
 
     enter(&mut tui);
@@ -133,6 +168,45 @@ fn enter_with_no_selected_task_shows_message_instead_of_empty_detail() {
     let screen = tui.render_text().unwrap();
     assert!(screen.contains("no task to select"));
     assert!(!screen.contains("Detail - e editor - Esc close"));
+}
+
+#[test]
+fn table_scrolls_to_keep_selected_row_visible() {
+    let (_tmp, repo) = setup();
+    for i in 8..=28 {
+        let id = format!("{i:04}");
+        write_task(&repo, &id, &format!("Row {id}"), "todo");
+    }
+    let mut tui = TuiTestDriver::load(repo, 100, 12).unwrap();
+
+    press(&mut tui, KeyCode::Tab);
+    press(&mut tui, KeyCode::Tab);
+    for _ in 0..15 {
+        press(&mut tui, KeyCode::Down);
+    }
+
+    assert_eq!(tui.selected_task_id(), Some("0017"));
+    let screen = tui.render_text().unwrap();
+    assert!(screen.contains("0017"));
+    assert!(screen.contains("Row 0017"));
+    assert!(!screen.contains("Project scaffold"));
+}
+
+#[test]
+fn table_hides_done_by_default_and_toggles_them_visible() {
+    let (_tmp, repo) = setup();
+    let mut tui = driver(repo);
+
+    press(&mut tui, KeyCode::Tab);
+    press(&mut tui, KeyCode::Tab);
+    let screen = tui.render_text().unwrap();
+    assert!(screen.contains("Table - sort id - done hidden"));
+    assert!(!screen.contains("Write the project README"));
+
+    tui.press_char('D').unwrap();
+    let screen = tui.render_text().unwrap();
+    assert!(screen.contains("Table - sort id - done shown"));
+    assert!(screen.contains("Write the project README"));
 }
 
 #[test]
@@ -169,6 +243,7 @@ fn status_shortcuts_update_markdown_and_undo_redo() {
     });
     press(&mut tui, KeyCode::Tab);
     press(&mut tui, KeyCode::Tab);
+    tui.press_char('D').unwrap();
     assert_eq!(tui.selected_task_id(), Some("0001"));
 
     tui.press_char('c').unwrap();
@@ -206,6 +281,9 @@ fn status_shortcuts_update_markdown_and_undo_redo() {
 #[test]
 fn search_filter_and_sort_are_driven_by_prompts() {
     let (_tmp, repo) = setup();
+    insert_created_at(&repo, "0001-project-scaffold.md", "2026-06-12T00:00:00Z");
+    insert_created_at(&repo, "0002-config-loader.md", "2026-06-10T00:00:00Z");
+    insert_created_at(&repo, "0003-http-client.md", "2026-06-11T00:00:00Z");
     let mut tui = driver(repo);
     press(&mut tui, KeyCode::Tab);
     press(&mut tui, KeyCode::Tab);
@@ -232,6 +310,9 @@ fn search_filter_and_sort_are_driven_by_prompts() {
     assert!(!screen.contains("Config file loader"));
 
     tui.press_char('s').unwrap();
+    assert!(tui.render_text().unwrap().contains("Table - sort created"));
+    assert_eq!(tui.selected_task_id(), Some("0003"));
+    tui.press_char('s').unwrap();
     assert!(tui.render_text().unwrap().contains("Table - sort state"));
     tui.press_char('s').unwrap();
     assert!(tui.render_text().unwrap().contains("Table - sort sprint"));
@@ -249,9 +330,9 @@ fn new_task_and_new_task_plus_edit_write_real_files() {
     enter(&mut tui);
     let created = repo.tasks_dir().join("0008-inbox-triage.md");
     assert!(created.is_file());
-    assert!(fs::read_to_string(&created)
-        .unwrap()
-        .contains("status: backlog"));
+    let content = fs::read_to_string(&created).unwrap();
+    assert!(content.contains("status: backlog"));
+    assert!(content.contains("created_at:"));
 
     tui.set_editor_append("\nEdited body\n");
     tui.press_char('N').unwrap();
@@ -294,6 +375,7 @@ fn command_palette_and_custom_commands_run_against_selected_task() {
     });
     press(&mut tui, KeyCode::Tab);
     press(&mut tui, KeyCode::Tab);
+    tui.press_char('D').unwrap();
 
     tui.press_char(':').unwrap();
     enter(&mut tui);

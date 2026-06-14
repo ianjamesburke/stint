@@ -16,7 +16,19 @@ Tasks are individual markdown files. Sprints are ordered lists. Everything lives
 ## Install
 
 ```bash
-cargo install --git https://github.com/ianjamesburke/stint
+cargo install stint --locked
+```
+
+Update to the latest crates.io release with:
+
+```bash
+stint update
+```
+
+The underlying Cargo convention is:
+
+```bash
+cargo install stint --locked --force
 ```
 
 ## Usage

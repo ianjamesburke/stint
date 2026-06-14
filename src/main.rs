@@ -2,7 +2,7 @@ mod cmds;
 
 use std::env;
 use std::io::IsTerminal;
-use std::process;
+use std::process::{self, Command};
 
 use anyhow::Context;
 use clap::{Parser, Subcommand};
@@ -194,6 +194,9 @@ enum Commands {
 
     /// Show a summary: open tasks, blocked tasks, current sprint progress.
     Status,
+
+    /// Update stint from crates.io through cargo install.
+    Update,
 }
 
 #[derive(Subcommand)]
@@ -473,6 +476,10 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             let repo = find_repo()?;
             cmds::cmd_status(&repo)?;
         }
+
+        Some(Commands::Update) => {
+            cmd_update()?;
+        }
     }
     Ok(())
 }
@@ -480,6 +487,19 @@ fn run(cli: Cli) -> anyhow::Result<()> {
 // ---------------------------------------------------------------------------
 // Helper
 // ---------------------------------------------------------------------------
+
+fn cmd_update() -> anyhow::Result<()> {
+    let status = Command::new("cargo")
+        .args(["install", "stint", "--locked", "--force"])
+        .status()
+        .context("run cargo install stint --locked --force")?;
+
+    if !status.success() {
+        anyhow::bail!("cargo install stint --locked --force failed");
+    }
+
+    Ok(())
+}
 
 fn find_repo() -> anyhow::Result<StintRepo> {
     let cwd = env::current_dir().context("get current directory")?;

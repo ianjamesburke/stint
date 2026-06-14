@@ -50,6 +50,12 @@ fn task(repo: &StintRepo, name: &str) -> String {
     fs::read_to_string(repo.tasks_dir().join(name)).unwrap()
 }
 
+fn replace_task_status(repo: &StintRepo, name: &str, from: &str, to: &str) {
+    let path = repo.tasks_dir().join(name);
+    let content = fs::read_to_string(&path).unwrap().replace(from, to);
+    fs::write(path, content).unwrap();
+}
+
 #[test]
 fn renders_views_detail_navigation_and_quit() {
     let (_tmp, repo) = setup();
@@ -100,6 +106,23 @@ fn renders_views_detail_navigation_and_quit() {
 
     tui.press_char('q').unwrap();
     assert!(tui.should_quit());
+}
+
+#[test]
+fn enter_with_no_selected_task_shows_message_instead_of_empty_detail() {
+    let (_tmp, repo) = setup();
+    replace_task_status(
+        &repo,
+        "0004-cli-args.md",
+        "status: in-progress",
+        "status: done",
+    );
+    let mut tui = driver(repo);
+
+    enter(&mut tui);
+    let screen = tui.render_text().unwrap();
+    assert!(screen.contains("no task to select"));
+    assert!(!screen.contains("Detail - e editor - Esc close"));
 }
 
 #[test]

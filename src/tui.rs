@@ -483,7 +483,7 @@ impl App {
             .constraints([
                 Constraint::Length(3),
                 Constraint::Min(5),
-                Constraint::Length(2),
+                Constraint::Length(4),
             ])
             .split(area);
 
@@ -741,24 +741,41 @@ impl App {
     }
 
     fn render_footer(&self, frame: &mut Frame<'_>, area: Rect) {
-        let left = if self.message.is_empty() || self.message_at.elapsed().as_secs() > 8 {
-            "tab view - hjkl/arrows move - enter detail - e edit - c claim - d done - r ready - b defer - a archive - n new - / search - f filter - s sort - x commands - : palette - q quit".to_owned()
+        let lines = if self.message.is_empty() || self.message_at.elapsed().as_secs() > 8 {
+            vec![
+                Line::styled(
+                    "tab view - shift-tab back - hjkl/arrows move - enter detail - e edit",
+                    Style::default().fg(Color::Gray),
+                ),
+                Line::styled(
+                    "c claim - d done - r ready - b defer - a archive - n new - N new+edit",
+                    Style::default().fg(Color::Gray),
+                ),
+                Line::from(vec![
+                    Span::styled(
+                        "/ search - f filter - s sort - x commands - : palette - u undo - ctrl-r redo - q quit",
+                        Style::default().fg(Color::Gray),
+                    ),
+                    Span::raw("  "),
+                    Span::styled(
+                        format!(
+                            "search:{} filter:{} undo:{} redo:{}",
+                            empty_dash(&self.search),
+                            empty_dash(&self.filter),
+                            self.undo.len(),
+                            self.redo.len()
+                        ),
+                        Style::default().fg(Color::DarkGray),
+                    ),
+                ]),
+            ]
         } else {
-            self.message.clone()
+            vec![Line::styled(
+                self.message.clone(),
+                Style::default().fg(Color::Yellow),
+            )]
         };
-        let right = format!(
-            "search:{} filter:{} undo:{} redo:{}",
-            empty_dash(&self.search),
-            empty_dash(&self.filter),
-            self.undo.len(),
-            self.redo.len()
-        );
-        let line = Line::from(vec![
-            Span::styled(left, Style::default().fg(Color::Gray)),
-            Span::raw("  "),
-            Span::styled(right, Style::default().fg(Color::DarkGray)),
-        ]);
-        frame.render_widget(Paragraph::new(line), area);
+        frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), area);
     }
 
     fn render_detail(&self, frame: &mut Frame<'_>, area: Rect) {
@@ -916,7 +933,13 @@ impl App {
             KeyCode::Char('l') if plain_key(key) => self.move_horizontal(1),
             KeyCode::Left => self.move_horizontal(-1),
             KeyCode::Char('h') if plain_key(key) => self.move_horizontal(-1),
-            KeyCode::Enter => self.show_detail = true,
+            KeyCode::Enter => {
+                if self.selected_task().is_some() {
+                    self.show_detail = true;
+                } else {
+                    self.set_message("no task to select".to_owned());
+                }
+            }
             KeyCode::Char('e') if plain_key(key) => self.edit_selected(terminal)?,
             KeyCode::Char('c') if plain_key(key) => {
                 return self.transition_selected("claim", TaskStatus::InProgress, true)

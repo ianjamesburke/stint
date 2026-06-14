@@ -21,8 +21,10 @@ TUI never holds authoritative state — but it owns rich interaction the CLI can
 degrade to a plain `status` summary when stdout is not a tty.
 
 **Dashboard** — everything in flight, right now. All `Active` tasks across every
-sprint, each with its live timer, elapsed time, area, and (if an external process
-claimed it) what claimed it. The "what is happening" screen you leave open.
+sprint, each with its area and (if an external process claimed it) what claimed it.
+This surface is built for agentic operation: agents claim and complete tasks
+directly on disk, and the Dashboard is the live "what is every agent working on"
+screen you leave open.
 
 **Board** — kanban columns by `TaskState`: Backlog · Ready · Blocked · Active ·
 Done. Cards show id, title, estimate, area chips, and the blocker reason (the
@@ -53,7 +55,6 @@ rendered markdown body, with inline body editing or `$EDITOR` handoff.
 | `/` | fuzzy text search |
 | `f` | filter (state / area / tag / sprint) |
 | `s` | sort |
-| `space` | start / stop the live timer on the selected task |
 | `c` | claim / start (todo → in-progress) |
 | `d` | done · `a` archive · `r` ready (promote) · `b` defer |
 | `[` / `]` | reorder selected task within its sprint |
@@ -67,11 +68,15 @@ rendered markdown body, with inline body editing or `$EDITOR` handoff.
 ## Live, agent-tolerant state
 
 A file watcher (`notify`) reflects external changes immediately. If a background
-agent runs `stint start 0013` (or edits a task file directly), the card moves to
-Active, the timer picks up `started_at`, and the Dashboard updates — no refresh
-keystroke. The TUI re-derives its model from disk on every change and after every
-`$EDITOR` return. This is a hard requirement, not a nicety: humans and agents
-operate on the same workspace concurrently.
+agent claims a task or edits a task file directly, the card moves to Active and the
+Dashboard updates — no refresh keystroke. The TUI re-derives its model from disk on
+every change and after every `$EDITOR` return. This is a hard requirement, not a
+nicety: this workspace is driven by agents concurrently with the human watching.
+
+The watcher must not loop on the TUI's own writes. Coalesce events with a short
+debounce (~150ms) and ignore events for paths the TUI just wrote (track an
+in-flight write set / compare the mtime it just stamped). Without this, every
+mutation triggers a self-reload, jumping the cursor and flickering the frame.
 
 ## Inline editing & blockers
 
@@ -83,12 +88,13 @@ operate on the same workspace concurrently.
 - Continuous `check`: validation runs in the background and surfaces errors inline
   on the offending card with a one-key jump-to-fix.
 
-## Live time tracking
+## Time tracking
 
-`space` toggles a live timer on the selected task. Elapsed time accrues into
-`actual` on stop, is visible on the Dashboard and in the Sprint burndown, and
-survives a TUI restart (persisted to the task file). A task can be claimed (`c`)
-and timed independently, so you can track time on work an agent is doing.
+No live timer. This workspace is agent-driven, not human-clocked, so there is no
+`space`-to-start stopwatch and no `started_at` schema field. Time is recorded the
+way the CLI already does it: `actual` accrues via `stint log <id> <duration>`
+(PRD §Time Tracking), and the Sprint burndown reads `estimate` vs `actual`. The
+TUI surfaces those values; it does not run a clock.
 
 ## Custom commands
 
@@ -110,25 +116,56 @@ run = "wtp add stint-{id} && $EDITOR {path}"
 Placeholders expand from the task: `{id}`, `{slug}`, `{path}`, `{title}`,
 `{sprint}`, `{estimate}`. Invoke from the `x` menu or the `:` palette.
 
-Execution model: when running inside Plexi, a command **opens a real pane** and
-launches there (e.g. `plexi run claude` spawns a pane running Claude scoped to the
-task). Standalone, the TUI runs the command in a split via the detected terminal
-multiplexer if available, otherwise suspends, runs attached, and resumes on exit.
-If `claim = true`, the task is moved to in-progress (and the timer started) as the
-command launches, so "run command on a task" and "start work on it" are one
-gesture.
+Execution model: when running inside Plexi (0004), a command **opens a real pane**
+and launches there (e.g. `plexi run claude` spawns a pane running Claude scoped to
+the task). Standalone — including the interim 0013 build — the TUI **suspends,
+runs the command attached, and resumes on exit** (leave/re-enter the alternate
+screen cleanly). Terminal-multiplexer and Plexi pane-splitting are 0004's job, not
+0013's; do not detect/branch on `$TMUX`/`$ZELLIJ` in the interim build.
+
+Ordering and failure semantics: if `claim = true`, the claim write (status →
+in-progress) happens **first**, then the command spawns. Changing status does not
+rename the task file, so `{path}` stays valid across the claim. A non-zero exit
+does **not** auto-unclaim — a launch is a launch; unclaim explicitly if needed.
 
 ## Architecture
 
 - The view layer sits over `stint-core`, which stays pure. Add a binary-side
   **command + journal layer**: every user action is a typed Command that maps to
-  one or more core mutations plus file writes, recorded for undo/redo (backed by
-  git). Core gains no UI logic.
-- File watcher (`notify`) drives live refresh; disk is authoritative.
-- Async runtime (`tokio`) so git ops, custom-command launches, and the watcher
-  never block render.
-- Stack: `ratatui` + `crossterm`, mouse support. No themes. Non-tty → scriptable
-  summary and exit, so `stint` in a pipe stays automatable.
+  one or more core mutations plus file writes, recorded for undo/redo. Core gains
+  no UI logic.
+- Undo/redo replays **inverse commands** from an in-session journal scoped to the
+  fields the action touched. It is *not* `git revert`/`reset`: in a workspace
+  agents write concurrently, a git-level undo would clobber their in-flight work.
+  Git stays the audit log; the journal is the undo engine.
+- File watcher (`notify`) drives live refresh; disk is authoritative. Debounce and
+  ignore self-writes (see "Live, agent-tolerant state").
+- Concurrency: the interim 0013 build needs **no async runtime** —
+  `crossterm::event::poll(timeout)` in the render loop, plus a `notify` watcher on
+  a std thread feeding an `mpsc` channel, and `std::process::Command` (suspended)
+  for custom commands, covers it. `tokio` belongs to 0004, where the Plexi runtime
+  supplies async, panes, and git orchestration.
+- Stack: `ratatui` + `crossterm` + `notify` (watcher in both). Mouse support and
+  themes are 0004-only; no themes anywhere. Non-tty → scriptable summary and exit,
+  so `stint` in a pipe stays automatable.
+
+## What ships where (0013 interim vs 0004 Plexi-native)
+
+| Feature | 0013 interim | 0004 Plexi-native |
+|---|---|---|
+| Board / Table / Sprint / Dashboard views | ✅ | ✅ |
+| Graph (DAG / critical path / bottleneck cone) | ❌ deferred | ✅ (Plexi render) |
+| Blocked-reason strings match `stint next` | ✅ | ✅ |
+| File watcher, agent-tolerant refresh | ✅ | ✅ |
+| Inline frontmatter edit | ❌ `$EDITOR` only | ✅ |
+| Custom commands (`.stint/config.toml`) | ✅ suspend-and-run | ✅ real panes |
+| Undo/redo journal | ✅ basic | ✅ |
+| Search `/` · sort `s` · filter `f` | ✅ | ✅ |
+| Mouse support | ❌ | ✅ |
+| Async (`tokio`), pane management | ❌ | ✅ (runtime) |
+
+`/`, `s`, and `f` state is per-view and resets on `tab` to keep the model simple;
+a persisted global filter is a later refinement, not a v1 requirement.
 
 ## Out of scope
 

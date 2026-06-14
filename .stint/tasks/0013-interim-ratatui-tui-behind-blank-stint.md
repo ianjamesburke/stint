@@ -54,8 +54,13 @@ the CLI uses — no new write path):
 - `[` / `]` move selected task earlier/later in the sprint order
 - `c` run `check` and surface errors in a footer banner
 
-Live refresh: re-read `.stint/` after every mutation and after returning from
-`$EDITOR`; reflect external edits on focus regain.
+Live refresh: a `notify` watcher (std thread → `mpsc`, no async runtime) re-reads
+`.stint/` on external change, debounced ~150ms and ignoring the TUI's own writes,
+so a background agent claiming a task or editing a file reflects without a
+keystroke. Also re-read after every mutation and after returning from `$EDITOR`.
+
+No live timer. The workspace is agent-driven, not human-clocked; time stays
+`actual` accrued via `stint log` (see `docs/TUI_DESIGN.md` §"Time tracking").
 
 Empty/edge states: no `.stint/` workspace → offer `init`; no sprint → prompt to
 create one; check failures shown non-blocking in a status bar.
@@ -64,8 +69,12 @@ create one; check failures shown non-blocking in a status bar.
 
 - Editing frontmatter fields inline (estimate, area, tags) — use `$EDITOR`.
 - Cross-repo / external blocker resolution views.
-- Mouse support, themes, config. Honor `NO_COLOR` and degrade to plain.
+- Mouse support and themes (both 0004). Honor `NO_COLOR` and degrade to plain.
+- The `Graph` DAG view (0004 — needs the Plexi render layer).
 - Anything that duplicates business logic out of `stint-core`.
+
+Note: `.stint/config.toml` *is* read in this build — custom commands (suspend-and-
+run) are defined there. Only the inline TUI-config/theming surface is out of scope.
 
 ## Architecture
 
@@ -75,9 +84,12 @@ create one; check failures shown non-blocking in a status bar.
   existing `cmds::cmd_*` call so behavior is identical to the CLI.
 - The board model is derived each frame from `repo.load_tasks()` +
   `compute_next` + `classify`; the TUI holds no authoritative state.
-- Crates: `ratatui` + `crossterm`. Gate launch on an interactive terminal;
-  if stdout is not a tty, print the current `status` summary and exit (so
-  `stint` in a pipe stays scriptable).
+- Crates: `ratatui` + `crossterm` + `notify`. **No `tokio`** — the render loop
+  uses `crossterm::event::poll(timeout)`, the watcher runs on a std thread feeding
+  an `mpsc` channel, and custom commands run via suspended `std::process::Command`.
+  Async/panes are 0004's concern, not this interim build's.
+- Gate launch on an interactive terminal; if stdout is not a tty, print the current
+  `status` summary and exit (so `stint` in a pipe stays scriptable).
 
 ## Acceptance
 

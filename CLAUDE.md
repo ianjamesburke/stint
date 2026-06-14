@@ -25,6 +25,10 @@ cargo test
 
 No `just` file yet — use cargo directly.
 
+## Releases
+
+- After any user-facing behavior change or installed local build, bump the patch version before committing.
+
 ## Source of Truth
 
 - Schema spec → `docs/PRD.md` (Frontmatter schema section)

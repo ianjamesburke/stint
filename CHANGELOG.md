@@ -1,6 +1,10 @@
 # Changelog
 
 Newest releases appear first.
+## [0.2.9] - 2026-06-14
+
+### Changes
+- feat: add zsh shell completions via `stint completions zsh`
 ## [0.2.8] - 2026-06-14
 
 ### Changes

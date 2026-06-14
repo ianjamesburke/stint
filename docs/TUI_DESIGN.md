@@ -171,3 +171,17 @@ a persisted global filter is a later refinement, not a v1 requirement.
 
 - Themes / configurable color schemes.
 - GitHub issue import from the UI (stays a CLI concern: `stint init --with-github`).
+
+## Framework & references
+
+`ratatui` is the framework: the de-facto Rust TUI standard, immediate-mode (model
+re-derived from disk each frame fits this exactly), with crossterm as the backend.
+cursive (retained-mode) and raw crossterm were considered and rejected — see commit
+discussion.
+
+- ratatui book / site — https://ratatui.rs
+- ratatui API docs — https://docs.rs/ratatui
+- ratatui examples (tables, lists, layout, async patterns) — https://github.com/ratatui/ratatui/tree/main/examples
+- crossterm (backend: terminal, events, raw mode, alt screen) — https://docs.rs/crossterm
+- notify (file watcher) — https://docs.rs/notify
+- Async patterns / event loop guidance (for 0004) — https://ratatui.rs/concepts/event-handling/

@@ -115,6 +115,10 @@ run) are defined there. Only the inline TUI-config/theming surface is out of sco
 ## References
 
 - `docs/TUI_DESIGN.md` — the full best-case design this task delivers the
-  interim path toward.
+  interim path toward (incl. framework rationale).
 - [[0004-tui-visualization]] — long-term Plexi PGAP version of the board.
 - `NORTH_STAR.md`, `docs/PRD.md` for vision and schema.
+- ratatui — https://ratatui.rs · https://docs.rs/ratatui · examples:
+  https://github.com/ratatui/ratatui/tree/main/examples
+- crossterm (backend) — https://docs.rs/crossterm
+- notify (file watcher) — https://docs.rs/notify

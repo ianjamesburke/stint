@@ -21,13 +21,15 @@ Stint is a Rust CLI tool + library for git-tracked, markdown-backed sprint plann
 ```bash
 cargo build
 cargo test
+just publish-check
 ```
 
-No `just` file yet — use cargo directly.
+Use `just --list` for release/install helper commands.
 
 ## Releases
 
-- After any user-facing behavior change or installed local build, bump the patch version before committing.
+- Bump the patch version after Rust code changes that affect the crate/binary behavior, or after installing a local build for testing a Rust change.
+- Do not bump the patch version for docs-only, comments-only, changelog-only, or agent-instruction-only changes.
 - Use `just bump [patch|minor|major]` for release bumps. It updates `Cargo.toml`, `Cargo.lock`, and `CHANGELOG.md`, then commits `chore: release vX.Y.Z`.
 
 ## Source of Truth

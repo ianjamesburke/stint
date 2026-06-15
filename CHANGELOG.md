@@ -1,6 +1,10 @@
 # Changelog
 
 Newest releases appear first.
+## [0.2.10] - 2026-06-15
+
+### Changes
+- feat: space toggle follows task when it was the last item in its board column
 ## [0.2.9] - 2026-06-14
 
 ### Changes

@@ -971,6 +971,7 @@ impl App {
             ),
             Line::from("c claim          d done          r ready"),
             Line::from("b defer          a archive       e edit"),
+            Line::from("space toggle backlog/todo"),
             Line::from("n new            N new + edit"),
             Line::from(""),
             Line::styled(
@@ -1155,6 +1156,9 @@ impl App {
             }
             KeyCode::Char('b') if plain_key(key) => {
                 return self.transition_selected("defer", TaskStatus::Backlog, false)
+            }
+            KeyCode::Char(' ') if plain_key(key) => {
+                return self.space_toggle();
             }
             KeyCode::Char('a') if plain_key(key) => {
                 return self.transition_selected("archive", TaskStatus::Archived, false)
@@ -1428,6 +1432,34 @@ impl App {
             );
         }
         Ok(())
+    }
+
+    fn space_toggle(&mut self) -> anyhow::Result<bool> {
+        let (target_status, label, target_column) =
+            match self.selected_task().map(|t| &t.frontmatter.status) {
+                Some(TaskStatus::Backlog) => (TaskStatus::Todo, "ready", BoardColumn::Ready),
+                Some(TaskStatus::Todo) => (TaskStatus::Backlog, "defer", BoardColumn::Backlog),
+                _ => return Ok(false),
+            };
+        let task_id = self.selected_task_id().map(str::to_owned);
+        let visible_len = self.visible_tasks().len();
+        let was_last = visible_len > 0 && self.selected + 1 >= visible_len;
+        self.transition_selected(label, target_status, false)?;
+        // Reload data and handle focus: follow the task only when it was the
+        // last item in the current column; otherwise let the next item fill
+        // the vacated slot (clamp_selection handles this automatically).
+        match load_data(&self.repo) {
+            Ok(data) => {
+                self.data = data;
+                self.custom_commands = load_custom_commands(&self.repo);
+                if was_last && matches!(self.view, View::Board) {
+                    self.board_column = target_column;
+                }
+                self.restore_selection(task_id.as_deref());
+            }
+            Err(error) => self.set_message(format!("reload failed: {error:#}")),
+        }
+        Ok(false)
     }
 
     fn transition_selected(

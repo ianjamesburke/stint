@@ -23,6 +23,10 @@ just publish-check
 
 Use `just --list` for release/install helper commands.
 
+## After Every Code Change
+
+Run `just install` immediately after any Rust change so the local binary is updated and can be tested with `stint tui`.
+
 ## Releases
 
 - Bump the patch version after Rust code changes that affect the crate/binary behavior, or after installing a local build for testing a Rust change.

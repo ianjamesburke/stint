@@ -1,6 +1,13 @@
 # Changelog
 
 Newest releases appear first.
+## [0.3.1] - 2026-06-20
+
+### Changes
+- feat: hide blocked tasks from stint next output
+- docs: add priority section to stint skill
+- docs: document priority field (P0-P4) in README, PRD, and CLAUDE.md
+- feat: add first-class priority field (P0-P4) to tasks
 ## [0.2.10] - 2026-06-15
 
 ### Changes

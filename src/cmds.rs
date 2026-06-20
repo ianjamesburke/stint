@@ -971,18 +971,6 @@ pub fn print_next(report: &NextReport, claimed: bool, count: Option<usize>) {
         }
     }
 
-    if !report.blocked.is_empty() {
-        println!();
-        println!(
-            "{} {}",
-            bold("Blocked", on),
-            dim(&format!("({})", report.blocked.len()), on)
-        );
-        for task in &report.blocked {
-            print_next_task(task, on);
-        }
-    }
-
     println!();
     match &report.bottleneck {
         Some(b) => {

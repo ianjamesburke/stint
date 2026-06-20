@@ -5,6 +5,9 @@ default_sprint = "s1"
 [gh]
 repo = ""
 
+[claim]
+run = "claim-agent --id {id} --path {path} --area {area} --tags {tags}"
+
 [[command]]
 key = "z"
 name = "Agent on task"

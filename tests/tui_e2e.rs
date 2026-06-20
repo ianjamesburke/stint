@@ -81,10 +81,15 @@ fn insert_created_at(repo: &StintRepo, name: &str, timestamp: &str) {
 fn renders_views_detail_navigation_and_quit() {
     let (_tmp, repo) = setup();
     replace_task_status(&repo, "0007-readme.md", "status: done", "status: archived");
-    let mut tui = driver(repo);
+    let mut tui = driver(StintRepo {
+        stint_dir: repo.stint_dir.clone(),
+    });
 
     let screen = tui.render_text().unwrap();
-    assert!(screen.contains("Dashboard"));
+    assert!(screen.contains("Board"));
+    assert!(screen.contains("backlog"));
+    assert!(screen.contains("todo"));
+    assert!(screen.contains("active"));
     assert!(screen.contains("CLI argument parsing"));
     assert!(screen.contains("? shortcuts"));
     assert!(!screen.contains("c claim - d done"));
@@ -97,20 +102,14 @@ fn renders_views_detail_navigation_and_quit() {
     tui.press_char('?').unwrap();
     assert!(!tui.render_text().unwrap().contains("Shortcuts"));
 
-    press(&mut tui, KeyCode::Tab);
     let screen = tui.render_text().unwrap();
-    assert!(screen.contains("backlog"));
-    assert!(screen.contains("ready"));
-    assert!(screen.contains("blocked"));
     assert!(screen.contains("0006 Cache API responses on disk"));
     assert!(screen.contains("0001"));
     assert!(!screen.contains("0006 backlog"));
-    assert!(!screen.contains("0001 ready"));
+    assert!(!screen.contains("0001 todo"));
 
     tui.press_char('l').unwrap();
     assert_eq!(tui.selected_task_id(), Some("0001"));
-    tui.press_char('l').unwrap();
-    assert_eq!(tui.selected_task_id(), Some("0002"));
     tui.press_char('l').unwrap();
     assert_eq!(tui.selected_task_id(), Some("0004"));
     tui.press_char('l').unwrap();
@@ -129,21 +128,22 @@ fn renders_views_detail_navigation_and_quit() {
     press(&mut tui, KeyCode::Up);
     assert_eq!(tui.selected_task_id(), Some("0001"));
 
-    press(&mut tui, KeyCode::Tab);
-    let screen = tui.render_text().unwrap();
-    assert!(screen.contains("Sprint tasks"));
-    assert!(screen.contains("exercise the TUI"));
     press(&mut tui, KeyCode::BackTab);
+    assert!(tui.render_text().unwrap().contains("Board"));
+    press(&mut tui, KeyCode::Tab);
     assert!(tui
         .render_text()
         .unwrap()
         .contains("Table - sort id - done hidden"));
-    press(&mut tui, KeyCode::Tab);
 
+    press(&mut tui, KeyCode::BackTab);
+    tui.press_char('l').unwrap();
     enter(&mut tui);
     let screen = tui.render_text().unwrap();
     assert!(screen.contains("Detail - e editor - Esc close"));
     assert!(screen.contains("status: todo"));
+    assert!(tui.commands_run().is_empty());
+    assert!(task(&repo, "0001-project-scaffold.md").contains("status: todo"));
 
     press(&mut tui, KeyCode::Esc);
     let screen = tui.render_text().unwrap();
@@ -156,12 +156,22 @@ fn renders_views_detail_navigation_and_quit() {
 #[test]
 fn enter_with_no_selected_task_shows_message_instead_of_empty_detail() {
     let (_tmp, repo) = setup();
-    replace_task_status(
-        &repo,
+    for name in [
+        "0001-project-scaffold.md",
+        "0002-config-loader.md",
+        "0003-http-client.md",
         "0004-cli-args.md",
-        "status: in-progress",
-        "status: done",
-    );
+        "0005-render-forecast.md",
+        "0006-caching-layer.md",
+    ] {
+        let path = repo.tasks_dir().join(name);
+        let content = fs::read_to_string(&path).unwrap();
+        let updated = content
+            .replace("status: backlog", "status: done")
+            .replace("status: todo", "status: done")
+            .replace("status: in-progress", "status: done");
+        fs::write(path, updated).unwrap();
+    }
     let mut tui = driver(repo);
 
     enter(&mut tui);
@@ -180,7 +190,6 @@ fn table_scrolls_to_keep_selected_row_visible() {
     let mut tui = TuiTestDriver::load(repo, 100, 12).unwrap();
 
     press(&mut tui, KeyCode::Tab);
-    press(&mut tui, KeyCode::Tab);
     for _ in 0..15 {
         press(&mut tui, KeyCode::Down);
     }
@@ -198,7 +207,6 @@ fn table_hides_done_by_default_and_toggles_them_visible() {
     let mut tui = driver(repo);
 
     press(&mut tui, KeyCode::Tab);
-    press(&mut tui, KeyCode::Tab);
     let screen = tui.render_text().unwrap();
     assert!(screen.contains("Table - sort id - done hidden"));
     assert!(!screen.contains("Write the project README"));
@@ -215,7 +223,6 @@ fn external_reload_preserves_selection_and_reflects_disk_changes() {
     let mut tui = driver(StintRepo {
         stint_dir: repo.stint_dir.clone(),
     });
-    press(&mut tui, KeyCode::Tab);
     press(&mut tui, KeyCode::Tab);
     press(&mut tui, KeyCode::Down);
     assert_eq!(tui.selected_task_id(), Some("0002"));
@@ -241,18 +248,26 @@ fn status_shortcuts_update_markdown_and_undo_redo() {
     let mut tui = driver(StintRepo {
         stint_dir: repo.stint_dir.clone(),
     });
-    press(&mut tui, KeyCode::Tab);
-    press(&mut tui, KeyCode::Tab);
-    tui.press_char('D').unwrap();
+    tui.press_char('l').unwrap();
     assert_eq!(tui.selected_task_id(), Some("0001"));
 
     tui.press_char('c').unwrap();
     let content = task(&repo, "0001-project-scaffold.md");
     assert!(content.contains("status: in-progress"));
     assert!(content.contains("started_at:"));
-    assert!(tui.render_text().unwrap().contains("claim: 0001"));
+    assert!(tui
+        .render_text()
+        .unwrap()
+        .contains("claim command finished: 0001"));
+    assert!(tui
+        .commands_run()
+        .single()
+        .contains("claim-agent --id 0001"));
     tui.age_message();
-    assert!(!tui.render_text().unwrap().contains("claim: 0001"));
+    assert!(!tui
+        .render_text()
+        .unwrap()
+        .contains("claim command finished: 0001"));
 
     tui.press_char('u').unwrap();
     let content = task(&repo, "0001-project-scaffold.md");
@@ -263,19 +278,24 @@ fn status_shortcuts_update_markdown_and_undo_redo() {
     let content = task(&repo, "0001-project-scaffold.md");
     assert!(content.contains("status: in-progress"));
 
+    tui.press_char('l').unwrap();
     tui.press_char('d').unwrap();
     let content = task(&repo, "0001-project-scaffold.md");
     assert!(content.contains("status: done"));
     assert!(content.contains("completed_at:"));
 
     tui.press_char('r').unwrap();
-    assert!(task(&repo, "0001-project-scaffold.md").contains("status: todo"));
+    assert!(task(&repo, "0004-cli-args.md").contains("status: todo"));
 
+    tui.press_char('h').unwrap();
+    press(&mut tui, KeyCode::Down);
+    press(&mut tui, KeyCode::Down);
     tui.press_char('b').unwrap();
-    assert!(task(&repo, "0001-project-scaffold.md").contains("status: backlog"));
+    assert!(task(&repo, "0004-cli-args.md").contains("status: backlog"));
 
+    tui.press_char('h').unwrap();
     tui.press_char('a').unwrap();
-    assert!(task(&repo, "0001-project-scaffold.md").contains("status: archived"));
+    assert!(task(&repo, "0004-cli-args.md").contains("status: archived"));
 }
 
 #[test]
@@ -285,7 +305,6 @@ fn search_filter_and_sort_are_driven_by_prompts() {
     insert_created_at(&repo, "0002-config-loader.md", "2026-06-10T00:00:00Z");
     insert_created_at(&repo, "0003-http-client.md", "2026-06-11T00:00:00Z");
     let mut tui = driver(repo);
-    press(&mut tui, KeyCode::Tab);
     press(&mut tui, KeyCode::Tab);
 
     tui.press_char('/').unwrap();
@@ -350,8 +369,7 @@ fn editor_action_records_journal_and_undo_restores_file() {
     let mut tui = driver(StintRepo {
         stint_dir: repo.stint_dir.clone(),
     });
-    press(&mut tui, KeyCode::Tab);
-    press(&mut tui, KeyCode::Tab);
+    tui.press_char('l').unwrap();
 
     tui.set_editor_append("\nEdited from test\n");
     tui.press_char('e').unwrap();
@@ -373,9 +391,7 @@ fn command_palette_and_custom_commands_run_against_selected_task() {
     let mut tui = driver(StintRepo {
         stint_dir: repo.stint_dir.clone(),
     });
-    press(&mut tui, KeyCode::Tab);
-    press(&mut tui, KeyCode::Tab);
-    tui.press_char('D').unwrap();
+    tui.press_char('l').unwrap();
 
     tui.press_char(':').unwrap();
     enter(&mut tui);
@@ -401,7 +417,7 @@ fn command_palette_and_custom_commands_run_against_selected_task() {
     tui.press_char('z').unwrap();
     assert!(task(&repo, "0001-project-scaffold.md").contains("status: in-progress"));
 
-    let command = tui.commands_run().single();
+    let command = tui.commands_run().last().unwrap();
     assert!(command.contains("agent --id 0001"));
     assert!(command.contains("--slug project-scaffold"));
     assert!(command.contains("--path '"));
@@ -417,8 +433,7 @@ fn custom_command_failure_is_reported_without_unclaiming() {
     let mut tui = driver(StintRepo {
         stint_dir: repo.stint_dir.clone(),
     });
-    press(&mut tui, KeyCode::Tab);
-    press(&mut tui, KeyCode::Tab);
+    tui.press_char('l').unwrap();
     tui.set_command_success(false);
 
     tui.press_char('x').unwrap();

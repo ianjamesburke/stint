@@ -14,11 +14,11 @@ use crossterm::terminal::{
 };
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use ratatui::backend::{CrosstermBackend, TestBackend};
-use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
-    Block, Borders, Cell, Clear, Gauge, List, ListItem, Paragraph, Row, Table, Tabs, Wrap,
+    Block, Borders, Cell, Clear, List, ListItem, Paragraph, Row, Table, Tabs, Wrap,
 };
 use ratatui::{Frame, Terminal};
 use serde::Deserialize;
@@ -27,7 +27,6 @@ use stint::mutate::{
     new_task_content, next_task_id, set_completed_at, set_started_at_if_absent, set_status,
     title_to_slug,
 };
-use stint::next::{compute_next, NextOptions, NextReport};
 use stint::schema::{BlockedByRef, Sprint, Task, TaskStatus};
 use stint::serialize::serialize_task;
 use stint::state::{active_blockers, classify, done_ids, TaskState};
@@ -134,23 +133,19 @@ fn suspend_terminal<T>(
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum View {
-    Dashboard,
     Board,
     Table,
-    Sprint,
 }
 
 impl View {
-    fn all() -> [Self; 4] {
-        [Self::Dashboard, Self::Board, Self::Table, Self::Sprint]
+    fn all() -> [Self; 2] {
+        [Self::Board, Self::Table]
     }
 
     fn label(self) -> &'static str {
         match self {
-            View::Dashboard => "Dashboard",
             View::Board => "Board",
             View::Table => "Table",
-            View::Sprint => "Sprint",
         }
     }
 
@@ -170,40 +165,28 @@ impl View {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BoardColumn {
     Backlog,
-    Ready,
-    Blocked,
+    Todo,
     Active,
-    Done,
 }
 
 impl BoardColumn {
-    fn all() -> [Self; 5] {
-        [
-            Self::Backlog,
-            Self::Ready,
-            Self::Blocked,
-            Self::Active,
-            Self::Done,
-        ]
+    fn all() -> [Self; 3] {
+        [Self::Backlog, Self::Todo, Self::Active]
     }
 
-    fn state(self) -> TaskState {
+    fn label(self) -> &'static str {
         match self {
-            Self::Backlog => TaskState::Iced,
-            Self::Ready => TaskState::Ready,
-            Self::Blocked => TaskState::Blocked,
-            Self::Active => TaskState::Active,
-            Self::Done => TaskState::Done,
+            Self::Backlog => "backlog",
+            Self::Todo => "todo",
+            Self::Active => "active",
         }
     }
 
     fn index(self) -> usize {
         match self {
             Self::Backlog => 0,
-            Self::Ready => 1,
-            Self::Blocked => 2,
-            Self::Active => 3,
-            Self::Done => 4,
+            Self::Todo => 1,
+            Self::Active => 2,
         }
     }
 }
@@ -303,8 +286,14 @@ struct CustomCommand {
 
 #[derive(Debug, Deserialize)]
 struct ConfigFile {
+    claim: Option<ClaimConfig>,
     #[serde(default)]
     command: Vec<CommandConfig>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ClaimConfig {
+    run: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -333,7 +322,6 @@ struct JournalEntry {
 struct AppData {
     tasks: Vec<Task>,
     sprints: Vec<Sprint>,
-    next: NextReport,
     status: StatusReport,
     validation_errors: Vec<String>,
 }
@@ -356,6 +344,7 @@ struct App {
     command_index: usize,
     custom_menu: bool,
     custom_index: usize,
+    claim_command: Option<String>,
     custom_commands: Vec<CustomCommand>,
     undo: Vec<JournalEntry>,
     redo: Vec<JournalEntry>,
@@ -367,11 +356,11 @@ struct App {
 impl App {
     fn load(repo: StintRepo) -> anyhow::Result<Self> {
         let data = load_data(&repo)?;
-        let custom_commands = load_custom_commands(&repo);
+        let commands = load_commands(&repo);
         Ok(Self {
             repo,
             data,
-            view: View::Dashboard,
+            view: View::Board,
             selected: 0,
             board_column: BoardColumn::Backlog,
             sprint_index: 0,
@@ -386,7 +375,8 @@ impl App {
             command_index: 0,
             custom_menu: false,
             custom_index: 0,
-            custom_commands,
+            claim_command: commands.claim,
+            custom_commands: commands.custom,
             undo: Vec::new(),
             redo: Vec::new(),
             message: String::new(),
@@ -400,7 +390,9 @@ impl App {
         match load_data(&self.repo) {
             Ok(data) => {
                 self.data = data;
-                self.custom_commands = load_custom_commands(&self.repo);
+                let commands = load_commands(&self.repo);
+                self.claim_command = commands.claim;
+                self.custom_commands = commands.custom;
                 self.restore_selection(selected_id.as_deref());
             }
             Err(error) => self.set_message(format!("reload failed: {error:#}")),
@@ -436,14 +428,7 @@ impl App {
     fn visible_tasks(&self) -> Vec<&Task> {
         let done = done_ids(&self.data.tasks);
         let tasks: Vec<&Task> = match self.view {
-            View::Dashboard => self
-                .data
-                .tasks
-                .iter()
-                .filter(|task| matches!(task.frontmatter.status, TaskStatus::InProgress))
-                .collect(),
-            View::Board => self.board_tasks_for_state(self.board_column, &done),
-            View::Sprint => self.sprint_tasks(),
+            View::Board => self.board_tasks_for_column(self.board_column, &done),
             View::Table => self
                 .data
                 .tasks
@@ -455,7 +440,7 @@ impl App {
         self.filtered_sorted_tasks(tasks, &done)
     }
 
-    fn board_tasks_for_state<'a>(
+    fn board_tasks_for_column<'a>(
         &'a self,
         column: BoardColumn,
         done: &HashSet<&str>,
@@ -463,7 +448,14 @@ impl App {
         self.data
             .tasks
             .iter()
-            .filter(|task| classify(task, done) == column.state())
+            .filter(|task| match column {
+                BoardColumn::Backlog => matches!(task.frontmatter.status, TaskStatus::Backlog),
+                BoardColumn::Todo => {
+                    matches!(task.frontmatter.status, TaskStatus::Todo)
+                        && classify(task, done) == TaskState::Ready
+                }
+                BoardColumn::Active => matches!(task.frontmatter.status, TaskStatus::InProgress),
+            })
             .collect()
     }
 
@@ -526,11 +518,8 @@ impl App {
                     .then(a.frontmatter.id.cmp(&b.frontmatter.id))
             }),
             SortMode::Priority => tasks.sort_by(|a, b| {
-                stint::schema::cmp_priority(
-                    &a.frontmatter.priority,
-                    &b.frontmatter.priority,
-                )
-                .then(a.frontmatter.id.cmp(&b.frontmatter.id))
+                stint::schema::cmp_priority(&a.frontmatter.priority, &b.frontmatter.priority)
+                    .then(a.frontmatter.id.cmp(&b.frontmatter.id))
             }),
         }
         tasks
@@ -538,25 +527,8 @@ impl App {
 
     fn board_column_has_visible_tasks(&self, column: BoardColumn, done: &HashSet<&str>) -> bool {
         !self
-            .filtered_sorted_tasks(self.board_tasks_for_state(column, done), done)
+            .filtered_sorted_tasks(self.board_tasks_for_column(column, done), done)
             .is_empty()
-    }
-
-    fn sprint_tasks(&self) -> Vec<&Task> {
-        let Some(sprint) = self.data.sprints.get(self.sprint_index) else {
-            return Vec::new();
-        };
-        let by_id: HashMap<&str, &Task> = self
-            .data
-            .tasks
-            .iter()
-            .map(|task| (task.frontmatter.id.as_str(), task))
-            .collect();
-        sprint
-            .task_ids
-            .iter()
-            .filter_map(|entry| by_id.get(numeric_prefix(entry)).copied())
-            .collect()
     }
 
     fn selected_task_id(&self) -> Option<&str> {
@@ -583,10 +555,8 @@ impl App {
 
         self.render_header(frame, chunks[0]);
         match self.view {
-            View::Dashboard => self.render_dashboard(frame, chunks[1]),
             View::Board => self.render_board(frame, chunks[1]),
             View::Table => self.render_table(frame, chunks[1]),
-            View::Sprint => self.render_sprint(frame, chunks[1]),
         }
         self.render_footer(frame, chunks[2]);
 
@@ -621,7 +591,12 @@ impl App {
                     .position(|view| *view == self.view)
                     .unwrap_or(0),
             )
-            .block(Block::default().borders(Borders::ALL).title("stint"))
+            .block(Block::default().borders(Borders::ALL).title(format!(
+                "stint open:{} backlog:{} errors:{}",
+                self.data.status.open_count,
+                self.data.status.backlog_count,
+                self.data.validation_errors.len()
+            )))
             .style(Style::default().fg(Color::Gray))
             .highlight_style(
                 Style::default()
@@ -631,98 +606,33 @@ impl App {
         frame.render_widget(tabs, area);
     }
 
-    fn render_dashboard(&self, frame: &mut Frame<'_>, area: Rect) {
-        let chunks = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(64), Constraint::Percentage(36)])
-            .split(area);
-
-        let tasks = self.visible_tasks();
-        frame.render_widget(
-            task_list("Active", &tasks, self.selected, &self.data.tasks),
-            chunks[0],
-        );
-
-        let mut lines = Vec::new();
-        lines.push(Line::from(vec![
-            Span::styled("Open ", Style::default().fg(Color::Gray)),
-            Span::raw(self.data.status.open_count.to_string()),
-        ]));
-        lines.push(Line::from(vec![
-            Span::styled("Backlog ", Style::default().fg(Color::Gray)),
-            Span::raw(self.data.status.backlog_count.to_string()),
-        ]));
-        lines.push(Line::from(vec![
-            Span::styled("Blocked ", Style::default().fg(Color::Gray)),
-            Span::raw(self.data.status.blocked_tasks.len().to_string()),
-        ]));
-        lines.push(Line::from(""));
-        if let Some(progress) = &self.data.status.sprint_progress {
-            lines.push(Line::styled(
-                format!("{} progress", progress.sprint_id),
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
-            ));
-            lines.push(Line::from(format!(
-                "{} / {} tasks done",
-                progress.done_count, progress.task_count
-            )));
-            lines.push(Line::from(format!(
-                "{} logged - {} committed - {} remaining",
-                fmt_minutes(progress.logged_minutes),
-                fmt_minutes(progress.committed_minutes),
-                fmt_minutes(progress.remaining_minutes)
-            )));
-        }
-        lines.push(Line::from(""));
-        if let Some(bottleneck) = &self.data.next.bottleneck {
-            lines.push(Line::styled(
-                "Bottleneck",
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD),
-            ));
-            lines.push(Line::from(format!(
-                "{} {} (blocks {})",
-                bottleneck.id, bottleneck.title, bottleneck.blocked_count
-            )));
-        }
-        if !self.data.validation_errors.is_empty() {
-            lines.push(Line::from(""));
-            lines.push(Line::styled(
-                format!("{} validation error(s)", self.data.validation_errors.len()),
-                Style::default().fg(Color::Red),
-            ));
-        }
-
-        frame.render_widget(
-            Paragraph::new(lines)
-                .block(Block::default().borders(Borders::ALL).title("Summary"))
-                .wrap(Wrap { trim: true }),
-            chunks[1],
-        );
-    }
-
     fn render_board(&self, frame: &mut Frame<'_>, area: Rect) {
         let board_columns = BoardColumn::all();
-        let constraints = board_columns.map(|_| Constraint::Percentage(20));
+        let constraints = board_columns.map(|_| Constraint::Percentage(33));
         let areas = Layout::default()
             .direction(Direction::Horizontal)
             .constraints(constraints)
             .split(area);
         let done = done_ids(&self.data.tasks);
+        let visible_rows = list_body_rows(area);
         for (index, column) in board_columns.iter().enumerate() {
             let tasks =
-                self.filtered_sorted_tasks(self.board_tasks_for_state(*column, &done), &done);
-            let selected = if *column == self.board_column {
-                self.selected
+                self.filtered_sorted_tasks(self.board_tasks_for_column(*column, &done), &done);
+            let (start, selected) = if *column == self.board_column {
+                let start = viewport_start(self.selected, tasks.len(), visible_rows);
+                (start, self.selected.saturating_sub(start))
             } else {
-                usize::MAX
+                (0, usize::MAX)
             };
-            let title = format!("{} {}", column.state().as_str(), tasks.len());
+            let visible_tasks = tasks
+                .iter()
+                .skip(start)
+                .take(visible_rows)
+                .copied()
+                .collect::<Vec<_>>();
+            let title = format!("{} {}", column.label(), tasks.len());
             frame.render_widget(
-                board_task_list(&title, &tasks, selected, &self.data.tasks),
+                board_task_list(&title, &visible_tasks, selected, &self.data.tasks),
                 areas[index],
             );
         }
@@ -803,65 +713,11 @@ impl App {
         frame.render_widget(table, area);
     }
 
-    fn render_sprint(&self, frame: &mut Frame<'_>, area: Rect) {
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Length(5), Constraint::Min(5)])
-            .split(area);
-
-        if let Some(sprint) = self.data.sprints.get(self.sprint_index) {
-            let progress = sprint_progress_for(&self.data.tasks, &self.data.sprints, &sprint.header.id);
-            let ratio = if progress.task_count == 0 {
-                0.0
-            } else {
-                progress.done_count as f64 / progress.task_count as f64
-            };
-            let label = format!(
-                "{} - {} - {} / {} done - {} logged / {} committed",
-                sprint.header.id,
-                sprint.header.date_range,
-                progress.done_count,
-                progress.task_count,
-                fmt_minutes(progress.logged_minutes),
-                fmt_minutes(progress.committed_minutes)
-            );
-            frame.render_widget(
-                Gauge::default()
-                    .block(
-                        Block::default().borders(Borders::ALL).title(
-                            sprint
-                                .header
-                                .goal
-                                .clone()
-                                .unwrap_or_else(|| "Sprint".to_owned()),
-                        ),
-                    )
-                    .gauge_style(Style::default().fg(Color::Cyan))
-                    .ratio(ratio)
-                    .label(label),
-                chunks[0],
-            );
-        } else {
-            frame.render_widget(
-                Paragraph::new("no sprints")
-                    .alignment(Alignment::Center)
-                    .block(Block::default().borders(Borders::ALL).title("Sprint")),
-                chunks[0],
-            );
-        }
-
-        let tasks = self.visible_tasks();
-        frame.render_widget(
-            task_list("Sprint tasks", &tasks, self.selected, &self.data.tasks),
-            chunks[1],
-        );
-    }
-
     fn render_footer(&self, frame: &mut Frame<'_>, area: Rect) {
         let lines = if self.message.is_empty() || self.message_at.elapsed() > MESSAGE_TTL {
             vec![
                 Line::styled(
-                    "tab views - arrows/hjkl move - enter detail - ? shortcuts - q quit",
+                    "tab views - arrows/hjkl move - enter detail - c claim - ? shortcuts - q quit",
                     Style::default().fg(Color::Gray),
                 ),
                 Line::from(vec![
@@ -907,7 +763,11 @@ impl App {
             .data
             .sprints
             .iter()
-            .find(|s| s.task_ids.iter().any(|e| numeric_prefix(e) == fm.id.as_str()))
+            .find(|s| {
+                s.task_ids
+                    .iter()
+                    .any(|e| numeric_prefix(e) == fm.id.as_str())
+            })
             .map(|s| s.header.id.as_str())
             .unwrap_or("-");
         let mut lines = vec![
@@ -920,10 +780,7 @@ impl App {
             Line::from(format!("status: {}", fm.status)),
             Line::from(format!(
                 "priority: {}",
-                fm.priority
-                    .as_ref()
-                    .map(|p| p.as_str())
-                    .unwrap_or("-")
+                fm.priority.as_ref().map(|p| p.as_str()).unwrap_or("-")
             )),
             Line::from(format!("state: {}", classify(task, &done).as_str())),
             Line::from(format!(
@@ -977,6 +834,7 @@ impl App {
             Line::from("tab / shift-tab  switch views"),
             Line::from("arrows or hjkl    move selection"),
             Line::from("enter            open task detail"),
+            Line::from("c                claim selected task"),
             Line::from("esc              close overlays"),
             Line::from("q / ctrl-c       quit"),
             Line::from(""),
@@ -1149,9 +1007,7 @@ impl App {
                 }
             }
             KeyCode::Char('e') if plain_key(key) => self.edit_selected(terminal)?,
-            KeyCode::Char('c') if plain_key(key) => {
-                return self.transition_selected("claim", TaskStatus::InProgress, true)
-            }
+            KeyCode::Char('c') if plain_key(key) => return self.claim_selected(terminal),
             KeyCode::Char('d') if plain_key(key) => return self.transition_done(),
             KeyCode::Char('D') if plain_key(key) => {
                 self.table_show_done = !self.table_show_done;
@@ -1325,9 +1181,7 @@ impl App {
             return Ok(false);
         };
         match item {
-            CommandPaletteItem::Claim => {
-                self.transition_selected("claim", TaskStatus::InProgress, true)
-            }
+            CommandPaletteItem::Claim => self.claim_selected(terminal),
             CommandPaletteItem::Done => self.transition_done(),
             CommandPaletteItem::Ready => self.transition_selected("ready", TaskStatus::Todo, false),
             CommandPaletteItem::Defer => {
@@ -1374,13 +1228,6 @@ impl App {
         match self.view {
             View::Board => {
                 self.move_board_column(delta);
-            }
-            View::Sprint => {
-                if !self.data.sprints.is_empty() {
-                    self.sprint_index =
-                        wrap_index(self.sprint_index, self.data.sprints.len(), delta);
-                    self.selected = 0;
-                }
             }
             _ => self.move_selection(delta),
         }
@@ -1454,7 +1301,7 @@ impl App {
     fn space_toggle(&mut self) -> anyhow::Result<bool> {
         let (target_status, label, target_column) =
             match self.selected_task().map(|t| &t.frontmatter.status) {
-                Some(TaskStatus::Backlog) => (TaskStatus::Todo, "ready", BoardColumn::Ready),
+                Some(TaskStatus::Backlog) => (TaskStatus::Todo, "ready", BoardColumn::Todo),
                 Some(TaskStatus::Todo) => (TaskStatus::Backlog, "defer", BoardColumn::Backlog),
                 _ => return Ok(false),
             };
@@ -1468,7 +1315,9 @@ impl App {
         match load_data(&self.repo) {
             Ok(data) => {
                 self.data = data;
-                self.custom_commands = load_custom_commands(&self.repo);
+                let commands = load_commands(&self.repo);
+                self.claim_command = commands.claim;
+                self.custom_commands = commands.custom;
                 if was_last && matches!(self.view, View::Board) {
                     self.board_column = target_column;
                 }
@@ -1477,6 +1326,44 @@ impl App {
             Err(error) => self.set_message(format!("reload failed: {error:#}")),
         }
         Ok(false)
+    }
+
+    fn claim_selected<H: TerminalHost>(&mut self, terminal: &mut H) -> anyhow::Result<bool> {
+        let Some(task) = self.selected_task().cloned() else {
+            self.set_message("no selected task".to_owned());
+            return Ok(false);
+        };
+
+        let changed = if matches!(task.frontmatter.status, TaskStatus::InProgress) {
+            false
+        } else {
+            self.transition_selected("claim", TaskStatus::InProgress, true)?
+        };
+
+        if self.claim_command.is_some() {
+            self.reload_preserving_selection();
+            let task = self
+                .selected_task()
+                .cloned()
+                .filter(|current| current.frontmatter.id == task.frontmatter.id)
+                .unwrap_or(task);
+            let path = self.repo.resolve_task_path(&task.frontmatter.id)?;
+            let run = expand_command(
+                self.claim_command.as_deref().unwrap_or_default(),
+                &task,
+                &path,
+                &self.data.sprints,
+            );
+            let status = terminal.run_command(&run)?;
+            if status {
+                self.set_message(format!("claim command finished: {}", task.frontmatter.id));
+            } else {
+                self.set_message(format!("claim command failed: {}", task.frontmatter.id));
+            }
+            return Ok(true);
+        }
+
+        Ok(changed)
     }
 
     fn transition_selected(
@@ -1759,15 +1646,6 @@ fn buffer_text(buffer: &ratatui::buffer::Buffer) -> String {
 fn load_data(repo: &StintRepo) -> anyhow::Result<AppData> {
     let tasks = repo.load_tasks()?;
     let sprints = repo.load_sprints()?;
-    let next = compute_next(
-        &tasks,
-        &sprints,
-        NextOptions {
-            sprint: None,
-            include_area_conflicts: false,
-            include_backlog: false,
-        },
-    );
     let status = compute_status(&tasks, &sprints, None);
     let validation_errors = check(&tasks, &sprints)
         .into_iter()
@@ -1776,21 +1654,31 @@ fn load_data(repo: &StintRepo) -> anyhow::Result<AppData> {
     Ok(AppData {
         tasks,
         sprints,
-        next,
         status,
         validation_errors,
     })
 }
 
-fn load_custom_commands(repo: &StintRepo) -> Vec<CustomCommand> {
+struct LoadedCommands {
+    claim: Option<String>,
+    custom: Vec<CustomCommand>,
+}
+
+fn load_commands(repo: &StintRepo) -> LoadedCommands {
     let path = repo.stint_dir.join("config.toml");
     let Ok(content) = fs::read_to_string(path) else {
-        return Vec::new();
+        return LoadedCommands {
+            claim: None,
+            custom: Vec::new(),
+        };
     };
     let Ok(config) = toml::from_str::<ConfigFile>(&content) else {
-        return Vec::new();
+        return LoadedCommands {
+            claim: None,
+            custom: Vec::new(),
+        };
     };
-    config
+    let custom = config
         .command
         .into_iter()
         .map(|command| CustomCommand {
@@ -1799,50 +1687,11 @@ fn load_custom_commands(repo: &StintRepo) -> Vec<CustomCommand> {
             run: command.run,
             claim: command.claim,
         })
-        .collect()
-}
-
-fn task_list<'a>(title: &str, tasks: &[&'a Task], selected: usize, all_tasks: &[Task]) -> List<'a> {
-    let done = done_ids(all_tasks);
-    let items = tasks
-        .iter()
-        .enumerate()
-        .map(|(index, task)| {
-            let state = classify(task, &done);
-            let marker = if index == selected { "> " } else { "  " };
-            let style = if index == selected {
-                Style::default().bg(Color::DarkGray)
-            } else {
-                Style::default()
-            };
-            let reason = if state == TaskState::Blocked {
-                let blockers = active_blockers(task, &done);
-                format!(" - {}", format_blockers_inline(&blockers))
-            } else {
-                String::new()
-            };
-            ListItem::new(Line::from(vec![
-                Span::styled(marker, Style::default().fg(Color::Gray)),
-                Span::styled(
-                    task.frontmatter.id.clone(),
-                    Style::default()
-                        .fg(Color::Cyan)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::raw(" "),
-                Span::styled(state.as_str(), state_style(state)),
-                Span::raw(" "),
-                Span::raw(truncate(&task.frontmatter.title, 48)),
-                Span::styled(reason, Style::default().fg(Color::Yellow)),
-            ]))
-            .style(style)
-        })
-        .collect::<Vec<_>>();
-    List::new(items).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title(title.to_owned()),
-    )
+        .collect();
+    LoadedCommands {
+        claim: config.claim.map(|claim| claim.run),
+        custom,
+    }
 }
 
 fn board_task_list<'a>(
@@ -1891,16 +1740,6 @@ fn board_task_list<'a>(
     )
 }
 
-fn state_style(state: TaskState) -> Style {
-    match state {
-        TaskState::Iced => Style::default().fg(Color::DarkGray),
-        TaskState::Ready => Style::default().fg(Color::Green),
-        TaskState::Blocked => Style::default().fg(Color::Yellow),
-        TaskState::Active => Style::default().fg(Color::Cyan),
-        TaskState::Done | TaskState::Archived => Style::default().fg(Color::Gray),
-    }
-}
-
 fn task_matches_text(task: &Task, needle: &str) -> bool {
     task.frontmatter.id.to_lowercase().contains(needle)
         || task.frontmatter.title.to_lowercase().contains(needle)
@@ -1942,19 +1781,6 @@ fn parse_timestamp(value: Option<&str>) -> Option<chrono::DateTime<chrono::Fixed
     value.and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
 }
 
-fn sprint_progress_for(tasks: &[Task], sprints: &[Sprint], sprint_id: &str) -> stint::status::SprintProgress {
-    compute_status(tasks, sprints, Some(sprint_id))
-        .sprint_progress
-        .unwrap_or_else(|| stint::status::SprintProgress {
-            sprint_id: sprint_id.to_owned(),
-            committed_minutes: 0,
-            logged_minutes: 0,
-            remaining_minutes: 0,
-            task_count: 0,
-            done_count: 0,
-        })
-}
-
 fn numeric_prefix(entry: &str) -> &str {
     let trimmed = entry.trim();
     let without_link = trimmed
@@ -1974,16 +1800,6 @@ fn format_blockers_inline(blockers: &[BlockedByRef]) -> String {
         .map(ToString::to_string)
         .collect::<Vec<_>>()
         .join(", ")
-}
-
-fn fmt_minutes(minutes: u32) -> String {
-    if minutes == 0 {
-        "0m".to_owned()
-    } else if minutes % 60 == 0 {
-        format!("{}h", minutes / 60)
-    } else {
-        format!("{minutes}m")
-    }
 }
 
 fn empty_dash(value: &str) -> &str {
@@ -2007,6 +1823,10 @@ fn selected_summary(task: Option<&Task>) -> String {
 fn table_body_rows(area: Rect) -> usize {
     // Table block borders take two rows and the header takes one.
     usize::from(area.height.saturating_sub(3))
+}
+
+fn list_body_rows(area: Rect) -> usize {
+    usize::from(area.height.saturating_sub(2))
 }
 
 fn viewport_start(selected: usize, total: usize, visible_rows: usize) -> usize {
@@ -2132,7 +1952,11 @@ fn expand_command(template: &str, task: &Task, path: &PathBuf, sprints: &[Sprint
     let fm = &task.frontmatter;
     let sprint_id = sprints
         .iter()
-        .find(|s| s.task_ids.iter().any(|e| numeric_prefix(e) == fm.id.as_str()))
+        .find(|s| {
+            s.task_ids
+                .iter()
+                .any(|e| numeric_prefix(e) == fm.id.as_str())
+        })
         .map(|s| s.header.id.as_str())
         .unwrap_or("");
     template
@@ -2141,6 +1965,8 @@ fn expand_command(template: &str, task: &Task, path: &PathBuf, sprints: &[Sprint
         .replace("{path}", &shell_quote(&path.to_string_lossy()))
         .replace("{title}", &shell_quote(&fm.title))
         .replace("{sprint}", sprint_id)
+        .replace("{area}", &shell_quote(&fm.area.join(",")))
+        .replace("{tags}", &shell_quote(&fm.tags.join(",")))
         .replace(
             "{estimate}",
             &fm.estimate

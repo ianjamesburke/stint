@@ -214,6 +214,7 @@ enum SortMode {
     Created,
     State,
     Sprint,
+    Priority,
 }
 
 impl SortMode {
@@ -222,7 +223,8 @@ impl SortMode {
             SortMode::Id => SortMode::Created,
             SortMode::Created => SortMode::State,
             SortMode::State => SortMode::Sprint,
-            SortMode::Sprint => SortMode::Id,
+            SortMode::Sprint => SortMode::Priority,
+            SortMode::Priority => SortMode::Id,
         }
     }
 
@@ -232,6 +234,7 @@ impl SortMode {
             SortMode::Created => "created",
             SortMode::State => "state",
             SortMode::Sprint => "sprint",
+            SortMode::Priority => "priority",
         }
     }
 }
@@ -521,6 +524,13 @@ impl App {
                     .get(a.frontmatter.id.as_str())
                     .cmp(&task_sprint.get(b.frontmatter.id.as_str()))
                     .then(a.frontmatter.id.cmp(&b.frontmatter.id))
+            }),
+            SortMode::Priority => tasks.sort_by(|a, b| {
+                stint::schema::cmp_priority(
+                    &a.frontmatter.priority,
+                    &b.frontmatter.priority,
+                )
+                .then(a.frontmatter.id.cmp(&b.frontmatter.id))
             }),
         }
         tasks

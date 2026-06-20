@@ -1,6 +1,10 @@
 # Changelog
 
 Newest releases appear first.
+## [0.3.3] - 2026-06-20
+
+### Changes
+- feat: add priority sort mode to TUI
 ## [0.3.2] - 2026-06-20
 
 ### Changes

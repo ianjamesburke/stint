@@ -1,65 +1,188 @@
 ---
 name: stint
-description: Use when working in any repo that uses stint for task and sprint tracking. Covers workflow rules, timing, blockers, and gotchas for the stint CLI.
+description: "Unified stint entry point. Routes by intent: task ID or 'next' → delegates to /implement-stint; description of new work → runs the create flow inline. Use for all stint interactions: creating tasks, checking status, or dispatching implementation."
+risk: low
+source: local
+date_added: "2026-06-19"
 ---
 
-# stint
+# Stint Skill
 
-Thin operating notes for the stint CLI. Do not mirror the full CLI help here; run `stint --help` or `stint <command> --help` for exact syntax.
+Single entry point for all stint operations. Determine intent from the args, then route:
 
-## Non-negotiables
-
-- Every planned unit of work lives in `.stint/`; do not leave roadmap decisions only in chat or GitHub comments.
-- GitHub issues are implementation tickets. Link them from stint tasks with `gh_issue`; keep blockers in `blocked_by` (unified polymorphic field — accepts string or list).
-- Sprint order matters. Add work to an existing sprint when it fits; create a new sprint only when the work is genuinely a distinct lane.
-- Run `stint check` after editing tasks or sprints.
-
-## Timing
-
-- Run `stint start <id>` as the **first step inside the worktree**, never from the base branch before creating it. Running it on the base branch and then creating a worktree causes both branches to write independent `started_at` timestamps, producing a guaranteed rebase conflict.
-- Complete implementation with `stint done <id>` so `completed_at` and `actual` are recorded together.
-- Use timestamp/actual override flags only for backfills or corrections; check subcommand help for exact flags.
-- If work blocks or is abandoned, do not mark done. Leave the start time in place and document the blocker in the task or linked issue.
-- If actual time differs from the estimate by more than 2x, add a short variance note to the task body.
-
-## Practical Workflow
-
-1. Read the relevant PRD for product direction.
-2. Use `.stint` for the operating graph: sprint order, blockers, estimates, timing, and task ownership.
-3. Use GitHub issues for implementation detail, labels, prior attempts, and PR pipeline state.
-4. When completing a GitHub issue, update every linked stint task that was materially worked.
-
-## Priority
-
-Tasks have an optional `priority` field: `p0` through `p4`.
-
-| Level | Meaning |
+| Args | Route |
 |---|---|
-| `p0` | On fire |
-| `p1` | Shipping blocker |
-| `p2` | Important, not blocking |
-| `p3` | Polish |
-| `p4` | Backlog |
+| A task ID (e.g. `0223`) or `next` | **→ invoke `/implement-stint`** with that arg |
+| A description of work to track | **→ run the Create flow below** |
+| No args | Run `stint next` and ask the user which task to dispatch |
 
-Omitting priority means unprioritized (sorts after all prioritized tasks in `stint next`). Set via frontmatter (`priority: p2`) or at creation (`stint add "title" --priority p2`). Filter with `stint list --priority p0`. In `stint next`, priority breaks ties within sprint order.
+---
 
-## Blocker syntax
+## Create Flow
 
-`blocked_by` is unified and polymorphic. Single field, accepts a string or list.
+This is a **task creation flow only**. Do not implement anything. The goal is a single, well-scoped stint task in `.stint/tasks/` with correct metadata.
+
+GitHub issues are implementation tickets. Stint is the operating graph — sprint order, estimates, timing, and blockers. A task without correct metadata derails future `stint next` output and bottleneck analysis.
+
+### Step 1 — Duplicate Check
+
+```bash
+stint list 2>&1
+```
+
+Skim titles for near-matches. If one exists:
+- **Same scope** → surface it to the user and stop. Add any missing context to the existing task body instead.
+- **Overlapping but distinct** → note the relationship and proceed; set `blocked_by` or cross-reference in the body.
+
+### Step 2 — Sprint Selection
+
+```bash
+stint sprint list 2>&1
+```
+
+For any sprint that looks relevant:
+
+```bash
+stint sprint show <id> 2>&1
+```
+
+Rules:
+- Place the task in the earliest sprint whose goal it serves.
+- If no sprint goal fits, set `status: backlog` and omit the sprint field — do not invent a sprint.
+- Never place a v1 task in a sprint marked v2 or later.
+- Infrastructure and tooling tasks default to `s14` (v1 release readiness) unless they clearly belong elsewhere.
+
+### Step 3 — Metadata Assembly
+
+Collect each field. Do not guess — confirm with the user if ambiguous.
+
+#### Area
+
+```bash
+grep -h "^  - " .stint/tasks/*.md | sort -u 2>/dev/null | head -40
+```
+
+Require at least one area. Use existing strings — do not invent new namespaces without checking first.
+
+Common areas (non-exhaustive):
+- `host/pane-ops`, `host/config`, `host/terminal`, `host/permissions`, `host/notifications`, `host/secrets`
+- `ui/chrome`, `ui/overlays`, `ui/widgets`, `ui/tile-tree`, `ui/sidebar`
+- `sdk/pgap`, `sdk/python`
+- `cli/commands`, `cli/completions`
+- `apps/file-browser`, `apps/github-issues`, `apps/examples`
+- `infra/build`, `infra/docs`, `infra/agents`, `infra/testing`, `infra/skills`
+
+#### Priority
+
+Set `priority` to one of: `p0`, `p1`, `p2`, `p3`, `p4`:
+
+- `p0` — on fire / blocking release
+- `p1` — shipping blocker
+- `p2` — important, not blocking
+- `p3` — polish
+- `p4` — backlog
+
+If the user specifies a priority, use it. If not, infer from context — a bug blocking users defaults to `p1`, a polish task to `p3`. Do not omit the field; stint uses it to sort `Ready` tasks within the same area.
+
+#### Tags
+
+Require at minimum one of `v1` or `v2`. Add domain tags as appropriate (`ui`, `tooling`, `testing`, `sdk`, etc.).
+
+#### Estimate
+
+Coding agents execute at roughly 10x human coding speed. Always divide the naive human-derived estimate by ~10 before writing. If the user gives a human-framed estimate: 1 day → `1h`, half a day → `30m`, a week → `4h`.
+
+Use duration strings: `30m`, `1h`, `2h`, `4h`, `1d` (= 8h). Disallow bare integers.
+
+If genuinely uncertain, bias toward shorter — overestimates skew bottleneck analysis.
+
+#### Blocker Check
+
+If the task requires another task or issue first, use `blocked_by`:
 
 | Syntax | Meaning |
 |---|---|
-| bare integer | local stint task (auto-padded to 4 digits) |
+| bare integer | local stint task (e.g. `153`) |
 | `@N` | local GitHub issue |
 | `owner/repo@N` | external GitHub issue |
-| `owner/repo:NNNN` | task in an external GitHub repo |
-| `../path:NNNN` | task in a sibling local directory |
-| `../path@N` | issue in a sibling local directory |
-| quoted string | free-text blocker note |
+| quoted string | free-text note |
 
-## Gotchas
+If no real artifact dependency exists, leave `blocked_by: []`. Do not use blockers to express phase preference.
 
-- Do not treat `.stint` as one-to-one with GitHub issues. One task can link multiple issues, and one issue may require multiple tasks if it spans distinct lanes.
-- Do not make priority decisions from issue age or old labels alone; check the PRD and current sprint graph.
-- Do not overwrite an existing `started_at` unless correcting bad timing data.
-- Do not archive instead of completing just to avoid timing. Archive is for work intentionally removed from the plan.
+#### gh_issue
+
+If a GitHub issue already exists, record its number. If one should be created, note it but do not create it here — that's `/create-issue`'s job.
+
+### Step 4 — Next Available ID
+
+```bash
+ls .stint/tasks/ | grep -oE '^[0-9]+' | sort -n | tail -1
+```
+
+Increment by 1, zero-pad to 4 digits. Confirm no collision:
+
+```bash
+ls .stint/tasks/ | grep "^<NEXT_ID>"
+```
+
+### Step 5 — Write the Task File
+
+File path: `.stint/tasks/<NNNN>-<kebab-slug>.md`
+
+Slug: lowercase, spaces to hyphens, strip punctuation, max ~6 words.
+
+```markdown
+---
+id: "<NNNN>"
+title: "<title>"
+status: todo
+priority: <p0|p1|p2|p3|p4>
+estimate: "<Xh>"
+sprint: "<sN>"
+blocked_by: []
+gh_issue: []
+area:
+  - "<area/one>"
+tags:
+  - "<v1|v2>"
+---
+
+<One paragraph — what this task is and why it exists.>
+
+## Scope
+
+- <Bullet: exactly what gets built or changed>
+
+## Non-Scope
+
+- <Bullet: what explicitly is NOT in this task>
+
+## Why
+
+<One sentence on the motivation or user impact.>
+
+## References
+
+- `<path>` — <why relevant>
+```
+
+Omit sections that have nothing to say. Keep the body tight — the implementing agent reads it cold.
+
+### Step 6 — Validate
+
+```bash
+stint check 2>&1
+```
+
+Fix any frontmatter errors before returning.
+
+### Step 7 — Return and Recommend
+
+Return the task ID and file path. End with exactly one `RECOMMENDATION:` block:
+
+```
+RECOMMENDATION:
+1. <either "dispatch now via /implement-stint <NNNN>" or "park it — task is ready when the sprint opens">
+```
+
+Do not offer both options. Pick one.

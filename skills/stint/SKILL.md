@@ -29,6 +29,20 @@ Thin operating notes for the stint CLI. Do not mirror the full CLI help here; ru
 3. Use GitHub issues for implementation detail, labels, prior attempts, and PR pipeline state.
 4. When completing a GitHub issue, update every linked stint task that was materially worked.
 
+## Priority
+
+Tasks have an optional `priority` field: `p0` through `p4`.
+
+| Level | Meaning |
+|---|---|
+| `p0` | On fire |
+| `p1` | Shipping blocker |
+| `p2` | Important, not blocking |
+| `p3` | Polish |
+| `p4` | Backlog |
+
+Omitting priority means unprioritized (sorts after all prioritized tasks in `stint next`). Set via frontmatter (`priority: p2`) or at creation (`stint add "title" --priority p2`). Filter with `stint list --priority p0`. In `stint next`, priority breaks ties within sprint order.
+
 ## Blocker syntax
 
 `blocked_by` is unified and polymorphic. Single field, accepts a string or list.

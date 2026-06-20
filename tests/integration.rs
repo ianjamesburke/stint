@@ -494,10 +494,10 @@ fn done_does_not_report_tasks_with_remaining_blockers() {
 }
 
 #[test]
-fn start_sets_status_and_started_at() {
+fn claim_sets_status_and_started_at() {
     let (_tmp, repo) = setup();
     write_task_file(&repo, "0001-task.md", &task_content("0001", "Task", "todo"));
-    cmds::cmd_start(&repo, "0001", false, Some("2026-06-10T12:00:00Z")).unwrap();
+    cmds::cmd_claim(&repo, Some("0001"), None, false, Some("2026-06-10T12:00:00Z"), false).unwrap();
     let path = repo.resolve_task_path("0001").unwrap();
     let content = fs::read_to_string(&path).unwrap();
     assert!(content.contains("status: in-progress"));
@@ -505,26 +505,26 @@ fn start_sets_status_and_started_at() {
 }
 
 #[test]
-fn start_refuses_to_overwrite_started_at_without_restart() {
+fn claim_refuses_to_overwrite_started_at_without_restart() {
     let (_tmp, repo) = setup();
     write_task_file(
         &repo,
         "0001-task.md",
         "---\nid: \"0001\"\ntitle: \"Task\"\nstatus: in-progress\nstarted_at: \"2026-06-10T12:00:00Z\"\n---\n",
     );
-    let err = cmds::cmd_start(&repo, "0001", false, Some("2026-06-10T13:00:00Z")).unwrap_err();
+    let err = cmds::cmd_claim(&repo, Some("0001"), None, false, Some("2026-06-10T13:00:00Z"), false).unwrap_err();
     assert!(err.to_string().contains("--restart"));
 }
 
 #[test]
-fn start_restart_replaces_started_at_and_clears_completion() {
+fn claim_restart_replaces_started_at_and_clears_completion() {
     let (_tmp, repo) = setup();
     write_task_file(
         &repo,
         "0001-task.md",
         "---\nid: \"0001\"\ntitle: \"Task\"\nstatus: done\nactual: \"1h\"\nstarted_at: \"2026-06-10T12:00:00Z\"\ncompleted_at: \"2026-06-10T13:00:00Z\"\n---\n",
     );
-    cmds::cmd_start(&repo, "0001", true, Some("2026-06-10T14:00:00Z")).unwrap();
+    cmds::cmd_claim(&repo, Some("0001"), None, true, Some("2026-06-10T14:00:00Z"), false).unwrap();
     let path = repo.resolve_task_path("0001").unwrap();
     let task = repo.read_task(&path).unwrap();
     assert_eq!(
@@ -688,13 +688,13 @@ fn next_returns_ready_tasks_without_area_conflicts() {
         "---\nid: \"0003\"\ntitle: \"Ready\"\nstatus: todo\narea: [docs]\n---\n",
     );
 
-    let report = cmds::cmd_next(&repo, None, false, false, false, None).unwrap();
+    let report = cmds::cmd_next(&repo, None, false, false).unwrap();
     assert_eq!(report.ready.len(), 1);
     assert_eq!(report.ready[0].id, "0003");
 }
 
 #[test]
-fn next_claim_sets_first_ready_task_in_progress() {
+fn claim_auto_sets_top_ready_task_in_progress() {
     let (_tmp, repo) = setup();
     write_sprint_file(
         &repo,
@@ -712,8 +712,7 @@ fn next_claim_sets_first_ready_task_in_progress() {
         "---\nid: \"0002\"\ntitle: \"First\"\nstatus: todo\nsprint: \"s1\"\narea: [cli]\n---\n",
     );
 
-    let report = cmds::cmd_next(&repo, Some("s1"), false, false, true, None).unwrap();
-    assert_eq!(report.ready[0].id, "0002");
+    cmds::cmd_claim(&repo, None, Some("s1"), false, None, false).unwrap();
 
     let claimed = repo
         .read_task(&repo.resolve_task_path("0002").unwrap())
@@ -732,58 +731,37 @@ fn next_claim_sets_first_ready_task_in_progress() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// next --count and --json
-// ---------------------------------------------------------------------------
-
 #[test]
-fn next_count_limits_ready_list() {
+fn claim_explicit_id_sets_task_in_progress() {
     let (_tmp, repo) = setup();
-    for i in 1u32..=4 {
-        write_task_file(
-            &repo,
-            &format!("{:04}-task.md", i),
-            &format!(
-                "---\nid: \"{:04}\"\ntitle: \"Task {}\"\nstatus: todo\narea: [area{}]\n---\n",
-                i, i, i
-            ),
-        );
-    }
+    write_task_file(
+        &repo,
+        "0001-task.md",
+        "---\nid: \"0001\"\ntitle: \"Task\"\nstatus: todo\n---\n",
+    );
+    write_task_file(
+        &repo,
+        "0002-other.md",
+        "---\nid: \"0002\"\ntitle: \"Other\"\nstatus: todo\n---\n",
+    );
 
-    let report = cmds::cmd_next(&repo, None, false, false, false, Some(2)).unwrap();
-    // All four are ready; count does not filter the report, it's a display hint.
-    // The report should contain all ready tasks; display truncates.
-    assert_eq!(report.ready.len(), 4);
-}
+    cmds::cmd_claim(&repo, Some("0002"), None, false, None, false).unwrap();
 
-#[test]
-fn next_count_claim_marks_n_tasks_in_progress() {
-    let (_tmp, repo) = setup();
-    for i in 1u32..=3 {
-        write_task_file(
-            &repo,
-            &format!("{:04}-task.md", i),
-            &format!(
-                "---\nid: \"{:04}\"\ntitle: \"Task {}\"\nstatus: todo\narea: [area{}]\n---\n",
-                i, i, i
-            ),
-        );
-    }
-
-    let _ = cmds::cmd_next(&repo, None, false, false, true, Some(2)).unwrap();
-
-    for i in 1u32..=2 {
-        let t = repo
-            .read_task(&repo.resolve_task_path(&format!("{:04}", i)).unwrap())
-            .unwrap();
-        assert_eq!(t.frontmatter.status, stint::schema::TaskStatus::InProgress);
-        assert!(t.frontmatter.started_at.is_some());
-    }
-
-    let t3 = repo
-        .read_task(&repo.resolve_task_path("0003").unwrap())
+    let claimed = repo
+        .read_task(&repo.resolve_task_path("0002").unwrap())
         .unwrap();
-    assert_eq!(t3.frontmatter.status, stint::schema::TaskStatus::Todo);
+    let untouched = repo
+        .read_task(&repo.resolve_task_path("0001").unwrap())
+        .unwrap();
+    assert_eq!(
+        claimed.frontmatter.status,
+        stint::schema::TaskStatus::InProgress
+    );
+    assert!(claimed.frontmatter.started_at.is_some());
+    assert_eq!(
+        untouched.frontmatter.status,
+        stint::schema::TaskStatus::Todo
+    );
 }
 
 #[test]
@@ -795,7 +773,7 @@ fn next_json_output_is_valid() {
         "---\nid: \"0001\"\ntitle: \"A task\"\nstatus: todo\narea: [cli]\ngh_issue: [42]\n---\n",
     );
 
-    let report = cmds::cmd_next(&repo, None, false, false, false, None).unwrap();
+    let report = cmds::cmd_next(&repo, None, false, false).unwrap();
     // Capture JSON output via a simple structural check on the report fields.
     assert_eq!(report.ready[0].id, "0001");
     assert_eq!(report.ready[0].gh_issue, vec!["42"]);

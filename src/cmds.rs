@@ -832,53 +832,16 @@ fn resolve_status_transition_targets(
     Ok(out)
 }
 
-/// Show or claim the next ready task(s).
-///
-/// When `claim` is true the operation is protected by an advisory lock at
-/// `.stint/claim.lock` so that parallel callers each receive a distinct task.
-/// Up to `count` tasks are claimed; defaults to 1 when count is None.
+/// Show the next ready task(s). Pure read -- no mutation.
 pub fn cmd_next(
     repo: &StintRepo,
     sprint: Option<&str>,
     include_area_conflicts: bool,
     include_backlog: bool,
-    claim: bool,
-    count: Option<usize>,
-) -> anyhow::Result<NextReport> {
-    if claim {
-        with_claim_lock(repo, || {
-            cmd_next_inner(
-                repo,
-                sprint,
-                include_area_conflicts,
-                include_backlog,
-                true,
-                count,
-            )
-        })
-    } else {
-        cmd_next_inner(
-            repo,
-            sprint,
-            include_area_conflicts,
-            include_backlog,
-            false,
-            count,
-        )
-    }
-}
-
-fn cmd_next_inner(
-    repo: &StintRepo,
-    sprint: Option<&str>,
-    include_area_conflicts: bool,
-    include_backlog: bool,
-    claim: bool,
-    count: Option<usize>,
 ) -> anyhow::Result<NextReport> {
     let tasks = repo.load_tasks()?;
     let sprints = repo.load_sprints()?;
-    let report = compute_next(
+    Ok(compute_next(
         &tasks,
         &sprints,
         NextOptions {
@@ -886,21 +849,68 @@ fn cmd_next_inner(
             include_area_conflicts,
             include_backlog,
         },
-    );
+    ))
+}
 
-    if claim {
-        let n = count.unwrap_or(1);
-        for next_task in report.ready.iter().take(n) {
-            let path = repo.resolve_task_path(&next_task.id)?;
-            let mut task = repo.read_task(&path)?;
-            set_status(&mut task, TaskStatus::InProgress);
-            set_started_at_if_absent(&mut task, timestamp_or_now(None)?);
-            let content = serialize_task(&task);
-            repo.write_task(&path, &content)?;
+/// Claim a task as in-progress.
+///
+/// With an explicit `id`, behaves like the old `start` command.
+/// Without an `id`, auto-claims the top ready task under an advisory lock so
+/// parallel callers each receive a distinct task.
+pub fn cmd_claim(
+    repo: &StintRepo,
+    id: Option<&str>,
+    sprint: Option<&str>,
+    restart: bool,
+    started_at_override: Option<&str>,
+    json: bool,
+) -> anyhow::Result<()> {
+    if let Some(id) = id {
+        let path = cmd_start(repo, id, restart, started_at_override)?;
+        if json {
+            use serde_json::json;
+            println!("{}", serde_json::to_string_pretty(&json!({ "claimed": id, "path": path.to_string_lossy() })).unwrap());
+        } else {
+            println!("claimed: {}", id);
         }
+    } else {
+        with_claim_lock(repo, || {
+            let tasks = repo.load_tasks()?;
+            let sprints = repo.load_sprints()?;
+            let report = compute_next(
+                &tasks,
+                &sprints,
+                NextOptions {
+                    sprint,
+                    include_area_conflicts: false,
+                    include_backlog: false,
+                },
+            );
+            match report.ready.first() {
+                None => {
+                    if json {
+                        println!("{{\"claimed\": null}}");
+                    } else {
+                        println!("nothing claimable");
+                    }
+                    Ok(())
+                }
+                Some(next_task) => {
+                    let id = next_task.id.clone();
+                    let path = cmd_start(repo, &id, restart, started_at_override)?;
+                    if json {
+                        use serde_json::json;
+                        println!("{}", serde_json::to_string_pretty(&json!({ "claimed": id, "path": path.to_string_lossy() })).unwrap());
+                    } else {
+                        println!("claimed: {}", id);
+                        println!("  {}", next_task.title);
+                    }
+                    Ok(())
+                }
+            }
+        })?;
     }
-
-    Ok(report)
+    Ok(())
 }
 
 /// Acquire `.stint/claim.lock` (mkdir-based advisory lock), run `f`, then
@@ -932,32 +942,9 @@ fn with_claim_lock<T, F: FnOnce() -> anyhow::Result<T>>(
     result
 }
 
-pub fn print_next(report: &NextReport, claimed: bool, count: Option<usize>) {
-    let n = count.unwrap_or(usize::MAX);
-    let claimed_ids: Vec<&str> = if claimed {
-        report
-            .ready
-            .iter()
-            .take(count.unwrap_or(1))
-            .map(|t| t.id.as_str())
-            .collect()
-    } else {
-        vec![]
-    };
-
-    if !claimed_ids.is_empty() {
-        for id in &claimed_ids {
-            if let Some(t) = report.ready.iter().find(|t| t.id.as_str() == *id) {
-                println!("claimed: {}", t.id);
-                println!("  {}", t.title);
-            }
-        }
-    } else if claimed {
-        println!("nothing claimable");
-    }
-
+pub fn print_next(report: &NextReport) {
     let on = color_on();
-    let visible: Vec<&NextTask> = report.ready.iter().take(n).collect();
+    let visible: Vec<&NextTask> = report.ready.iter().collect();
     if visible.is_empty() {
         println!("{} {}", bold("Ready", on), dim("(none)", on));
     } else {
@@ -1017,10 +1004,9 @@ fn blocked_reason(task: &NextTask) -> Option<String> {
     None
 }
 
-pub fn print_next_json(repo: &StintRepo, report: &NextReport, claimed: bool, count: Option<usize>) {
+pub fn print_next_json(repo: &StintRepo, report: &NextReport) {
     use serde_json::{json, Value};
 
-    let n = count.unwrap_or(usize::MAX);
     let tasks_dir = repo.tasks_dir();
 
     let task_to_json = |t: &NextTask| -> Value {
@@ -1042,28 +1028,10 @@ pub fn print_next_json(repo: &StintRepo, report: &NextReport, claimed: bool, cou
         })
     };
 
-    let ready: Vec<Value> = report.ready.iter().take(n).map(task_to_json).collect();
+    let ready: Vec<Value> = report.ready.iter().map(task_to_json).collect();
     let blocked: Vec<Value> = report.blocked.iter().map(task_to_json).collect();
 
-    let claimed_ids: Vec<&str> = if claimed {
-        report
-            .ready
-            .iter()
-            .take(count.unwrap_or(1))
-            .map(|t| t.id.as_str())
-            .collect()
-    } else {
-        vec![]
-    };
-
-    let mut obj = json!({ "ready": ready, "blocked": blocked });
-    if !claimed_ids.is_empty() {
-        obj["claimed"] = json!(claimed_ids);
-    } else if claimed {
-        obj["claimed"] = json!(Vec::<String>::new());
-    }
-
-    println!("{}", serde_json::to_string_pretty(&obj).unwrap());
+    println!("{}", serde_json::to_string_pretty(&json!({ "ready": ready, "blocked": blocked })).unwrap());
 }
 
 fn blocker_to_json(blocker: &BlockedByRef) -> serde_json::Value {

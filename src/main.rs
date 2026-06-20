@@ -99,16 +99,22 @@ enum Commands {
         ids: Vec<String>,
     },
 
-    /// Mark a task in-progress and record started_at.
-    Start {
-        /// Task ID.
-        id: String,
+    /// Mark a task in-progress. Without an ID, claims the top ready task (lock-protected).
+    Claim {
+        /// Task ID. Omit to auto-claim the top ready task.
+        id: Option<String>,
+        /// Sprint filter for auto-claim (e.g. s12).
+        #[arg(long)]
+        sprint: Option<String>,
         /// Replace an existing started_at and clear completion fields.
         #[arg(long)]
         restart: bool,
         /// Start timestamp, UTC RFC3339 preferred. Defaults to now.
         #[arg(long)]
         started_at: Option<String>,
+        /// Output as JSON for agent/orchestrator consumption.
+        #[arg(long)]
+        json: bool,
     },
 
     /// Mark a task done and optionally record actual time.
@@ -151,12 +157,6 @@ enum Commands {
         /// Include backlog tasks alongside todo tasks (opt-in; default excludes backlog).
         #[arg(long)]
         include_backlog: bool,
-        /// Mark the top ready task(s) as in-progress (atomic with count).
-        #[arg(long)]
-        claim: bool,
-        /// Maximum number of ready tasks to return (default: all).
-        #[arg(long)]
-        count: Option<usize>,
         /// Output as JSON for agent/orchestrator consumption.
         #[arg(long)]
         json: bool,
@@ -353,14 +353,22 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             }
         }
 
-        Some(Commands::Start {
+        Some(Commands::Claim {
             id,
+            sprint,
             restart,
             started_at,
+            json,
         }) => {
             let repo = find_repo()?;
-            let path = cmds::cmd_start(&repo, &id, restart, started_at.as_deref())?;
-            println!("started: {}", path.display());
+            cmds::cmd_claim(
+                &repo,
+                id.as_deref(),
+                sprint.as_deref(),
+                restart,
+                started_at.as_deref(),
+                json,
+            )?;
         }
 
         Some(Commands::Done {
@@ -403,8 +411,6 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             sprint,
             include_area_conflicts,
             include_backlog,
-            claim,
-            count,
             json,
         }) => {
             let repo = find_repo()?;
@@ -413,13 +419,11 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 sprint.as_deref(),
                 include_area_conflicts,
                 include_backlog,
-                claim,
-                count,
             )?;
             if json {
-                cmds::print_next_json(&repo, &report, claim, count);
+                cmds::print_next_json(&repo, &report);
             } else {
-                cmds::print_next(&report, claim, count);
+                cmds::print_next(&report);
             }
         }
 

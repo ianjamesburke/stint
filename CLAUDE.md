@@ -10,6 +10,7 @@ Single crate with `[lib]` and `[[bin]]` targets. Library modules handle schema, 
 
 - Library modules must have zero I/O. All file operations are `main.rs`'s job.
 - `blocked_by`, `blocked_by_gh`, `gh_issue`, `area`, `tags` are all polymorphic: accept string or list in YAML, always stored as `Vec<T>` internally.
+- `priority` is optional: `p0` (highest) through `p4` (lowest). Omitted = unprioritized (sorts after all prioritized tasks in `stint next`).
 - `stint check` is the source of truth for schema validity. Add a new field = add a new check rule.
 - Duration strings: `h` for hours, `m` for minutes, decimals allowed ("1.5h", "30m"). Parse at the core level.
 

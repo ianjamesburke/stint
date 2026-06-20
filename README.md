@@ -56,6 +56,7 @@ version does not already exist.
 stint add "Implement auth middleware"
 stint list
 stint list --status in-progress
+stint list --priority p0
 stint list --blocked
 stint list --hide-blocked
 stint list --sprint s1
@@ -86,7 +87,8 @@ separate parallel-work list.
 - tasks must be `backlog` or `todo`
 - local task blockers must be `done`
 - all other blocker types (issues, external tasks, notes) make a task blocked
-- sprint order is priority order
+- sprint order is the primary sort; `priority` (P0 highest, P4 lowest) breaks ties
+- tasks without a priority sort after all prioritized tasks
 - tasks whose `area` overlaps with `in-progress` work are hidden by default
 - `stint next --claim` marks the top ready task `in-progress`
 
@@ -100,6 +102,7 @@ an area already in progress.
 id: "0001"
 title: Auth middleware
 status: in-progress
+priority: p1
 estimate: 4h
 actual: 2h
 sprint: s1
@@ -158,7 +161,8 @@ the entry regardless of form. Edit directly or use `stint sprint reorder`.
 `stint check` validates the entire task graph:
 
 - Required fields present
-- Status is a valid enum value
+- Status is a valid enum value (`backlog`, `todo`, `in-progress`, `done`, `archived`)
+- Priority is a valid enum value if present (`p0`, `p1`, `p2`, `p3`, `p4`)
 - Duration strings are valid (`4h`, `30m`, `1.5h`)
 - `blocked_by` local task refs resolve to real tasks
 - `blocked_by` external refs are format-validated

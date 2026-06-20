@@ -44,6 +44,7 @@ Each task is a single markdown file. Filename: `<id>-<slug>.md`.
 id: "0001"                        # required, zero-padded 4-digit string
 title: "Auth middleware"          # required, string
 status: backlog                   # required, enum: backlog|todo|in-progress|done|archived
+priority: p2                      # optional, enum: p0|p1|p2|p3|p4 (p0 = highest)
 estimate: "4h"                    # optional, string (e.g. "2h", "30m", "1.5h")
 actual: "0h"                      # optional, string, time logged so far
 created_at: "2026-06-14T12:00:00Z" # optional, RFC3339 UTC timestamp

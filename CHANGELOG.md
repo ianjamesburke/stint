@@ -1,6 +1,10 @@
 # Changelog
 
 Newest releases appear first.
+## [0.3.2] - 2026-06-20
+
+### Changes
+- feat: replace start with claim; remove --claim/--count from next
 ## [0.3.1] - 2026-06-20
 
 ### Changes

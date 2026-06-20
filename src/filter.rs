@@ -19,6 +19,7 @@ pub fn filter_tasks<'a>(
     sprint: Option<&str>,
     area: Option<&str>,
     tag: Option<&str>,
+    priority: Option<&str>,
 ) -> Vec<&'a Task> {
     // Build the set of task IDs listed in the requested sprint (if any).
     // When a sprint filter is given but no matching sprint is found, we treat it
@@ -54,6 +55,11 @@ pub fn filter_tasks<'a>(
                     return false;
                 }
             }
+            if let Some(p) = priority {
+                if t.frontmatter.priority.as_ref().map(|prio| prio.as_str()) != Some(p) {
+                    return false;
+                }
+            }
             true
         })
         .collect()
@@ -83,7 +89,7 @@ mod tests {
             make_task("0001", "A", "backlog"),
             make_task("0002", "B", "done"),
         ];
-        let result = filter_tasks(&tasks, &[], None, None, None, None);
+        let result = filter_tasks(&tasks, &[], None, None, None, None, None);
         assert_eq!(result.len(), 2);
     }
 
@@ -93,7 +99,7 @@ mod tests {
             make_task("0001", "A", "backlog"),
             make_task("0002", "B", "done"),
         ];
-        let result = filter_tasks(&tasks, &[], Some("backlog"), None, None, None);
+        let result = filter_tasks(&tasks, &[], Some("backlog"), None, None, None, None);
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].frontmatter.id, "0001");
     }
@@ -101,7 +107,7 @@ mod tests {
     #[test]
     fn filter_no_match_returns_empty() {
         let tasks = vec![make_task("0001", "A", "backlog")];
-        let result = filter_tasks(&tasks, &[], Some("done"), None, None, None);
+        let result = filter_tasks(&tasks, &[], Some("done"), None, None, None, None);
         assert!(result.is_empty());
     }
 
@@ -112,7 +118,24 @@ mod tests {
             make_task("0002", "B", "todo"),
         ];
         let sprint = make_sprint(1, &["0001"]);
-        let result = filter_tasks(&tasks, &[sprint], None, Some("s1"), None, None);
+        let result = filter_tasks(&tasks, &[sprint], None, Some("s1"), None, None, None);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].frontmatter.id, "0001");
+    }
+
+    #[test]
+    fn filter_by_priority() {
+        let content_p0 =
+            "---\nid: \"0001\"\ntitle: \"A\"\nstatus: backlog\npriority: p0\n---\n";
+        let content_p3 =
+            "---\nid: \"0002\"\ntitle: \"B\"\nstatus: backlog\npriority: p3\n---\n";
+        let content_none = "---\nid: \"0003\"\ntitle: \"C\"\nstatus: backlog\n---\n";
+        let tasks = vec![
+            parse_task(content_p0, "0001.md").unwrap(),
+            parse_task(content_p3, "0002.md").unwrap(),
+            parse_task(content_none, "0003.md").unwrap(),
+        ];
+        let result = filter_tasks(&tasks, &[], None, None, None, None, Some("p0"));
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].frontmatter.id, "0001");
     }
@@ -120,7 +143,7 @@ mod tests {
     #[test]
     fn filter_by_unknown_sprint_returns_empty() {
         let tasks = vec![make_task("0001", "A", "backlog")];
-        let result = filter_tasks(&tasks, &[], None, Some("s99"), None, None);
+        let result = filter_tasks(&tasks, &[], None, Some("s99"), None, None, None);
         assert!(result.is_empty());
     }
 }

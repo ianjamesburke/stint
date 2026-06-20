@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use crate::schema::{BlockedByRef, Sprint, Task, TaskStatus};
+use crate::schema::{cmp_priority, BlockedByRef, Priority, Sprint, Task, TaskStatus};
 use crate::sprint::numeric_prefix;
 use crate::state::{active_blockers, classify, done_ids, TaskState};
 
@@ -18,6 +18,7 @@ pub struct NextTask {
     pub id: String,
     pub title: String,
     pub status: TaskStatus,
+    pub priority: Option<Priority>,
     pub sprint: Option<String>,
     pub area: Vec<String>,
     pub gh_issue: Vec<String>,
@@ -92,6 +93,7 @@ pub fn compute_next(tasks: &[Task], sprints: &[Sprint], options: NextOptions<'_>
             id: task.frontmatter.id.clone(),
             title: task.frontmatter.title.clone(),
             status: task.frontmatter.status.clone(),
+            priority: task.frontmatter.priority,
             sprint: task_sprint.get(task.frontmatter.id.as_str()).map(|s| s.to_string()),
             area: task.frontmatter.area.clone(),
             gh_issue: task.frontmatter.gh_issue.clone(),
@@ -120,6 +122,10 @@ pub fn compute_next(tasks: &[Task], sprints: &[Sprint], options: NextOptions<'_>
         }
         ready.push(row);
     }
+
+    // Sort ready tasks by priority: P0 first, P4 last, None last.
+    // This is a stable sort, so sprint order is preserved among equal priorities.
+    ready.sort_by(|a, b| cmp_priority(&a.priority, &b.priority));
 
     NextReport {
         ready,
@@ -409,6 +415,26 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["0002", "0001"]
         );
+    }
+
+    #[test]
+    fn priority_sorts_ready_tasks() {
+        let tasks = vec![
+            task("0001", "Low", "todo", "priority: p3"),
+            task("0002", "High", "todo", "priority: p0"),
+            task("0003", "NoPrio", "todo", ""),
+        ];
+        let report = compute_next(
+            &tasks,
+            &[],
+            NextOptions {
+                sprint: None,
+                include_area_conflicts: false,
+                include_backlog: false,
+            },
+        );
+        let ids: Vec<&str> = report.ready.iter().map(|t| t.id.as_str()).collect();
+        assert_eq!(ids, vec!["0002", "0001", "0003"]);
     }
 
     #[test]

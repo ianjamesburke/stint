@@ -221,7 +221,19 @@ fn yaml_escape(value: &str) -> String {
 // ---------------------------------------------------------------------------
 
 /// Create a new task file, open `$EDITOR`, print the created path.
-pub fn cmd_add(repo: &StintRepo, title: &str) -> anyhow::Result<PathBuf> {
+pub fn cmd_add(
+    repo: &StintRepo,
+    title: &str,
+    priority: Option<&str>,
+) -> anyhow::Result<PathBuf> {
+    // Validate priority early.
+    let parsed_priority = priority
+        .map(|p| {
+            p.parse::<stint::schema::Priority>()
+                .map_err(|e| anyhow::anyhow!("{}", e))
+        })
+        .transpose()?;
+
     repo.ensure_dirs()?;
     let tasks = repo.load_tasks()?;
     let id = next_task_id(&tasks);
@@ -233,7 +245,17 @@ pub fn cmd_add(repo: &StintRepo, title: &str) -> anyhow::Result<PathBuf> {
     };
     let path = repo.tasks_dir().join(&filename);
     let created_at = timestamp_or_now(None)?;
-    let content = new_task_content(&id, title, Some(&created_at));
+    let mut content = new_task_content(&id, title, Some(&created_at));
+
+    // Insert priority line after status line if provided.
+    if let Some(prio) = parsed_priority {
+        content = content.replacen(
+            "status: backlog\n",
+            &format!("status: backlog\npriority: {}\n", prio),
+            1,
+        );
+    }
+
     repo.write_task(&path, &content)?;
     open_editor(&path)?;
     Ok(path)
@@ -248,6 +270,7 @@ pub fn cmd_list(
     sprint_filter: Option<&str>,
     area_filter: Option<&str>,
     tag_filter: Option<&str>,
+    priority_filter: Option<&str>,
 ) -> anyhow::Result<Vec<TaskRow>> {
     let tasks = repo.load_tasks()?;
     let sprints = repo.load_sprints()?;
@@ -263,6 +286,7 @@ pub fn cmd_list(
         sprint_filter,
         area_filter,
         tag_filter,
+        priority_filter,
     )
     .into_iter()
     .filter(|t| {
@@ -285,6 +309,7 @@ pub fn cmd_list(
         blockers: active_blockers(t, &done),
         estimate: t.frontmatter.estimate.map(|d| d.to_string()),
         sprint: task_sprint_map.get(t.frontmatter.id.as_str()).cloned(),
+        priority: t.frontmatter.priority.map(|p| p.to_string()),
     })
     .collect();
     Ok(rows)
@@ -347,18 +372,19 @@ pub fn print_list(rows: &[TaskRow]) {
     }
     let on = color_on();
     let header = format!(
-        "{:<6} {:<9} {:<8} {:<6} {}",
-        "ID", "STATE", "ESTIMATE", "SPRINT", "TITLE"
+        "{:<6} {:<9} {:<4} {:<8} {:<6} {}",
+        "ID", "STATE", "PRI", "ESTIMATE", "SPRINT", "TITLE"
     );
     println!("{}", dim(&header, on));
     for row in rows {
         println!(
-            "{} {} {:<8} {:<6} {}",
+            "{} {} {:<4} {:<8} {:<6} {}",
             paint_id(&format!("{:<6}", row.id), on),
             paint_state(&row.state, 9, on),
+            row.priority.as_deref().unwrap_or("-"),
             row.estimate.as_deref().unwrap_or("-"),
             row.sprint.as_deref().unwrap_or("-"),
-            truncate(&row.title, 42),
+            truncate(&row.title, 38),
         );
         if row.blocked && !row.blockers.is_empty() {
             println!(
@@ -381,6 +407,7 @@ pub struct TaskRow {
     pub blockers: Vec<BlockedByRef>,
     pub estimate: Option<String>,
     pub sprint: Option<String>,
+    pub priority: Option<String>,
 }
 
 /// Print a full task (frontmatter table + body) to stdout.
@@ -401,6 +428,9 @@ pub fn cmd_show(repo: &StintRepo, id_input: &str) -> anyhow::Result<()> {
     println!("ID:          {}", fm.id);
     println!("Title:       {}", fm.title);
     println!("Status:      {}", fm.status);
+    if let Some(p) = &fm.priority {
+        println!("Priority:    {}", p);
+    }
     if let Some(e) = &fm.estimate {
         println!("Estimate:    {}", e);
     }
@@ -1015,6 +1045,7 @@ pub fn print_next_json(repo: &StintRepo, report: &NextReport, claimed: bool, cou
             "id": t.id,
             "title": t.title,
             "status": t.status.as_str(),
+            "priority": t.priority.as_ref().map(|p| p.as_str()),
             "sprint": t.sprint,
             "area": t.area,
             "gh_issue": t.gh_issue,
@@ -1053,7 +1084,17 @@ fn blocker_to_json(blocker: &BlockedByRef) -> serde_json::Value {
 }
 
 fn print_next_task(task: &NextTask, on: bool) {
-    println!("  {}  {}", paint_id(&task.id, on), task.title);
+    let prio_label = task
+        .priority
+        .as_ref()
+        .map(|p| format!(" [{}]", p))
+        .unwrap_or_default();
+    println!(
+        "  {}{}  {}",
+        paint_id(&task.id, on),
+        dim(&prio_label, on),
+        task.title
+    );
     if !task.area.is_empty() {
         println!("        {}", dim(&task.area.join(" · "), on));
     }

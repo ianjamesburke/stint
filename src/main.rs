@@ -45,6 +45,9 @@ enum Commands {
     Add {
         /// Task title.
         title: String,
+        /// Priority level (p0|p1|p2|p3|p4).
+        #[arg(long)]
+        priority: Option<String>,
     },
 
     /// List tasks, optionally filtered.
@@ -71,6 +74,9 @@ enum Commands {
         /// Filter by tag.
         #[arg(long)]
         tag: Option<String>,
+        /// Filter by priority (p0|p1|p2|p3|p4).
+        #[arg(long)]
+        priority: Option<String>,
     },
 
     /// Print a full task (frontmatter + body).
@@ -289,9 +295,9 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             }
         }
 
-        Some(Commands::Add { title }) => {
+        Some(Commands::Add { title, priority }) => {
             let repo = find_repo()?;
-            let path = cmds::cmd_add(&repo, &title)?;
+            let path = cmds::cmd_add(&repo, &title, priority.as_deref())?;
             println!("{}", path.display());
         }
 
@@ -303,6 +309,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             sprint,
             area,
             tag,
+            priority,
         }) => {
             let repo = find_repo()?;
             if blocked && hide_blocked {
@@ -323,6 +330,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 sprint.as_deref(),
                 area.as_deref(),
                 tag.as_deref(),
+                priority.as_deref(),
             )?;
             cmds::print_list(&rows);
         }

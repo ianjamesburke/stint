@@ -187,7 +187,7 @@ fn resolve_id_with_slug() {
 #[test]
 fn add_creates_file() {
     let (_tmp, repo) = setup();
-    let path = cmds::cmd_add(&repo, "My first task").unwrap();
+    let path = cmds::cmd_add(&repo, "My first task", None).unwrap();
     assert!(path.exists());
     let content = fs::read_to_string(&path).unwrap();
     assert!(content.contains("id: \"0001\""));
@@ -203,7 +203,7 @@ fn add_increments_id() {
         "0001-existing.md",
         &task_content("0001", "Existing", "backlog"),
     );
-    let path = cmds::cmd_add(&repo, "Second task").unwrap();
+    let path = cmds::cmd_add(&repo, "Second task", None).unwrap();
     let content = fs::read_to_string(&path).unwrap();
     assert!(content.contains("id: \"0002\""));
 }
@@ -211,7 +211,7 @@ fn add_increments_id() {
 #[test]
 fn add_filename_includes_slug() {
     let (_tmp, repo) = setup();
-    let path = cmds::cmd_add(&repo, "Auth Middleware").unwrap();
+    let path = cmds::cmd_add(&repo, "Auth Middleware", None).unwrap();
     let filename = path.file_name().unwrap().to_string_lossy();
     assert!(filename.starts_with("0001-auth-middleware"));
 }
@@ -234,7 +234,7 @@ fn list_defaults_to_active_tasks() {
         "0003-c.md",
         &task_content("0003", "Task C", "archived"),
     );
-    let rows = cmds::cmd_list(&repo, None, false, None, None, None, None).unwrap();
+    let rows = cmds::cmd_list(&repo, None, false, None, None, None, None, None).unwrap();
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].id, "0001");
 }
@@ -253,7 +253,7 @@ fn list_all_includes_done_and_archived_tasks() {
         "0003-c.md",
         &task_content("0003", "Task C", "archived"),
     );
-    let rows = cmds::cmd_list(&repo, None, true, None, None, None, None).unwrap();
+    let rows = cmds::cmd_list(&repo, None, true, None, None, None, None, None).unwrap();
     assert_eq!(rows.len(), 3);
 }
 
@@ -266,7 +266,7 @@ fn list_filters_by_status() {
         &task_content("0001", "Task A", "backlog"),
     );
     write_task_file(&repo, "0002-b.md", &task_content("0002", "Task B", "done"));
-    let rows = cmds::cmd_list(&repo, Some("backlog"), false, None, None, None, None).unwrap();
+    let rows = cmds::cmd_list(&repo, Some("backlog"), false, None, None, None, None, None).unwrap();
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].id, "0001");
 }
@@ -280,7 +280,7 @@ fn list_explicit_status_can_show_done_tasks() {
         &task_content("0001", "Task A", "backlog"),
     );
     write_task_file(&repo, "0002-b.md", &task_content("0002", "Task B", "done"));
-    let rows = cmds::cmd_list(&repo, Some("done"), false, None, None, None, None).unwrap();
+    let rows = cmds::cmd_list(&repo, Some("done"), false, None, None, None, None, None).unwrap();
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].id, "0002");
 }
@@ -295,7 +295,7 @@ fn list_marks_currently_blocked_tasks() {
         "---\nid: \"0002\"\ntitle: \"Task B\"\nstatus: todo\nblocked_by: [\"0001\"]\n---\n",
     );
 
-    let rows = cmds::cmd_list(&repo, None, false, None, None, None, None).unwrap();
+    let rows = cmds::cmd_list(&repo, None, false, None, None, None, None, None).unwrap();
     assert_eq!(rows.len(), 2);
     assert!(!rows.iter().find(|r| r.id == "0001").unwrap().blocked);
     assert!(rows.iter().find(|r| r.id == "0002").unwrap().blocked);
@@ -311,7 +311,7 @@ fn list_does_not_mark_task_blocked_by_done_local_task() {
         "---\nid: \"0002\"\ntitle: \"Task B\"\nstatus: todo\nblocked_by: [\"0001\"]\n---\n",
     );
 
-    let rows = cmds::cmd_list(&repo, None, false, None, None, None, None).unwrap();
+    let rows = cmds::cmd_list(&repo, None, false, None, None, None, None, None).unwrap();
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].id, "0002");
     assert!(!rows[0].blocked);
@@ -327,11 +327,11 @@ fn list_filters_blocked_tasks() {
         "---\nid: \"0002\"\ntitle: \"Task B\"\nstatus: todo\nblocked_by: [\"0001\"]\n---\n",
     );
 
-    let blocked = cmds::cmd_list(&repo, None, false, Some(true), None, None, None).unwrap();
+    let blocked = cmds::cmd_list(&repo, None, false, Some(true), None, None, None, None).unwrap();
     assert_eq!(blocked.len(), 1);
     assert_eq!(blocked[0].id, "0002");
 
-    let unblocked = cmds::cmd_list(&repo, None, false, Some(false), None, None, None).unwrap();
+    let unblocked = cmds::cmd_list(&repo, None, false, Some(false), None, None, None, None).unwrap();
     assert_eq!(unblocked.len(), 1);
     assert_eq!(unblocked[0].id, "0001");
 }
@@ -350,7 +350,7 @@ fn list_treats_direct_blocker_as_blocked() {
         "---\nid: \"0002\"\ntitle: \"Dep\"\nstatus: todo\nblocked_by:\n  - 0001\n---\n",
     );
 
-    let blocked = cmds::cmd_list(&repo, None, false, Some(true), None, None, None).unwrap();
+    let blocked = cmds::cmd_list(&repo, None, false, Some(true), None, None, None, None).unwrap();
     assert_eq!(blocked.len(), 1);
     assert_eq!(blocked[0].id, "0002");
 }
@@ -365,7 +365,7 @@ fn list_filters_by_sprint() {
     // Sprint membership is determined by the sprint index, not task frontmatter.
     write_sprint_file(&repo, "s1.md", "# Sprint 1 · Jan 1–15\n\n- 0001\n");
     write_sprint_file(&repo, "s2.md", "# Sprint 2 · Jan 16–31\n\n- 0002\n");
-    let rows = cmds::cmd_list(&repo, None, false, None, Some("s1"), None, None).unwrap();
+    let rows = cmds::cmd_list(&repo, None, false, None, Some("s1"), None, None, None).unwrap();
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].id, "0001");
 }
@@ -377,7 +377,7 @@ fn list_filters_by_area() {
     let t2 = "---\nid: \"0002\"\ntitle: \"B\"\nstatus: backlog\narea:\n  - frontend\n---\n";
     write_task_file(&repo, "0001-a.md", t1);
     write_task_file(&repo, "0002-b.md", t2);
-    let rows = cmds::cmd_list(&repo, None, false, None, None, Some("backend"), None).unwrap();
+    let rows = cmds::cmd_list(&repo, None, false, None, None, Some("backend"), None, None).unwrap();
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].id, "0001");
 }
@@ -389,7 +389,7 @@ fn list_filters_by_tag() {
     let t2 = "---\nid: \"0002\"\ntitle: \"B\"\nstatus: backlog\ntags:\n  - perf\n---\n";
     write_task_file(&repo, "0001-a.md", t1);
     write_task_file(&repo, "0002-b.md", t2);
-    let rows = cmds::cmd_list(&repo, None, false, None, None, None, Some("security")).unwrap();
+    let rows = cmds::cmd_list(&repo, None, false, None, None, None, Some("security"), None).unwrap();
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].id, "0001");
 }
@@ -397,7 +397,7 @@ fn list_filters_by_tag() {
 #[test]
 fn list_empty_returns_empty_vec() {
     let (_tmp, repo) = setup();
-    let rows = cmds::cmd_list(&repo, None, false, None, None, None, None).unwrap();
+    let rows = cmds::cmd_list(&repo, None, false, None, None, None, None, None).unwrap();
     assert!(rows.is_empty());
 }
 

@@ -12,6 +12,9 @@ pub fn serialize_task(task: &Task) -> String {
     out.push_str(&format!("id: \"{}\"\n", fm.id));
     out.push_str(&format!("title: {}\n", yaml_quote(&fm.title)));
     out.push_str(&format!("status: {}\n", fm.status));
+    if let Some(p) = &fm.priority {
+        out.push_str(&format!("priority: {}\n", p));
+    }
 
     if let Some(e) = &fm.estimate {
         out.push_str(&format!("estimate: \"{}\"\n", e));
@@ -192,6 +195,34 @@ So users can authenticate.
         let serialized = serialize_task(&task);
         let reparsed = parse_task(&serialized, "0001-t.md").unwrap();
         assert_eq!(task.frontmatter.blocked_by, reparsed.frontmatter.blocked_by);
+    }
+
+    #[test]
+    fn round_trip_task_with_priority() {
+        let content =
+            "---\nid: \"0003\"\ntitle: \"Prioritized\"\nstatus: todo\npriority: p1\n---\n";
+        let task = parse_task(content, "0003-prioritized.md").unwrap();
+        assert_eq!(
+            task.frontmatter.priority,
+            Some(crate::schema::Priority::P1)
+        );
+        let serialized = serialize_task(&task);
+        let reparsed = parse_task(&serialized, "0003-prioritized.md").unwrap();
+        assert_eq!(
+            reparsed.frontmatter.priority,
+            Some(crate::schema::Priority::P1)
+        );
+    }
+
+    #[test]
+    fn round_trip_task_without_priority() {
+        let content = "---\nid: \"0004\"\ntitle: \"NoPrio\"\nstatus: backlog\n---\n";
+        let task = parse_task(content, "0004-noprio.md").unwrap();
+        assert_eq!(task.frontmatter.priority, None);
+        let serialized = serialize_task(&task);
+        assert!(!serialized.contains("priority:"));
+        let reparsed = parse_task(&serialized, "0004-noprio.md").unwrap();
+        assert_eq!(reparsed.frontmatter.priority, None);
     }
 
     #[test]

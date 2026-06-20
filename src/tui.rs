@@ -908,6 +908,13 @@ impl App {
                     .add_modifier(Modifier::BOLD),
             ),
             Line::from(format!("status: {}", fm.status)),
+            Line::from(format!(
+                "priority: {}",
+                fm.priority
+                    .as_ref()
+                    .map(|p| p.as_str())
+                    .unwrap_or("-")
+            )),
             Line::from(format!("state: {}", classify(task, &done).as_str())),
             Line::from(format!(
                 "estimate: {}",

@@ -3,7 +3,7 @@ use serde::Deserialize;
 use thiserror::Error;
 
 use crate::duration::Duration;
-use crate::schema::{BlockedByRef, Task, TaskFrontmatter, TaskStatus};
+use crate::schema::{BlockedByRef, Priority, Task, TaskFrontmatter, TaskStatus};
 
 /// Errors that can occur while parsing a task file.
 #[derive(Debug, Error, PartialEq)]
@@ -63,6 +63,7 @@ struct RawFrontmatter {
     id: Option<String>,
     title: Option<String>,
     status: Option<String>,
+    priority: Option<String>,
     estimate: Option<String>,
     actual: Option<String>,
     created_at: Option<String>,
@@ -119,6 +120,17 @@ pub fn parse_task(content: &str, filename: &str) -> Result<Task, ParseError> {
             reason: e.to_string(),
         })?;
 
+    let priority = raw
+        .priority
+        .filter(|s| !s.is_empty())
+        .map(|s| {
+            s.parse::<Priority>().map_err(|e| ParseError::InvalidField {
+                field: "priority",
+                reason: e.to_string(),
+            })
+        })
+        .transpose()?;
+
     let estimate = raw
         .estimate
         .filter(|s| !s.is_empty())
@@ -160,6 +172,7 @@ pub fn parse_task(content: &str, filename: &str) -> Result<Task, ParseError> {
         id,
         title,
         status,
+        priority,
         estimate,
         actual,
         created_at: raw.created_at.filter(|s| !s.is_empty()),
@@ -423,6 +436,35 @@ So users can authenticate.
             "---\nid: \"0001\"\ntitle: \"T\"\nstatus: backlog\ngh_issue: [1, 2, 3]\n---\n";
         let task = parse_task(content, "0001-t.md").unwrap();
         assert_eq!(task.frontmatter.gh_issue, vec!["1", "2", "3"]);
+    }
+
+    #[test]
+    fn parse_valid_priority() {
+        let content = "---\nid: \"0001\"\ntitle: \"T\"\nstatus: backlog\npriority: p1\n---\n";
+        let task = parse_task(content, "0001-t.md").unwrap();
+        assert_eq!(
+            task.frontmatter.priority,
+            Some(crate::schema::Priority::P1)
+        );
+    }
+
+    #[test]
+    fn parse_invalid_priority() {
+        let content = "---\nid: \"0001\"\ntitle: \"T\"\nstatus: backlog\npriority: critical\n---\n";
+        assert!(matches!(
+            parse_task(content, "0001-t.md"),
+            Err(ParseError::InvalidField {
+                field: "priority",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn parse_missing_priority() {
+        let content = "---\nid: \"0001\"\ntitle: \"T\"\nstatus: backlog\n---\n";
+        let task = parse_task(content, "0001-t.md").unwrap();
+        assert_eq!(task.frontmatter.priority, None);
     }
 
     #[test]

@@ -1,7 +1,103 @@
 /// Core domain types for tasks, sprints, and blockers.
+use std::cmp::Ordering;
 use std::str::FromStr;
 
 use crate::duration::Duration;
+
+/// Priority level for a task (P0 = highest, P4 = lowest).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Priority {
+    P0,
+    P1,
+    P2,
+    P3,
+    P4,
+}
+
+/// Error returned when a `Priority` string is not recognised.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PriorityParseError(pub String);
+
+impl std::fmt::Display for PriorityParseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "unknown priority {:?}; expected one of p0, p1, p2, p3, p4",
+            self.0
+        )
+    }
+}
+
+impl std::error::Error for PriorityParseError {}
+
+impl FromStr for Priority {
+    type Err = PriorityParseError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "p0" => Ok(Priority::P0),
+            "p1" => Ok(Priority::P1),
+            "p2" => Ok(Priority::P2),
+            "p3" => Ok(Priority::P3),
+            "p4" => Ok(Priority::P4),
+            _ => Err(PriorityParseError(s.to_owned())),
+        }
+    }
+}
+
+impl Priority {
+    /// Return the canonical string representation.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Priority::P0 => "p0",
+            Priority::P1 => "p1",
+            Priority::P2 => "p2",
+            Priority::P3 => "p3",
+            Priority::P4 => "p4",
+        }
+    }
+
+    /// Numeric rank for sorting (lower = higher priority).
+    fn rank(self) -> u8 {
+        match self {
+            Priority::P0 => 0,
+            Priority::P1 => 1,
+            Priority::P2 => 2,
+            Priority::P3 => 3,
+            Priority::P4 => 4,
+        }
+    }
+}
+
+impl std::fmt::Display for Priority {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl Ord for Priority {
+    fn cmp(&self, other: &Self) -> Ordering {
+        // P0 is highest priority, so it should sort first (smallest rank).
+        self.rank().cmp(&other.rank())
+    }
+}
+
+impl PartialOrd for Priority {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+/// Compare two `Option<Priority>` values for sorting.
+/// `Some` always sorts before `None`; among `Some`, P0 < P1 < ... < P4.
+pub fn cmp_priority(a: &Option<Priority>, b: &Option<Priority>) -> Ordering {
+    match (a, b) {
+        (Some(a), Some(b)) => a.cmp(b),
+        (Some(_), None) => Ordering::Less,
+        (None, Some(_)) => Ordering::Greater,
+        (None, None) => Ordering::Equal,
+    }
+}
 
 /// Status lifecycle for a task.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -199,6 +295,8 @@ pub struct TaskFrontmatter {
     pub title: String,
     /// Current lifecycle status.
     pub status: TaskStatus,
+    /// Priority level (P0 highest, P4 lowest). None = unprioritized.
+    pub priority: Option<Priority>,
     /// Time budgeted for this task.
     pub estimate: Option<Duration>,
     /// Time logged so far.
@@ -267,6 +365,51 @@ impl Sprint {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn priority_round_trip() {
+        for s in &["p0", "p1", "p2", "p3", "p4"] {
+            let priority: Priority = s.parse().unwrap();
+            assert_eq!(priority.as_str(), *s);
+            assert_eq!(priority.to_string(), *s);
+        }
+    }
+
+    #[test]
+    fn priority_invalid() {
+        assert!("P0".parse::<Priority>().is_err());
+        assert!("high".parse::<Priority>().is_err());
+        assert!("p5".parse::<Priority>().is_err());
+    }
+
+    #[test]
+    fn priority_ordering() {
+        assert!(Priority::P0 < Priority::P1);
+        assert!(Priority::P1 < Priority::P2);
+        assert!(Priority::P2 < Priority::P3);
+        assert!(Priority::P3 < Priority::P4);
+    }
+
+    #[test]
+    fn cmp_priority_option_ordering() {
+        use std::cmp::Ordering;
+        // Some sorts before None
+        assert_eq!(
+            cmp_priority(&Some(Priority::P4), &None),
+            Ordering::Less
+        );
+        assert_eq!(
+            cmp_priority(&None, &Some(Priority::P0)),
+            Ordering::Greater
+        );
+        // None == None
+        assert_eq!(cmp_priority(&None, &None), Ordering::Equal);
+        // P0 before P3
+        assert_eq!(
+            cmp_priority(&Some(Priority::P0), &Some(Priority::P3)),
+            Ordering::Less
+        );
+    }
 
     #[test]
     fn task_status_round_trip() {

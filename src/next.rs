@@ -94,7 +94,9 @@ pub fn compute_next(tasks: &[Task], sprints: &[Sprint], options: NextOptions<'_>
             title: task.frontmatter.title.clone(),
             status: task.frontmatter.status.clone(),
             priority: task.frontmatter.priority,
-            sprint: task_sprint.get(task.frontmatter.id.as_str()).map(|s| s.to_string()),
+            sprint: task_sprint
+                .get(task.frontmatter.id.as_str())
+                .map(|s| s.to_string()),
             area: task.frontmatter.area.clone(),
             gh_issue: task.frontmatter.gh_issue.clone(),
             filename: task.filename.clone(),
@@ -130,7 +132,13 @@ pub fn compute_next(tasks: &[Task], sprints: &[Sprint], options: NextOptions<'_>
     NextReport {
         ready,
         blocked,
-        bottleneck: bottleneck(tasks, &task_by_id, &done, sprint_task_ids.as_ref()),
+        bottleneck: bottleneck(
+            tasks,
+            &task_by_id,
+            &done,
+            sprint_task_ids.as_ref(),
+            options.include_backlog,
+        ),
     }
 }
 
@@ -236,6 +244,7 @@ fn bottleneck(
     task_by_id: &HashMap<&str, &Task>,
     done_ids: &HashSet<&str>,
     sprint_task_ids: Option<&HashSet<String>>,
+    include_backlog: bool,
 ) -> Option<Bottleneck> {
     let mut counts: HashMap<String, usize> = HashMap::new();
     for task in tasks {
@@ -258,12 +267,11 @@ fn bottleneck(
             let Some(blocker_task) = task_by_id.get(id.as_str()) else {
                 continue;
             };
-            // A bottleneck must itself be resolvable next: todo or backlog.
-            // In-progress work is the current focus, not a bottleneck.
-            if matches!(
-                classify(blocker_task, done_ids),
-                TaskState::Active | TaskState::Done | TaskState::Archived
-            ) {
+            // A bottleneck is a claimable task that would unblock other work.
+            // Middle nodes in a dependency chain are blocked, not actionable.
+            if !is_candidate(blocker_task, None, include_backlog)
+                || !active_blockers(blocker_task, done_ids).is_empty()
+            {
                 continue;
             }
             if counted_for_task.insert(id.clone()) {
@@ -463,6 +471,25 @@ mod tests {
         let tasks = vec![
             task("0001", "A", "in-progress", ""),
             task("0002", "B", "in-progress", "blocked_by: [\"0001\"]"),
+        ];
+        let report = compute_next(
+            &tasks,
+            &[],
+            NextOptions {
+                sprint: None,
+                include_area_conflicts: false,
+                include_backlog: false,
+            },
+        );
+        assert_eq!(report.bottleneck, None);
+    }
+
+    #[test]
+    fn blocked_middle_task_is_not_a_bottleneck() {
+        let tasks = vec![
+            task("0001", "A", "in-progress", ""),
+            task("0002", "B", "todo", "blocked_by: [\"0001\"]"),
+            task("0003", "C", "todo", "blocked_by: [\"0002\"]"),
         ];
         let report = compute_next(
             &tasks,

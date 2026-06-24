@@ -1,6 +1,11 @@
 # Changelog
 
 Newest releases appear first.
+## [0.3.4] - 2026-06-24
+
+### Changes
+- feat: accept uppercase priority values (P0-P4) in addition to lowercase
+- Rework TUI around claim launcher
 ## [0.3.3] - 2026-06-20
 
 ### Changes

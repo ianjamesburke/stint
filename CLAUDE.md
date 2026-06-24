@@ -32,6 +32,7 @@ Run `just install` immediately after any Rust change so the local binary is upda
 
 - Bump the patch version after Rust code changes that affect the crate/binary behavior, or after installing a local build for testing a Rust change.
 - Do not bump the patch version for docs-only, comments-only, changelog-only, or agent-instruction-only changes.
+- If a change needs a patch bump, first commit the approved behavior change, then run `just bump patch`, `git push origin main --follow-tags`, and `just install` so the published repo state and local binary match.
 - Use `just bump [patch|minor|major]` for release bumps. It updates `Cargo.toml`, `Cargo.lock`, and `CHANGELOG.md`, commits `chore: release vX.Y.Z`, and tags `vX.Y.Z`.
 - Push release commits with `git push origin main --follow-tags` so future changelog generation has a previous-version boundary.
 

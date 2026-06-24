@@ -1,6 +1,6 @@
 [package]
 name = "stint"
-version = "0.3.4"
+version = "0.3.5"
 edition = "2021"
 authors = ["Ian Burke <ianjamesburke@gmail.com>"]
 license = "MIT"

@@ -1,6 +1,10 @@
 # Changelog
 
 Newest releases appear first.
+## [0.3.5] - 2026-06-24
+
+### Changes
+- fix: keep bottlenecks claimable
 ## [0.3.4] - 2026-06-24
 
 ### Changes

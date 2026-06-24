@@ -34,7 +34,7 @@ impl FromStr for Priority {
     type Err = PriorityParseError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
+        match s.to_ascii_lowercase().as_str() {
             "p0" => Ok(Priority::P0),
             "p1" => Ok(Priority::P1),
             "p2" => Ok(Priority::P2),
@@ -377,7 +377,7 @@ mod tests {
 
     #[test]
     fn priority_invalid() {
-        assert!("P0".parse::<Priority>().is_err());
+        assert!("P0".parse::<Priority>().is_ok());
         assert!("high".parse::<Priority>().is_err());
         assert!("p5".parse::<Priority>().is_err());
     }

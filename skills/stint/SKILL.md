@@ -98,7 +98,13 @@ If genuinely uncertain, bias toward shorter — overestimates skew bottleneck an
 
 #### Blocker Check
 
-If the task requires another task or issue first, use `blocked_by`:
+**Sequential tasks MUST be wired with `blocked_by`.** If you are creating more than one task and they must execute in order, every task except the first must block on the one before it. This is non-negotiable — unlocked sequential tasks will be dispatched out of order by `stint next`.
+
+Ask yourself: "Can this task start before the previous one is done?" If no, set `blocked_by`.
+
+If creating a chain of tasks (A → B → C): B blocks on A, C blocks on B. Set each link explicitly.
+
+`blocked_by` syntax:
 
 | Syntax | Meaning |
 |---|---|
@@ -107,7 +113,7 @@ If the task requires another task or issue first, use `blocked_by`:
 | `owner/repo@N` | external GitHub issue |
 | quoted string | free-text note |
 
-If no real artifact dependency exists, leave `blocked_by: []`. Do not use blockers to express phase preference.
+If no real artifact dependency exists, leave `blocked_by: []`. Do not use blockers to express phase preference — only use them when the work literally cannot start until the blocker is resolved.
 
 #### gh_issue
 

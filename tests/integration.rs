@@ -715,10 +715,10 @@ fn claim_auto_sets_top_ready_task_in_progress() {
     cmds::cmd_claim(&repo, None, Some("s1"), false, None, false).unwrap();
 
     let claimed = repo
-        .read_task(&repo.resolve_task_path("0002").unwrap())
+        .read_task(&repo.resolve_task_path("0001").unwrap())
         .unwrap();
     let untouched = repo
-        .read_task(&repo.resolve_task_path("0001").unwrap())
+        .read_task(&repo.resolve_task_path("0002").unwrap())
         .unwrap();
     assert_eq!(
         claimed.frontmatter.status,

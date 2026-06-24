@@ -1,6 +1,11 @@
 # Changelog
 
 Newest releases appear first.
+## [0.3.6] - 2026-06-24
+
+### Changes
+- fix: make next show parallel-safe queue
+- docs: clarify patch release workflow
 ## [0.3.5] - 2026-06-24
 
 ### Changes

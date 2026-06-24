@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::schema::{cmp_priority, BlockedByRef, Priority, Sprint, Task, TaskStatus};
 use crate::sprint::numeric_prefix;
-use crate::state::{active_blockers, classify, done_ids, TaskState};
+use crate::state::{active_blockers, done_ids};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NextOptions<'a> {
@@ -32,28 +32,17 @@ pub struct NextTask {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Bottleneck {
-    pub id: String,
-    pub title: String,
-    pub blocked_count: usize,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NextReport {
     pub ready: Vec<NextTask>,
     pub blocked: Vec<NextTask>,
-    pub bottleneck: Option<Bottleneck>,
 }
 
 pub fn compute_next(tasks: &[Task], sprints: &[Sprint], options: NextOptions<'_>) -> NextReport {
-    let task_by_id: HashMap<&str, &Task> = tasks
-        .iter()
-        .map(|task| (task.frontmatter.id.as_str(), task))
-        .collect();
     let done = done_ids(tasks);
     let active_area_tasks = active_area_tasks(tasks);
     let sprint_task_ids = sprint_task_ids(sprints, options.sprint);
-    let ordered = ordered_tasks(tasks, sprints, options.sprint);
+    let mut ordered = ordered_tasks(tasks, sprints, options.sprint);
+    ordered.sort_by(|a, b| compare_next_order(a, b));
 
     // Build task_id -> sprint_id lookup from sprint index files.
     let task_sprint: HashMap<&str, &str> = sprints
@@ -125,21 +114,29 @@ pub fn compute_next(tasks: &[Task], sprints: &[Sprint], options: NextOptions<'_>
         ready.push(row);
     }
 
-    // Sort ready tasks by priority: P0 first, P4 last, None last.
-    // This is a stable sort, so sprint order is preserved among equal priorities.
-    ready.sort_by(|a, b| cmp_priority(&a.priority, &b.priority));
+    NextReport { ready, blocked }
+}
 
-    NextReport {
-        ready,
-        blocked,
-        bottleneck: bottleneck(
-            tasks,
-            &task_by_id,
-            &done,
-            sprint_task_ids.as_ref(),
-            options.include_backlog,
-        ),
+fn compare_next_order(a: &Task, b: &Task) -> std::cmp::Ordering {
+    cmp_priority(&a.frontmatter.priority, &b.frontmatter.priority)
+        .then_with(|| compare_created_at(a, b))
+        .then_with(|| a.frontmatter.id.cmp(&b.frontmatter.id))
+}
+
+fn compare_created_at(a: &Task, b: &Task) -> std::cmp::Ordering {
+    match (
+        parse_timestamp(a.frontmatter.created_at.as_deref()),
+        parse_timestamp(b.frontmatter.created_at.as_deref()),
+    ) {
+        (Some(a_created), Some(b_created)) => a_created.cmp(&b_created),
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (None, None) => std::cmp::Ordering::Equal,
     }
+}
+
+fn parse_timestamp(value: Option<&str>) -> Option<chrono::DateTime<chrono::FixedOffset>> {
+    value.and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
 }
 
 fn is_candidate(
@@ -237,63 +234,6 @@ fn latest_sprint(sprints: &[Sprint]) -> Option<&Sprint> {
 
 fn sprint_number(id: &str) -> u64 {
     id.trim_start_matches('s').parse().unwrap_or(0)
-}
-
-fn bottleneck(
-    tasks: &[Task],
-    task_by_id: &HashMap<&str, &Task>,
-    done_ids: &HashSet<&str>,
-    sprint_task_ids: Option<&HashSet<String>>,
-    include_backlog: bool,
-) -> Option<Bottleneck> {
-    let mut counts: HashMap<String, usize> = HashMap::new();
-    for task in tasks {
-        // Only Blocked tasks (todo with an active blocker) are genuinely
-        // waiting. Backlog dependents are iced; in-progress dependents are
-        // already moving and should never have been started while blocked.
-        if classify(task, done_ids) != TaskState::Blocked {
-            continue;
-        }
-        if let Some(sprint_task_ids) = sprint_task_ids {
-            if !sprint_task_ids.contains(&task.frontmatter.id) {
-                continue;
-            }
-        }
-        let mut counted_for_task = HashSet::new();
-        for blocker in active_blockers(task, done_ids) {
-            let BlockedByRef::LocalTask(id) = blocker else {
-                continue;
-            };
-            let Some(blocker_task) = task_by_id.get(id.as_str()) else {
-                continue;
-            };
-            // A bottleneck is a claimable task that would unblock other work.
-            // Middle nodes in a dependency chain are blocked, not actionable.
-            if !is_candidate(blocker_task, None, include_backlog)
-                || !active_blockers(blocker_task, done_ids).is_empty()
-            {
-                continue;
-            }
-            if counted_for_task.insert(id.clone()) {
-                *counts.entry(id).or_default() += 1;
-            }
-        }
-    }
-
-    counts
-        .into_iter()
-        .max_by(|(left_id, left_count), (right_id, right_count)| {
-            left_count
-                .cmp(right_count)
-                .then_with(|| right_id.cmp(left_id))
-        })
-        .and_then(|(id, count)| {
-            task_by_id.get(id.as_str()).map(|task| Bottleneck {
-                id: task.frontmatter.id.clone(),
-                title: task.frontmatter.title.clone(),
-                blocked_count: count,
-            })
-        })
 }
 
 #[cfg(test)]
@@ -403,8 +343,12 @@ mod tests {
     }
 
     #[test]
-    fn sprint_order_wins() {
-        let tasks = vec![task("0001", "A", "todo", ""), task("0002", "B", "todo", "")];
+    fn sprint_selection_filters_without_overriding_priority() {
+        let tasks = vec![
+            task("0001", "A", "todo", "priority: p0"),
+            task("0002", "B", "todo", "priority: p3"),
+            task("0003", "C", "todo", "priority: p0"),
+        ];
         let sprint = parse_sprint("# Sprint 1 · Jun 1-14\n\n- 0002\n- 0001\n").unwrap();
         let report = compute_next(
             &tasks,
@@ -421,7 +365,7 @@ mod tests {
                 .iter()
                 .map(|t| t.id.as_str())
                 .collect::<Vec<_>>(),
-            vec!["0002", "0001"]
+            vec!["0001", "0002"]
         );
     }
 
@@ -446,11 +390,21 @@ mod tests {
     }
 
     #[test]
-    fn bottleneck_counts_direct_dependents() {
+    fn created_at_breaks_priority_ties_oldest_first() {
         let tasks = vec![
-            task("0001", "A", "todo", ""),
-            task("0002", "B", "todo", "blocked_by: [\"0001\"]"),
-            task("0003", "C", "todo", "blocked_by: [\"0001\"]"),
+            task(
+                "0001",
+                "Newer",
+                "todo",
+                "priority: p1\ncreated_at: \"2026-06-12T00:00:00Z\"",
+            ),
+            task(
+                "0002",
+                "Older",
+                "todo",
+                "priority: p1\ncreated_at: \"2026-06-10T00:00:00Z\"",
+            ),
+            task("0003", "Unstamped", "todo", "priority: p1"),
         ];
         let report = compute_next(
             &tasks,
@@ -461,16 +415,15 @@ mod tests {
                 include_backlog: false,
             },
         );
-        assert_eq!(report.bottleneck.unwrap().blocked_count, 2);
+        let ids: Vec<&str> = report.ready.iter().map(|t| t.id.as_str()).collect();
+        assert_eq!(ids, vec!["0002", "0001", "0003"]);
     }
 
     #[test]
-    fn in_progress_blocker_is_not_a_bottleneck() {
-        // Regression: an in-progress task that another (illegally in-progress)
-        // task lists as a blocker must not surface as a bottleneck.
+    fn priority_order_decides_parallel_area_selection() {
         let tasks = vec![
-            task("0001", "A", "in-progress", ""),
-            task("0002", "B", "in-progress", "blocked_by: [\"0001\"]"),
+            task("0001", "Low", "todo", "priority: p3\narea: [cli]"),
+            task("0002", "High", "todo", "priority: p1\narea: [cli]"),
         ];
         let report = compute_next(
             &tasks,
@@ -481,11 +434,13 @@ mod tests {
                 include_backlog: false,
             },
         );
-        assert_eq!(report.bottleneck, None);
+        assert_eq!(report.ready[0].id, "0002");
+        assert_eq!(report.blocked[0].id, "0001");
+        assert_eq!(report.blocked[0].selected_conflicts, vec!["0002"]);
     }
 
     #[test]
-    fn blocked_middle_task_is_not_a_bottleneck() {
+    fn blocked_middle_task_stays_blocked_without_bottleneck_surface() {
         let tasks = vec![
             task("0001", "A", "in-progress", ""),
             task("0002", "B", "todo", "blocked_by: [\"0001\"]"),
@@ -500,85 +455,15 @@ mod tests {
                 include_backlog: false,
             },
         );
-        assert_eq!(report.bottleneck, None);
-    }
-
-    #[test]
-    fn bottleneck_ignores_done_blockers() {
-        let tasks = vec![
-            task("0001", "A", "done", ""),
-            task("0002", "B", "todo", "blocked_by: [\"0001\"]"),
-        ];
-        let report = compute_next(
-            &tasks,
-            &[],
-            NextOptions {
-                sprint: None,
-                include_area_conflicts: false,
-                include_backlog: false,
-            },
+        assert!(report.ready.is_empty());
+        assert_eq!(
+            report
+                .blocked
+                .iter()
+                .map(|t| t.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["0002", "0003"]
         );
-        assert_eq!(report.bottleneck, None);
-    }
-
-    #[test]
-    fn bottleneck_respects_selected_sprint() {
-        let tasks = vec![
-            task("0001", "A", "todo", ""),
-            task("0002", "B", "todo", "blocked_by: [\"0001\"]"),
-            task("0003", "C", "todo", "blocked_by: [\"0001\"]"),
-        ];
-        let sprint = parse_sprint("# Sprint 1 · Jun 1-14\n\n- 0002\n").unwrap();
-        let report = compute_next(
-            &tasks,
-            &[sprint],
-            NextOptions {
-                sprint: Some("s1"),
-                include_area_conflicts: false,
-                include_backlog: false,
-            },
-        );
-        assert_eq!(report.bottleneck.unwrap().blocked_count, 1);
-    }
-
-    #[test]
-    fn bottleneck_ignores_unknown_local_blockers() {
-        let tasks = vec![task(
-            "0001",
-            "A",
-            "todo",
-            "blocked_by: [\"9999\", \"9999\"]",
-        )];
-        let report = compute_next(
-            &tasks,
-            &[],
-            NextOptions {
-                sprint: None,
-                include_area_conflicts: false,
-                include_backlog: false,
-            },
-        );
-        assert_eq!(report.bottleneck, None);
-    }
-
-    #[test]
-    fn bottleneck_ties_choose_lowest_id() {
-        let tasks = vec![
-            task("0001", "A", "todo", ""),
-            task("0002", "B", "todo", ""),
-            task("0003", "C", "todo", "blocked_by: [\"0002\"]"),
-            task("0004", "D", "todo", "blocked_by: [\"0001\"]"),
-        ];
-        let report = compute_next(
-            &tasks,
-            &[],
-            NextOptions {
-                sprint: None,
-                include_area_conflicts: false,
-                include_backlog: false,
-            },
-        );
-        assert_eq!(report.bottleneck.unwrap().id, "0001");
     }
 
     #[test]
@@ -617,45 +502,5 @@ mod tests {
         );
         assert_eq!(report.ready[0].id, "0001");
         assert_eq!(report.blocked[0].id, "0002");
-    }
-
-    #[test]
-    fn bottleneck_excludes_backlog_dependents() {
-        let tasks = vec![
-            task("0001", "A", "todo", ""),
-            task("0002", "B", "backlog", "blocked_by: [\"0001\"]"),
-            task("0003", "C", "backlog", "blocked_by: [\"0001\"]"),
-        ];
-        let report = compute_next(
-            &tasks,
-            &[],
-            NextOptions {
-                sprint: None,
-                include_area_conflicts: false,
-                include_backlog: false,
-            },
-        );
-        assert_eq!(report.bottleneck, None);
-    }
-
-    #[test]
-    fn bottleneck_counts_todo_dependents() {
-        let tasks = vec![
-            task("0001", "A", "todo", ""),
-            task("0002", "B", "todo", "blocked_by: [\"0001\"]"),
-            task("0003", "C", "backlog", "blocked_by: [\"0001\"]"),
-        ];
-        let report = compute_next(
-            &tasks,
-            &[],
-            NextOptions {
-                sprint: None,
-                include_area_conflicts: false,
-                include_backlog: false,
-            },
-        );
-        let bn = report.bottleneck.unwrap();
-        assert_eq!(bn.id, "0001");
-        assert_eq!(bn.blocked_count, 1);
     }
 }

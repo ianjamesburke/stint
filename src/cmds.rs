@@ -944,39 +944,17 @@ fn with_claim_lock<T, F: FnOnce() -> anyhow::Result<T>>(
 
 pub fn print_next(report: &NextReport) {
     let on = color_on();
-    let visible: Vec<&NextTask> = report.ready.iter().collect();
-    if visible.is_empty() {
+    if report.ready.is_empty() {
         println!("{} {}", bold("Ready", on), dim("(none)", on));
     } else {
         println!(
             "{} {}",
             bold("Ready", on),
-            dim(&format!("({})", visible.len()), on)
+            dim(&format!("({})", report.ready.len()), on)
         );
-        for task in &visible {
+        for task in &report.ready {
             print_next_task(task, on);
         }
-    }
-
-    println!();
-    match &report.bottleneck {
-        Some(b) => {
-            println!(
-                "{} {} {}",
-                bold("Bottleneck:", on),
-                paint_id(&b.id, on),
-                dim(&format!("(blocks {} task(s))", b.blocked_count), on)
-            );
-            println!("  {}", b.title);
-        }
-        None => println!(
-            "{} {}",
-            bold("Bottleneck:", on),
-            dim(
-                "none (no ready task is gated by an unfinished dependency)",
-                on
-            )
-        ),
     }
 }
 

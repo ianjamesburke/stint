@@ -387,9 +387,16 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             )?;
             println!("done: {}", path.display());
             let unblocked = cmds::tasks_unblocked_by_done(&repo, &id)?;
+            let pruned = cmds::prune_done_blocker_refs(&repo, &id)?;
             if !unblocked.is_empty() {
                 println!("unblocked:");
                 for task in unblocked {
+                    println!("  {} {}", task.id, task.title);
+                }
+            }
+            if !pruned.is_empty() {
+                println!("pruned blockers:");
+                for task in pruned {
                     println!("  {} {}", task.id, task.title);
                 }
             }

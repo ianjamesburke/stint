@@ -582,6 +582,12 @@ pub struct UnblockedTask {
     pub title: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PrunedBlockerTask {
+    pub id: String,
+    pub title: String,
+}
+
 pub fn tasks_unblocked_by_done(
     repo: &StintRepo,
     done_id_input: &str,
@@ -615,6 +621,44 @@ pub fn tasks_unblocked_by_done(
     }
 
     Ok(unblocked)
+}
+
+pub fn prune_done_blocker_refs(
+    repo: &StintRepo,
+    done_id_input: &str,
+) -> anyhow::Result<Vec<PrunedBlockerTask>> {
+    let done_path = repo.resolve_task_path(done_id_input)?;
+    let done_task = repo.read_task(&done_path)?;
+    let done_id = done_task.frontmatter.id;
+    let tasks = repo.load_tasks()?;
+
+    let mut pruned = Vec::new();
+    for mut task in tasks {
+        if !matches!(
+            task.frontmatter.status,
+            TaskStatus::Backlog | TaskStatus::Todo | TaskStatus::InProgress
+        ) {
+            continue;
+        }
+
+        let before_len = task.frontmatter.blocked_by.len();
+        task.frontmatter
+            .blocked_by
+            .retain(|blocker| !matches!(blocker, BlockedByRef::LocalTask(id) if *id == done_id));
+
+        if task.frontmatter.blocked_by.len() == before_len {
+            continue;
+        }
+
+        let id = task.frontmatter.id.clone();
+        let title = task.frontmatter.title.clone();
+        let path = repo.resolve_task_path(&id)?;
+        let content = serialize_task(&task);
+        repo.write_task(&path, &content)?;
+        pruned.push(PrunedBlockerTask { id, title });
+    }
+
+    Ok(pruned)
 }
 
 fn prompt_actual() -> anyhow::Result<String> {

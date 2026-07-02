@@ -502,6 +502,67 @@ fn done_does_not_report_tasks_with_remaining_blockers() {
 }
 
 #[test]
+fn done_prunes_completed_local_blocker_from_open_tasks() {
+    let (_tmp, repo) = setup();
+    write_task_file(
+        &repo,
+        "0001-task.md",
+        &task_content("0001", "Task", "in-progress"),
+    );
+    write_task_file(
+        &repo,
+        "0003-other.md",
+        &task_content("0003", "Other", "todo"),
+    );
+    write_task_file(
+        &repo,
+        "0002-dependent.md",
+        "---\nid: \"0002\"\ntitle: \"Dependent\"\nstatus: todo\nblocked_by:\n  - \"0001\"\n  - \"0003\"\n  - \"@12\"\n  - \"owner/repo:0042\"\n  - \"waiting on design\"\n---\n",
+    );
+
+    cmds::cmd_done(&repo, "1", Some("2h"), None, None).unwrap();
+    let pruned = cmds::prune_done_blocker_refs(&repo, "1").unwrap();
+
+    assert_eq!(pruned.len(), 1);
+    assert_eq!(pruned[0].id, "0002");
+    let task = repo
+        .read_task(&repo.tasks_dir().join("0002-dependent.md"))
+        .unwrap();
+    let blockers = task
+        .frontmatter
+        .blocked_by
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        blockers,
+        vec!["0003", "@12", "owner/repo:0042", "waiting on design"]
+    );
+}
+
+#[test]
+fn done_prune_skips_closed_tasks() {
+    let (_tmp, repo) = setup();
+    write_task_file(
+        &repo,
+        "0001-task.md",
+        &task_content("0001", "Task", "in-progress"),
+    );
+    write_task_file(
+        &repo,
+        "0002-closed.md",
+        "---\nid: \"0002\"\ntitle: \"Closed\"\nstatus: done\nblocked_by: [\"0001\"]\n---\n",
+    );
+
+    cmds::cmd_done(&repo, "0001", Some("2h"), None, None).unwrap();
+    let pruned = cmds::prune_done_blocker_refs(&repo, "0001").unwrap();
+
+    assert!(pruned.is_empty());
+    let content = fs::read_to_string(repo.tasks_dir().join("0002-closed.md")).unwrap();
+    assert!(content.contains("blocked_by: [\"0001\"]"));
+}
+
+#[test]
 fn claim_sets_status_and_started_at() {
     let (_tmp, repo) = setup();
     write_task_file(&repo, "0001-task.md", &task_content("0001", "Task", "todo"));

@@ -1,10 +1,12 @@
 ---
 id: "0015"
 title: "feat: resolve direct task-path blockers"
-status: in-progress
+status: done
 priority: p0
 estimate: "2h"
+actual: "15m"
 started_at: "2026-07-02T03:57:09Z"
+completed_at: "2026-07-02T04:11:34Z"
 blocked_by: []
 gh_issue: []
 area:
@@ -15,6 +17,7 @@ tags:
   - "validation"
   - "tooling"
 ---
+
 
 
 Direct task-file paths such as `../plexi/.stint/tasks/0337-pane-new-tab-from-anchor.md` are currently treated as free-text blockers. Agents need a first-class way to block local work on an explicit task file in another repo, validate that the referenced task exists, and have normal `stint next` keep the local task blocked until that task is done.
@@ -40,6 +43,10 @@ Direct task-file paths such as `../plexi/.stint/tasks/0337-pane-new-tab-from-anc
 ## Why
 
 Multi-repo agent orchestration needs machine-visible blockers between explicit task files; direct paths are enough for the current workflow and avoid repo discovery or a special validation command.
+
+## Variance
+
+Actual was lower than the 2h estimate because most plumbing reused the existing blocker classifier and command-layer load path.
 
 ## References
 

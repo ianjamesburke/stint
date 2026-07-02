@@ -541,6 +541,31 @@ fn done_prunes_completed_local_blocker_from_open_tasks() {
 }
 
 #[test]
+fn done_prunes_shorthand_completed_local_blocker_from_open_tasks() {
+    let (_tmp, repo) = setup();
+    write_task_file(
+        &repo,
+        "0003-task.md",
+        &task_content("0003", "Task", "in-progress"),
+    );
+    write_task_file(
+        &repo,
+        "0004-dependent.md",
+        "---\nid: \"0004\"\ntitle: \"Dependent\"\nstatus: todo\nblocked_by:\n  - 3\n---\n",
+    );
+
+    cmds::cmd_done(&repo, "3", Some("2h"), None, None).unwrap();
+    let pruned = cmds::prune_done_blocker_refs(&repo, "3").unwrap();
+
+    assert_eq!(pruned.len(), 1);
+    assert_eq!(pruned[0].id, "0004");
+    let task = repo
+        .read_task(&repo.tasks_dir().join("0004-dependent.md"))
+        .unwrap();
+    assert!(task.frontmatter.blocked_by.is_empty());
+}
+
+#[test]
 fn done_prune_skips_closed_tasks() {
     let (_tmp, repo) = setup();
     write_task_file(

@@ -169,6 +169,7 @@ impl std::fmt::Display for TaskStatus {
 /// Syntax rules (in parse order):
 /// - YAML integer or all-digit string → `LocalTask` (zero-padded to 4 digits)
 /// - `@N`                             → `LocalIssue`
+/// - `../path/.stint/tasks/NNNN-*.md` → `DirectTaskPath`
 /// - `../path:NNNN` or `./path:NNNN` → `LocalDirTask`
 /// - `../path@N`   or `./path@N`     → `LocalDirIssue`
 /// - `owner/repo:NNNN`               → `ExternalTask`
@@ -180,6 +181,8 @@ pub enum BlockedByRef {
     LocalTask(String),
     /// Local GitHub issue number.
     LocalIssue(u64),
+    /// Explicit path to another stint task file.
+    DirectTaskPath { path: String, task_id: String },
     /// Stint task in a sibling directory.
     LocalDirTask { path: String, task_id: String },
     /// GitHub issue resolved via a sibling directory.
@@ -206,6 +209,13 @@ impl BlockedByRef {
             if let Ok(n) = rest.parse::<u64>() {
                 return BlockedByRef::LocalIssue(n);
             }
+        }
+
+        if let Some(task_id) = direct_task_path_id(s) {
+            return BlockedByRef::DirectTaskPath {
+                path: s.to_owned(),
+                task_id,
+            };
         }
 
         // Relative path (starts with ./ or ../)
@@ -277,6 +287,7 @@ impl std::fmt::Display for BlockedByRef {
         match self {
             BlockedByRef::LocalTask(id) => write!(f, "{}", id),
             BlockedByRef::LocalIssue(n) => write!(f, "@{}", n),
+            BlockedByRef::DirectTaskPath { path, .. } => write!(f, "{}", path),
             BlockedByRef::LocalDirTask { path, task_id } => write!(f, "{}:{}", path, task_id),
             BlockedByRef::LocalDirIssue { path, number } => write!(f, "{}@{}", path, number),
             BlockedByRef::ExternalTask { repo, task_id } => write!(f, "{}:{}", repo, task_id),
@@ -284,6 +295,34 @@ impl std::fmt::Display for BlockedByRef {
             BlockedByRef::Note(s) => write!(f, "{}", s),
         }
     }
+}
+
+fn direct_task_path_id(s: &str) -> Option<String> {
+    if !(s.starts_with("./") || s.starts_with("../") || s.starts_with('/')) {
+        return None;
+    }
+    let path = std::path::Path::new(s);
+    if path.extension().and_then(|ext| ext.to_str()) != Some("md") {
+        return None;
+    }
+    let filename = path.file_name()?.to_str()?;
+    let prefix = filename
+        .split_once('-')
+        .map_or(filename, |(prefix, _)| prefix);
+    if prefix.len() != 4 || !prefix.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    let mut saw_tasks = false;
+    let mut previous_was_stint = false;
+    for component in path.components() {
+        let name = component.as_os_str().to_string_lossy();
+        if previous_was_stint && name == "tasks" {
+            saw_tasks = true;
+            break;
+        }
+        previous_was_stint = name == ".stint";
+    }
+    saw_tasks.then(|| prefix.to_owned())
 }
 
 /// Parsed and coerced task frontmatter.
@@ -394,14 +433,8 @@ mod tests {
     fn cmp_priority_option_ordering() {
         use std::cmp::Ordering;
         // Some sorts before None
-        assert_eq!(
-            cmp_priority(&Some(Priority::P4), &None),
-            Ordering::Less
-        );
-        assert_eq!(
-            cmp_priority(&None, &Some(Priority::P0)),
-            Ordering::Greater
-        );
+        assert_eq!(cmp_priority(&Some(Priority::P4), &None), Ordering::Less);
+        assert_eq!(cmp_priority(&None, &Some(Priority::P0)), Ordering::Greater);
         // None == None
         assert_eq!(cmp_priority(&None, &None), Ordering::Equal);
         // P0 before P3
@@ -479,6 +512,17 @@ mod tests {
     }
 
     #[test]
+    fn blocked_by_ref_direct_task_path() {
+        assert_eq!(
+            BlockedByRef::from_str("../plexi/.stint/tasks/0337-pane-new-tab-from-anchor.md"),
+            BlockedByRef::DirectTaskPath {
+                path: "../plexi/.stint/tasks/0337-pane-new-tab-from-anchor.md".to_owned(),
+                task_id: "0337".to_owned()
+            }
+        );
+    }
+
+    #[test]
     fn blocked_by_ref_local_dir_issue() {
         assert_eq!(
             BlockedByRef::from_str("../plexi@99"),
@@ -528,6 +572,10 @@ mod tests {
         let cases = [
             BlockedByRef::LocalTask("0146".to_owned()),
             BlockedByRef::LocalIssue(7),
+            BlockedByRef::DirectTaskPath {
+                path: "../plexi/.stint/tasks/0337-pane-new-tab-from-anchor.md".to_owned(),
+                task_id: "0337".to_owned(),
+            },
             BlockedByRef::LocalDirTask {
                 path: "../plexi".to_owned(),
                 task_id: "0146".to_owned(),

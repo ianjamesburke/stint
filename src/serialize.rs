@@ -202,10 +202,7 @@ So users can authenticate.
         let content =
             "---\nid: \"0003\"\ntitle: \"Prioritized\"\nstatus: todo\npriority: p1\n---\n";
         let task = parse_task(content, "0003-prioritized.md").unwrap();
-        assert_eq!(
-            task.frontmatter.priority,
-            Some(crate::schema::Priority::P1)
-        );
+        assert_eq!(task.frontmatter.priority, Some(crate::schema::Priority::P1));
         let serialized = serialize_task(&task);
         let reparsed = parse_task(&serialized, "0003-prioritized.md").unwrap();
         assert_eq!(

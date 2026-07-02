@@ -151,7 +151,8 @@ Non-obvious constraints, prior attempts, things that will bite you.
 2. `status` is a valid enum value
 3. `estimate` and `actual` are valid duration strings if present
 4. `blocked_by` local task refs resolve to existing task files
-5. `blocked_by` external refs are structurally valid (format check only)
+5. `blocked_by` direct task-file paths resolve to existing, parseable task files whose `id` matches the filename prefix
+6. `blocked_by` external refs are structurally valid (format check only)
 6. `sprint` field references an existing sprint file if present
 7. Sprint index files reference only existing task IDs
 8. No circular `blocked_by` references
@@ -172,15 +173,21 @@ Non-obvious constraints, prior attempts, things that will bite you.
 |---|---|---|
 | bare integer or all-digit string | local stint task (zero-padded) | yes — must resolve to existing task |
 | `@N` | local GitHub issue | no |
+| `./path/.stint/tasks/NNNN-slug.md` or `../path/.stint/tasks/NNNN-slug.md` | direct local task file path | yes — must exist, parse, and match `NNNN` |
 | `owner/repo@N` | external GitHub issue | format only |
 | `owner/repo:NNNN` | task in external GitHub repo | format only |
 | `../path:NNNN` | task in sibling local directory | format only |
 | `../path@N` | issue in sibling local directory | format only |
 | quoted string | free-text note | no |
 
-`stint status` renders all active blocker types in a unified list; done
-local-task blockers are ignored. `stint check --cross-repo` walks sibling repos
-with `.stint/` directories to resolve local-dir and external task refs.
+`stint status` renders all active blocker types in a unified list. Done
+local-task blockers are ignored. Direct task-file blockers are ignored when the
+target task is `done` or `archived`; missing, malformed, and non-done target
+files remain active blockers.
+
+`stint check --cross-repo` remains unrelated/deferred. Normal `stint check`
+resolves explicit direct task-file paths, but it does not walk sibling repos or
+resolve `../path:NNNN`, `owner/repo:NNNN`, or GitHub issue refs.
 
 ---
 

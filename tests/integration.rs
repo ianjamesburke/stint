@@ -59,6 +59,12 @@ fn write_task_file(repo: &StintRepo, filename: &str, content: &str) {
     fs::write(repo.tasks_dir().join(filename), content).unwrap();
 }
 
+fn write_task_file_at(root: &std::path::Path, relative: &str, content: &str) {
+    let path = root.join(relative);
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(path, content).unwrap();
+}
+
 /// Write a raw sprint file into the repo's sprints dir.
 fn write_sprint_file(repo: &StintRepo, filename: &str, content: &str) {
     fs::write(repo.sprints_dir().join(filename), content).unwrap();
@@ -331,7 +337,8 @@ fn list_filters_blocked_tasks() {
     assert_eq!(blocked.len(), 1);
     assert_eq!(blocked[0].id, "0002");
 
-    let unblocked = cmds::cmd_list(&repo, None, false, Some(false), None, None, None, None).unwrap();
+    let unblocked =
+        cmds::cmd_list(&repo, None, false, Some(false), None, None, None, None).unwrap();
     assert_eq!(unblocked.len(), 1);
     assert_eq!(unblocked[0].id, "0001");
 }
@@ -389,7 +396,8 @@ fn list_filters_by_tag() {
     let t2 = "---\nid: \"0002\"\ntitle: \"B\"\nstatus: backlog\ntags:\n  - perf\n---\n";
     write_task_file(&repo, "0001-a.md", t1);
     write_task_file(&repo, "0002-b.md", t2);
-    let rows = cmds::cmd_list(&repo, None, false, None, None, None, Some("security"), None).unwrap();
+    let rows =
+        cmds::cmd_list(&repo, None, false, None, None, None, Some("security"), None).unwrap();
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].id, "0001");
 }
@@ -497,7 +505,15 @@ fn done_does_not_report_tasks_with_remaining_blockers() {
 fn claim_sets_status_and_started_at() {
     let (_tmp, repo) = setup();
     write_task_file(&repo, "0001-task.md", &task_content("0001", "Task", "todo"));
-    cmds::cmd_claim(&repo, Some("0001"), None, false, Some("2026-06-10T12:00:00Z"), false).unwrap();
+    cmds::cmd_claim(
+        &repo,
+        Some("0001"),
+        None,
+        false,
+        Some("2026-06-10T12:00:00Z"),
+        false,
+    )
+    .unwrap();
     let path = repo.resolve_task_path("0001").unwrap();
     let content = fs::read_to_string(&path).unwrap();
     assert!(content.contains("status: in-progress"));
@@ -512,7 +528,15 @@ fn claim_refuses_to_overwrite_started_at_without_restart() {
         "0001-task.md",
         "---\nid: \"0001\"\ntitle: \"Task\"\nstatus: in-progress\nstarted_at: \"2026-06-10T12:00:00Z\"\n---\n",
     );
-    let err = cmds::cmd_claim(&repo, Some("0001"), None, false, Some("2026-06-10T13:00:00Z"), false).unwrap_err();
+    let err = cmds::cmd_claim(
+        &repo,
+        Some("0001"),
+        None,
+        false,
+        Some("2026-06-10T13:00:00Z"),
+        false,
+    )
+    .unwrap_err();
     assert!(err.to_string().contains("--restart"));
 }
 
@@ -524,7 +548,15 @@ fn claim_restart_replaces_started_at_and_clears_completion() {
         "0001-task.md",
         "---\nid: \"0001\"\ntitle: \"Task\"\nstatus: done\nactual: \"1h\"\nstarted_at: \"2026-06-10T12:00:00Z\"\ncompleted_at: \"2026-06-10T13:00:00Z\"\n---\n",
     );
-    cmds::cmd_claim(&repo, Some("0001"), None, true, Some("2026-06-10T14:00:00Z"), false).unwrap();
+    cmds::cmd_claim(
+        &repo,
+        Some("0001"),
+        None,
+        true,
+        Some("2026-06-10T14:00:00Z"),
+        false,
+    )
+    .unwrap();
     let path = repo.resolve_task_path("0001").unwrap();
     let task = repo.read_task(&path).unwrap();
     assert_eq!(
@@ -691,6 +723,107 @@ fn next_returns_ready_tasks_without_area_conflicts() {
     let report = cmds::cmd_next(&repo, None, false, false).unwrap();
     assert_eq!(report.ready.len(), 1);
     assert_eq!(report.ready[0].id, "0003");
+}
+
+#[test]
+fn next_blocks_on_unfinished_direct_task_path() {
+    let (tmp, repo) = setup();
+    write_task_file_at(
+        tmp.path(),
+        "upstream/.stint/tasks/0030-target.md",
+        &task_content("0030", "Target", "todo"),
+    );
+    write_task_file(
+        &repo,
+        "0001-dependent.md",
+        "---\nid: \"0001\"\ntitle: \"Dependent\"\nstatus: todo\nblocked_by:\n  - \"./upstream/.stint/tasks/0030-target.md\"\n---\n",
+    );
+
+    let report = cmds::cmd_next(&repo, None, false, false).unwrap();
+    assert_eq!(report.blocked[0].id, "0001");
+}
+
+#[test]
+fn next_unblocks_done_direct_task_path() {
+    let (tmp, repo) = setup();
+    write_task_file_at(
+        tmp.path(),
+        "upstream/.stint/tasks/0030-target.md",
+        &task_content("0030", "Target", "done"),
+    );
+    write_task_file(
+        &repo,
+        "0001-dependent.md",
+        "---\nid: \"0001\"\ntitle: \"Dependent\"\nstatus: todo\nblocked_by:\n  - \"./upstream/.stint/tasks/0030-target.md\"\n---\n",
+    );
+
+    let report = cmds::cmd_next(&repo, None, false, false).unwrap();
+    assert_eq!(report.ready[0].id, "0001");
+}
+
+#[test]
+fn check_reports_missing_direct_task_path() {
+    let (_tmp, repo) = setup();
+    write_task_file(
+        &repo,
+        "0001-dependent.md",
+        "---\nid: \"0001\"\ntitle: \"Dependent\"\nstatus: todo\nblocked_by:\n  - \"./missing/.stint/tasks/0030-target.md\"\n---\n",
+    );
+
+    let errors = cmds::cmd_check(&repo, false).unwrap();
+    assert!(errors.iter().any(|e| e.contains("file not found")));
+}
+
+#[test]
+fn check_reports_malformed_direct_task_path_target() {
+    let (tmp, repo) = setup();
+    write_task_file_at(
+        tmp.path(),
+        "upstream/.stint/tasks/0030-target.md",
+        "---\nid: \"0030\"\ntitle: \"Target\"\nstatus: nope\n---\n",
+    );
+    write_task_file(
+        &repo,
+        "0001-dependent.md",
+        "---\nid: \"0001\"\ntitle: \"Dependent\"\nstatus: todo\nblocked_by:\n  - \"./upstream/.stint/tasks/0030-target.md\"\n---\n",
+    );
+
+    let errors = cmds::cmd_check(&repo, false).unwrap();
+    assert!(errors.iter().any(|e| e.contains("parse failed")));
+}
+
+#[test]
+fn check_reports_direct_task_path_id_mismatch() {
+    let (tmp, repo) = setup();
+    write_task_file_at(
+        tmp.path(),
+        "upstream/.stint/tasks/0030-target.md",
+        &task_content("0031", "Target", "done"),
+    );
+    write_task_file(
+        &repo,
+        "0001-dependent.md",
+        "---\nid: \"0001\"\ntitle: \"Dependent\"\nstatus: todo\nblocked_by:\n  - \"./upstream/.stint/tasks/0030-target.md\"\n---\n",
+    );
+
+    let errors = cmds::cmd_check(&repo, false).unwrap();
+    assert!(errors.iter().any(|e| e.contains("does not match")));
+}
+
+#[test]
+fn free_text_blocker_still_blocks_next() {
+    let (_tmp, repo) = setup();
+    write_task_file(
+        &repo,
+        "0001-dependent.md",
+        "---\nid: \"0001\"\ntitle: \"Dependent\"\nstatus: todo\nblocked_by:\n  - \"waiting for review\"\n---\n",
+    );
+
+    let report = cmds::cmd_next(&repo, None, false, false).unwrap();
+    assert_eq!(
+        report.blocked[0].blockers[0].to_string(),
+        "waiting for review"
+    );
 }
 
 #[test]

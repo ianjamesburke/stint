@@ -442,10 +442,7 @@ So users can authenticate.
     fn parse_valid_priority() {
         let content = "---\nid: \"0001\"\ntitle: \"T\"\nstatus: backlog\npriority: p1\n---\n";
         let task = parse_task(content, "0001-t.md").unwrap();
-        assert_eq!(
-            task.frontmatter.priority,
-            Some(crate::schema::Priority::P1)
-        );
+        assert_eq!(task.frontmatter.priority, Some(crate::schema::Priority::P1));
     }
 
     #[test]

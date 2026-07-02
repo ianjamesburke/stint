@@ -135,7 +135,6 @@ pub enum CheckError {
         /// The unresolved local-task blocker IDs.
         blockers: Vec<String>,
     },
-
 }
 
 // ---------------------------------------------------------------------------
@@ -305,6 +304,14 @@ fn validate_blocker_ref(
         }
         BlockedByRef::LocalDirIssue { path, .. } => {
             if path.is_empty() {
+                errors.push(CheckError::InvalidBlockedByRef {
+                    task_id: owner_id.to_owned(),
+                    entry: r.to_string(),
+                });
+            }
+        }
+        BlockedByRef::DirectTaskPath { path, task_id } => {
+            if path.is_empty() || task_id.is_empty() {
                 errors.push(CheckError::InvalidBlockedByRef {
                     task_id: owner_id.to_owned(),
                     entry: r.to_string(),
@@ -691,5 +698,4 @@ mod tests {
             .iter()
             .any(|e| matches!(e, CheckError::UnresolvedBlockedBy { .. })));
     }
-
 }

@@ -28,7 +28,12 @@ pub fn filter_tasks<'a>(
         sprints
             .iter()
             .find(|s| s.header.id == sp)
-            .map(|s| s.task_ids.iter().map(|e| numeric_prefix(e).to_owned()).collect())
+            .map(|s| {
+                s.task_ids
+                    .iter()
+                    .map(|e| numeric_prefix(e).to_owned())
+                    .collect()
+            })
             .unwrap_or_default()
     });
 
@@ -125,10 +130,8 @@ mod tests {
 
     #[test]
     fn filter_by_priority() {
-        let content_p0 =
-            "---\nid: \"0001\"\ntitle: \"A\"\nstatus: backlog\npriority: p0\n---\n";
-        let content_p3 =
-            "---\nid: \"0002\"\ntitle: \"B\"\nstatus: backlog\npriority: p3\n---\n";
+        let content_p0 = "---\nid: \"0001\"\ntitle: \"A\"\nstatus: backlog\npriority: p0\n---\n";
+        let content_p3 = "---\nid: \"0002\"\ntitle: \"B\"\nstatus: backlog\npriority: p3\n---\n";
         let content_none = "---\nid: \"0003\"\ntitle: \"C\"\nstatus: backlog\n---\n";
         let tasks = vec![
             parse_task(content_p0, "0001.md").unwrap(),

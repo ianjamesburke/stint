@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::schema::{cmp_priority, BlockedByRef, Priority, Sprint, Task, TaskStatus};
 use crate::sprint::numeric_prefix;
-use crate::state::{active_blockers, done_ids};
+use crate::state::{active_blockers_with_resolution, done_ids, BlockerResolution};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NextOptions<'a> {
@@ -38,6 +38,15 @@ pub struct NextReport {
 }
 
 pub fn compute_next(tasks: &[Task], sprints: &[Sprint], options: NextOptions<'_>) -> NextReport {
+    compute_next_with_resolution(tasks, sprints, options, &BlockerResolution::empty())
+}
+
+pub fn compute_next_with_resolution(
+    tasks: &[Task],
+    sprints: &[Sprint],
+    options: NextOptions<'_>,
+    resolution: &BlockerResolution,
+) -> NextReport {
     let done = done_ids(tasks);
     let active_area_tasks = active_area_tasks(tasks);
     let sprint_task_ids = sprint_task_ids(sprints, options.sprint);
@@ -64,7 +73,7 @@ pub fn compute_next(tasks: &[Task], sprints: &[Sprint], options: NextOptions<'_>
             continue;
         }
 
-        let blockers = active_blockers(task, &done);
+        let blockers = active_blockers_with_resolution(task, &done, resolution);
         let mut area_conflicts = area_conflicts(task, &active_area_tasks);
         area_conflicts.sort();
         area_conflicts.dedup();

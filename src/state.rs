@@ -55,16 +55,48 @@ pub fn done_ids(tasks: &[Task]) -> HashSet<&str> {
         .collect()
 }
 
+#[derive(Debug, Default, Clone)]
+pub struct BlockerResolution {
+    inactive_direct_task_paths: HashSet<String>,
+}
+
+impl BlockerResolution {
+    pub fn empty() -> Self {
+        Self::default()
+    }
+
+    pub fn from_inactive_direct_task_paths(paths: HashSet<String>) -> Self {
+        Self {
+            inactive_direct_task_paths: paths,
+        }
+    }
+
+    pub fn is_direct_task_path_inactive(&self, path: &str) -> bool {
+        self.inactive_direct_task_paths.contains(path)
+    }
+}
+
 /// The active (unresolved) blockers for a task: its `blocked_by` list with any
 /// local task that is already done filtered out. Non-task blockers (issues,
 /// external refs, free-text notes) are always considered unresolved because
 /// stint cannot verify them.
 pub fn active_blockers(task: &Task, done_ids: &HashSet<&str>) -> Vec<BlockedByRef> {
+    active_blockers_with_resolution(task, done_ids, &BlockerResolution::empty())
+}
+
+pub fn active_blockers_with_resolution(
+    task: &Task,
+    done_ids: &HashSet<&str>,
+    resolution: &BlockerResolution,
+) -> Vec<BlockedByRef> {
     task.frontmatter
         .blocked_by
         .iter()
         .filter(|blocker| match blocker {
             BlockedByRef::LocalTask(id) => !done_ids.contains(id.as_str()),
+            BlockedByRef::DirectTaskPath { path, .. } => {
+                !resolution.is_direct_task_path_inactive(path)
+            }
             _ => true,
         })
         .cloned()
@@ -76,17 +108,33 @@ pub fn is_blocked(task: &Task, done_ids: &HashSet<&str>) -> bool {
     !active_blockers(task, done_ids).is_empty()
 }
 
+pub fn is_blocked_with_resolution(
+    task: &Task,
+    done_ids: &HashSet<&str>,
+    resolution: &BlockerResolution,
+) -> bool {
+    !active_blockers_with_resolution(task, done_ids, resolution).is_empty()
+}
+
 /// Classify a task into its single canonical [`TaskState`].
 ///
 /// `done_ids` must be the set produced by [`done_ids`] over the full task list.
 pub fn classify(task: &Task, done_ids: &HashSet<&str>) -> TaskState {
+    classify_with_resolution(task, done_ids, &BlockerResolution::empty())
+}
+
+pub fn classify_with_resolution(
+    task: &Task,
+    done_ids: &HashSet<&str>,
+    resolution: &BlockerResolution,
+) -> TaskState {
     match task.frontmatter.status {
         TaskStatus::Done => TaskState::Done,
         TaskStatus::Archived => TaskState::Archived,
         TaskStatus::Backlog => TaskState::Iced,
         TaskStatus::InProgress => TaskState::Active,
         TaskStatus::Todo => {
-            if is_blocked(task, done_ids) {
+            if is_blocked_with_resolution(task, done_ids, resolution) {
                 TaskState::Blocked
             } else {
                 TaskState::Ready
@@ -128,6 +176,28 @@ mod tests {
     fn note_blocker_keeps_task_blocked() {
         let t = task("0003", "todo", "blocked_by: [\"waiting on design\"]");
         assert_eq!(classify(&t, &HashSet::new()), TaskState::Blocked);
+    }
+
+    #[test]
+    fn direct_task_path_blocker_keeps_task_blocked_by_default() {
+        let t = task(
+            "0003",
+            "todo",
+            "blocked_by: [\"../plexi/.stint/tasks/0337-pane-new-tab.md\"]",
+        );
+        assert_eq!(classify(&t, &HashSet::new()), TaskState::Blocked);
+    }
+
+    #[test]
+    fn resolved_done_direct_task_path_makes_task_ready() {
+        let path = "../plexi/.stint/tasks/0337-pane-new-tab.md";
+        let t = task("0003", "todo", &format!("blocked_by: [\"{path}\"]"));
+        let resolution =
+            BlockerResolution::from_inactive_direct_task_paths(HashSet::from([path.to_owned()]));
+        assert_eq!(
+            classify_with_resolution(&t, &HashSet::new(), &resolution),
+            TaskState::Ready
+        );
     }
 
     #[test]

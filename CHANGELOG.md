@@ -1,6 +1,11 @@
 # Changelog
 
 Newest releases appear first.
+## [0.3.8] - 2026-07-02
+
+### Changes
+- feat: resolve direct task-path blockers (stint 0015)
+
 ## [0.3.6] - 2026-06-24
 
 ### Changes

@@ -3,7 +3,7 @@ use std::collections::HashSet;
 
 use crate::schema::{BlockedByRef, Sprint, Task, TaskStatus};
 use crate::sprint::numeric_prefix;
-use crate::state::{active_blockers, done_ids};
+use crate::state::{active_blockers_with_resolution, done_ids, BlockerResolution};
 
 /// A task that has at least one blocker set.
 #[derive(Debug, Clone)]
@@ -55,6 +55,15 @@ pub fn compute_status(
     sprints: &[Sprint],
     current_sprint: Option<&str>,
 ) -> StatusReport {
+    compute_status_with_resolution(tasks, sprints, current_sprint, &BlockerResolution::empty())
+}
+
+pub fn compute_status_with_resolution(
+    tasks: &[Task],
+    sprints: &[Sprint],
+    current_sprint: Option<&str>,
+    resolution: &BlockerResolution,
+) -> StatusReport {
     let open_count = tasks
         .iter()
         .filter(|t| {
@@ -82,7 +91,7 @@ pub fn compute_status(
             )
         })
         .filter_map(|t| {
-            let blocked_by = active_blockers(t, &done);
+            let blocked_by = active_blockers_with_resolution(t, &done, resolution);
             if blocked_by.is_empty() {
                 return None;
             }
@@ -104,11 +113,8 @@ pub fn compute_status(
     let sprint_progress = sprint_id.and_then(|sid| {
         let sprint = sprints.iter().find(|s| s.header.id == sid)?;
 
-        let sprint_task_ids: HashSet<&str> = sprint
-            .task_ids
-            .iter()
-            .map(|e| numeric_prefix(e))
-            .collect();
+        let sprint_task_ids: HashSet<&str> =
+            sprint.task_ids.iter().map(|e| numeric_prefix(e)).collect();
 
         let sprint_tasks: Vec<&Task> = tasks
             .iter()
@@ -166,7 +172,12 @@ mod tests {
     use crate::parse::parse_task;
     use crate::sprint::parse_sprint;
 
-    fn make_task(id: &str, estimate: Option<&str>, actual: Option<&str>, status: TaskStatus) -> Task {
+    fn make_task(
+        id: &str,
+        estimate: Option<&str>,
+        actual: Option<&str>,
+        status: TaskStatus,
+    ) -> Task {
         let mut fields = String::new();
         if let Some(e) = estimate {
             fields.push_str(&format!("estimate: \"{e}\"\n"));

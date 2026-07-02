@@ -4,13 +4,19 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context};
 use stint::parse::{parse_task, ParseError};
-use stint::schema::{Sprint, Task};
+use stint::schema::{BlockedByRef, Sprint, Task, TaskStatus};
 use stint::sprint::parse_sprint;
+use stint::{sprint::numeric_prefix, state::BlockerResolution};
 
 /// A handle to an initialised `.stint/` workspace.
 pub struct StintRepo {
     /// The `.stint/` directory (e.g. `/my/project/.stint`).
     pub stint_dir: PathBuf,
+}
+
+pub struct DirectTaskPathResolution {
+    pub blocker_resolution: BlockerResolution,
+    pub errors: Vec<String>,
 }
 
 impl StintRepo {
@@ -141,6 +147,46 @@ impl StintRepo {
         Ok(sprints)
     }
 
+    pub fn resolve_direct_task_path_blockers(
+        &self,
+        tasks: &[Task],
+    ) -> anyhow::Result<DirectTaskPathResolution> {
+        let repo_root = self
+            .stint_dir
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("path has no parent: {}", self.stint_dir.display()))?;
+        let mut inactive_paths = std::collections::HashSet::new();
+        let mut errors = Vec::new();
+
+        for owner in tasks {
+            for blocker in &owner.frontmatter.blocked_by {
+                let BlockedByRef::DirectTaskPath { path, task_id } = blocker else {
+                    continue;
+                };
+                let target_path = resolve_from_repo_root(repo_root, path);
+                match read_direct_task_path(&target_path, task_id) {
+                    Ok(target) => {
+                        if matches!(
+                            target.frontmatter.status,
+                            TaskStatus::Done | TaskStatus::Archived
+                        ) {
+                            inactive_paths.insert(path.clone());
+                        }
+                    }
+                    Err(message) => errors.push(format!(
+                        "task {}: blocked_by direct task path {}: {}",
+                        owner.frontmatter.id, path, message
+                    )),
+                }
+            }
+        }
+
+        Ok(DirectTaskPathResolution {
+            blocker_resolution: BlockerResolution::from_inactive_direct_task_paths(inactive_paths),
+            errors,
+        })
+    }
+
     /// Resolve a user-supplied task ID fragment to a full path on disk.
     ///
     /// The numeric prefix is extracted, padded to 4 digits, then matched
@@ -209,6 +255,40 @@ impl StintRepo {
     pub fn write_sprint(&self, path: &Path, content: &str) -> anyhow::Result<()> {
         fs::write(path, content).with_context(|| format!("write {}", path.display()))
     }
+}
+
+fn resolve_from_repo_root(repo_root: &Path, path: &str) -> PathBuf {
+    let path = PathBuf::from(path);
+    if path.is_absolute() {
+        path
+    } else {
+        repo_root.join(path)
+    }
+}
+
+fn read_direct_task_path(path: &Path, expected_id: &str) -> Result<Task, String> {
+    if !path.exists() {
+        return Err("file not found".to_owned());
+    }
+    let filename = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| "path has no valid UTF-8 filename".to_owned())?;
+    let filename_prefix = numeric_prefix(filename.trim_end_matches(".md"));
+    if filename_prefix != expected_id {
+        return Err(format!(
+            "filename prefix {filename_prefix:?} does not match blocker id {expected_id:?}"
+        ));
+    }
+    let content = fs::read_to_string(path).map_err(|error| format!("read failed: {error}"))?;
+    let task = parse_task(&content, filename).map_err(|error| format!("parse failed: {error}"))?;
+    if task.frontmatter.id != expected_id {
+        return Err(format!(
+            "id field {:?} does not match filename prefix {:?}",
+            task.frontmatter.id, expected_id
+        ));
+    }
+    Ok(task)
 }
 
 /// A task file that could not be parsed.

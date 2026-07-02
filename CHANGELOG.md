@@ -1,6 +1,11 @@
 # Changelog
 
 Newest releases appear first.
+## [0.3.9] - 2026-07-02
+
+### Changes
+- Prune completed blocker refs on done
+- feat: resolve direct task-path blockers (#10)
 ## [0.3.8] - 2026-07-02
 
 ### Changes

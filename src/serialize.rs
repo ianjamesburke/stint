@@ -15,6 +15,9 @@ pub fn serialize_task(task: &Task) -> String {
     if let Some(p) = &fm.priority {
         out.push_str(&format!("priority: {}\n", p));
     }
+    if let Some(s) = &fm.size {
+        out.push_str(&format!("size: {}\n", s));
+    }
 
     if let Some(e) = &fm.estimate {
         out.push_str(&format!("estimate: \"{}\"\n", e));
@@ -220,6 +223,27 @@ So users can authenticate.
         assert!(!serialized.contains("priority:"));
         let reparsed = parse_task(&serialized, "0004-noprio.md").unwrap();
         assert_eq!(reparsed.frontmatter.priority, None);
+    }
+
+    #[test]
+    fn round_trip_task_with_size() {
+        let content = "---\nid: \"0003\"\ntitle: \"Sized\"\nstatus: todo\nsize: m\n---\n";
+        let task = parse_task(content, "0003-sized.md").unwrap();
+        assert_eq!(task.frontmatter.size, Some(crate::schema::Size::M));
+        let serialized = serialize_task(&task);
+        let reparsed = parse_task(&serialized, "0003-sized.md").unwrap();
+        assert_eq!(reparsed.frontmatter.size, Some(crate::schema::Size::M));
+    }
+
+    #[test]
+    fn round_trip_task_without_size() {
+        let content = "---\nid: \"0004\"\ntitle: \"NoSize\"\nstatus: backlog\n---\n";
+        let task = parse_task(content, "0004-nosize.md").unwrap();
+        assert_eq!(task.frontmatter.size, None);
+        let serialized = serialize_task(&task);
+        assert!(!serialized.contains("size:"));
+        let reparsed = parse_task(&serialized, "0004-nosize.md").unwrap();
+        assert_eq!(reparsed.frontmatter.size, None);
     }
 
     #[test]

@@ -224,11 +224,24 @@ fn yaml_escape(value: &str) -> String {
 // ---------------------------------------------------------------------------
 
 /// Create a new task file, open `$EDITOR`, print the created path.
-pub fn cmd_add(repo: &StintRepo, title: &str, priority: Option<&str>) -> anyhow::Result<PathBuf> {
+pub fn cmd_add(
+    repo: &StintRepo,
+    title: &str,
+    priority: Option<&str>,
+    size: Option<&str>,
+) -> anyhow::Result<PathBuf> {
     // Validate priority early.
     let parsed_priority = priority
         .map(|p| {
             p.parse::<stint::schema::Priority>()
+                .map_err(|e| anyhow::anyhow!("{}", e))
+        })
+        .transpose()?;
+
+    // Validate size early.
+    let parsed_size = size
+        .map(|s| {
+            s.parse::<stint::schema::Size>()
                 .map_err(|e| anyhow::anyhow!("{}", e))
         })
         .transpose()?;
@@ -253,6 +266,21 @@ pub fn cmd_add(repo: &StintRepo, title: &str, priority: Option<&str>) -> anyhow:
             &format!("status: backlog\npriority: {}\n", prio),
             1,
         );
+    }
+
+    // Insert size line after the priority line (or status line) if provided.
+    if let Some(sz) = parsed_size {
+        let (anchor, replacement) = match parsed_priority {
+            Some(prio) => (
+                format!("priority: {}\n", prio),
+                format!("priority: {}\nsize: {}\n", prio, sz),
+            ),
+            None => (
+                "status: backlog\n".to_owned(),
+                format!("status: backlog\nsize: {}\n", sz),
+            ),
+        };
+        content = content.replacen(&anchor, &replacement, 1);
     }
 
     repo.write_task(&path, &content)?;
@@ -313,6 +341,7 @@ pub fn cmd_list(
         estimate: t.frontmatter.estimate.map(|d| d.to_string()),
         sprint: task_sprint_map.get(t.frontmatter.id.as_str()).cloned(),
         priority: t.frontmatter.priority.map(|p| p.to_string()),
+        size: t.frontmatter.size.map(|s| s.to_string()),
     })
     .collect();
     Ok(rows)
@@ -375,16 +404,17 @@ pub fn print_list(rows: &[TaskRow]) {
     }
     let on = color_on();
     let header = format!(
-        "{:<6} {:<9} {:<4} {:<8} {:<6} {}",
-        "ID", "STATE", "PRI", "ESTIMATE", "SPRINT", "TITLE"
+        "{:<6} {:<9} {:<4} {:<4} {:<8} {:<6} {}",
+        "ID", "STATE", "PRI", "SIZE", "ESTIMATE", "SPRINT", "TITLE"
     );
     println!("{}", dim(&header, on));
     for row in rows {
         println!(
-            "{} {} {:<4} {:<8} {:<6} {}",
+            "{} {} {:<4} {:<4} {:<8} {:<6} {}",
             paint_id(&format!("{:<6}", row.id), on),
             paint_state(&row.state, 9, on),
             row.priority.as_deref().unwrap_or("-"),
+            row.size.as_deref().unwrap_or("-"),
             row.estimate.as_deref().unwrap_or("-"),
             row.sprint.as_deref().unwrap_or("-"),
             truncate(&row.title, 38),
@@ -411,6 +441,7 @@ pub struct TaskRow {
     pub estimate: Option<String>,
     pub sprint: Option<String>,
     pub priority: Option<String>,
+    pub size: Option<String>,
 }
 
 /// Print a full task (frontmatter table + body) to stdout.
@@ -433,6 +464,9 @@ pub fn cmd_show(repo: &StintRepo, id_input: &str) -> anyhow::Result<()> {
     println!("Status:      {}", fm.status);
     if let Some(p) = &fm.priority {
         println!("Priority:    {}", p);
+    }
+    if let Some(s) = &fm.size {
+        println!("Size:        {}", s);
     }
     if let Some(e) = &fm.estimate {
         println!("Estimate:    {}", e);
@@ -1061,6 +1095,7 @@ pub fn print_next_json(repo: &StintRepo, report: &NextReport) {
             "title": t.title,
             "status": t.status.as_str(),
             "priority": t.priority.as_ref().map(|p| p.as_str()),
+            "size": t.size.as_ref().map(|s| s.as_str()),
             "sprint": t.sprint,
             "area": t.area,
             "gh_issue": t.gh_issue,
@@ -1084,15 +1119,20 @@ fn blocker_to_json(blocker: &BlockedByRef) -> serde_json::Value {
 }
 
 fn print_next_task(task: &NextTask, on: bool) {
-    let prio_label = task
-        .priority
-        .as_ref()
-        .map(|p| format!(" [{}]", p))
-        .unwrap_or_default();
+    let mut meta_label = String::new();
+    if let Some(p) = task.priority.as_ref() {
+        meta_label.push_str(&format!("[{}]", p));
+    }
+    if let Some(s) = task.size.as_ref() {
+        meta_label.push_str(&format!("[{}]", s));
+    }
+    if !meta_label.is_empty() {
+        meta_label.insert(0, ' ');
+    }
     println!(
         "  {}{}  {}",
         paint_id(&task.id, on),
-        dim(&prio_label, on),
+        dim(&meta_label, on),
         task.title
     );
     if !task.area.is_empty() {

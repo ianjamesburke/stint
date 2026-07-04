@@ -127,6 +127,7 @@ pub fn minimal_frontmatter(id: &str, title: &str) -> TaskFrontmatter {
         title: title.to_owned(),
         status: TaskStatus::Backlog,
         priority: None,
+        size: None,
         estimate: None,
         actual: None,
         created_at: None,

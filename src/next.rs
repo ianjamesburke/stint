@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use crate::schema::{cmp_priority, BlockedByRef, Priority, Sprint, Task, TaskStatus};
+use crate::schema::{cmp_priority, BlockedByRef, Priority, Size, Sprint, Task, TaskStatus};
 use crate::sprint::numeric_prefix;
 use crate::state::{active_blockers_with_resolution, done_ids, BlockerResolution};
 
@@ -19,6 +19,7 @@ pub struct NextTask {
     pub title: String,
     pub status: TaskStatus,
     pub priority: Option<Priority>,
+    pub size: Option<Size>,
     pub sprint: Option<String>,
     pub area: Vec<String>,
     pub gh_issue: Vec<String>,
@@ -92,6 +93,7 @@ pub fn compute_next_with_resolution(
             title: task.frontmatter.title.clone(),
             status: task.frontmatter.status.clone(),
             priority: task.frontmatter.priority,
+            size: task.frontmatter.size,
             sprint: task_sprint
                 .get(task.frontmatter.id.as_str())
                 .map(|s| s.to_string()),

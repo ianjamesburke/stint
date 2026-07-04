@@ -48,6 +48,9 @@ enum Commands {
         /// Priority level (p0|p1|p2|p3|p4).
         #[arg(long)]
         priority: Option<String>,
+        /// Size estimate (s|m|l).
+        #[arg(long)]
+        size: Option<String>,
     },
 
     /// List tasks, optionally filtered.
@@ -295,9 +298,13 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             }
         }
 
-        Some(Commands::Add { title, priority }) => {
+        Some(Commands::Add {
+            title,
+            priority,
+            size,
+        }) => {
             let repo = find_repo()?;
-            let path = cmds::cmd_add(&repo, &title, priority.as_deref())?;
+            let path = cmds::cmd_add(&repo, &title, priority.as_deref(), size.as_deref())?;
             println!("{}", path.display());
         }
 

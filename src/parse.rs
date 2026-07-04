@@ -3,7 +3,7 @@ use serde::Deserialize;
 use thiserror::Error;
 
 use crate::duration::Duration;
-use crate::schema::{BlockedByRef, Priority, Task, TaskFrontmatter, TaskStatus};
+use crate::schema::{BlockedByRef, Priority, Size, Task, TaskFrontmatter, TaskStatus};
 
 /// Errors that can occur while parsing a task file.
 #[derive(Debug, Error, PartialEq)]
@@ -64,6 +64,7 @@ struct RawFrontmatter {
     title: Option<String>,
     status: Option<String>,
     priority: Option<String>,
+    size: Option<String>,
     estimate: Option<String>,
     actual: Option<String>,
     created_at: Option<String>,
@@ -131,6 +132,17 @@ pub fn parse_task(content: &str, filename: &str) -> Result<Task, ParseError> {
         })
         .transpose()?;
 
+    let size = raw
+        .size
+        .filter(|s| !s.is_empty())
+        .map(|s| {
+            s.parse::<Size>().map_err(|e| ParseError::InvalidField {
+                field: "size",
+                reason: e.to_string(),
+            })
+        })
+        .transpose()?;
+
     let estimate = raw
         .estimate
         .filter(|s| !s.is_empty())
@@ -173,6 +185,7 @@ pub fn parse_task(content: &str, filename: &str) -> Result<Task, ParseError> {
         title,
         status,
         priority,
+        size,
         estimate,
         actual,
         created_at: raw.created_at.filter(|s| !s.is_empty()),
@@ -462,6 +475,29 @@ So users can authenticate.
         let content = "---\nid: \"0001\"\ntitle: \"T\"\nstatus: backlog\n---\n";
         let task = parse_task(content, "0001-t.md").unwrap();
         assert_eq!(task.frontmatter.priority, None);
+    }
+
+    #[test]
+    fn parse_valid_size() {
+        let content = "---\nid: \"0001\"\ntitle: \"T\"\nstatus: backlog\nsize: m\n---\n";
+        let task = parse_task(content, "0001-t.md").unwrap();
+        assert_eq!(task.frontmatter.size, Some(crate::schema::Size::M));
+    }
+
+    #[test]
+    fn parse_invalid_size() {
+        let content = "---\nid: \"0001\"\ntitle: \"T\"\nstatus: backlog\nsize: huge\n---\n";
+        assert!(matches!(
+            parse_task(content, "0001-t.md"),
+            Err(ParseError::InvalidField { field: "size", .. })
+        ));
+    }
+
+    #[test]
+    fn parse_missing_size() {
+        let content = "---\nid: \"0001\"\ntitle: \"T\"\nstatus: backlog\n---\n";
+        let task = parse_task(content, "0001-t.md").unwrap();
+        assert_eq!(task.frontmatter.size, None);
     }
 
     #[test]

@@ -99,6 +99,56 @@ pub fn cmp_priority(a: &Option<Priority>, b: &Option<Priority>) -> Ordering {
     }
 }
 
+/// Size estimate for a task (S = small, M = medium, L = large).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Size {
+    S,
+    M,
+    L,
+}
+
+/// Error returned when a `Size` string is not recognised.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SizeParseError(pub String);
+
+impl std::fmt::Display for SizeParseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "unknown size {:?}; expected one of s, m, l", self.0)
+    }
+}
+
+impl std::error::Error for SizeParseError {}
+
+impl FromStr for Size {
+    type Err = SizeParseError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_ascii_lowercase().as_str() {
+            "s" => Ok(Size::S),
+            "m" => Ok(Size::M),
+            "l" => Ok(Size::L),
+            _ => Err(SizeParseError(s.to_owned())),
+        }
+    }
+}
+
+impl Size {
+    /// Return the canonical string representation.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Size::S => "s",
+            Size::M => "m",
+            Size::L => "l",
+        }
+    }
+}
+
+impl std::fmt::Display for Size {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// Status lifecycle for a task.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum TaskStatus {
@@ -336,6 +386,8 @@ pub struct TaskFrontmatter {
     pub status: TaskStatus,
     /// Priority level (P0 highest, P4 lowest). None = unprioritized.
     pub priority: Option<Priority>,
+    /// Size estimate (S/M/L). None = unsized.
+    pub size: Option<Size>,
     /// Time budgeted for this task.
     pub estimate: Option<Duration>,
     /// Time logged so far.
@@ -419,6 +471,29 @@ mod tests {
         assert!("P0".parse::<Priority>().is_ok());
         assert!("high".parse::<Priority>().is_err());
         assert!("p5".parse::<Priority>().is_err());
+    }
+
+    #[test]
+    fn size_round_trip() {
+        for s in &["s", "m", "l"] {
+            let size: Size = s.parse().unwrap();
+            assert_eq!(size.as_str(), *s);
+            assert_eq!(size.to_string(), *s);
+        }
+    }
+
+    #[test]
+    fn size_accepts_uppercase() {
+        assert_eq!("S".parse::<Size>().unwrap(), Size::S);
+        assert_eq!("M".parse::<Size>().unwrap(), Size::M);
+        assert_eq!("L".parse::<Size>().unwrap(), Size::L);
+    }
+
+    #[test]
+    fn size_invalid() {
+        assert!("xl".parse::<Size>().is_err());
+        assert!("medium".parse::<Size>().is_err());
+        assert!("".parse::<Size>().is_err());
     }
 
     #[test]

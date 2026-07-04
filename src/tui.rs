@@ -782,6 +782,10 @@ impl App {
                 "priority: {}",
                 fm.priority.as_ref().map(|p| p.as_str()).unwrap_or("-")
             )),
+            Line::from(format!(
+                "size: {}",
+                fm.size.as_ref().map(|s| s.as_str()).unwrap_or("-")
+            )),
             Line::from(format!("state: {}", classify(task, &done).as_str())),
             Line::from(format!(
                 "estimate: {}",

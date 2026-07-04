@@ -193,7 +193,7 @@ fn resolve_id_with_slug() {
 #[test]
 fn add_creates_file() {
     let (_tmp, repo) = setup();
-    let path = cmds::cmd_add(&repo, "My first task", None).unwrap();
+    let path = cmds::cmd_add(&repo, "My first task", None, None).unwrap();
     assert!(path.exists());
     let content = fs::read_to_string(&path).unwrap();
     assert!(content.contains("id: \"0001\""));
@@ -209,7 +209,7 @@ fn add_increments_id() {
         "0001-existing.md",
         &task_content("0001", "Existing", "backlog"),
     );
-    let path = cmds::cmd_add(&repo, "Second task", None).unwrap();
+    let path = cmds::cmd_add(&repo, "Second task", None, None).unwrap();
     let content = fs::read_to_string(&path).unwrap();
     assert!(content.contains("id: \"0002\""));
 }
@@ -217,9 +217,34 @@ fn add_increments_id() {
 #[test]
 fn add_filename_includes_slug() {
     let (_tmp, repo) = setup();
-    let path = cmds::cmd_add(&repo, "Auth Middleware", None).unwrap();
+    let path = cmds::cmd_add(&repo, "Auth Middleware", None, None).unwrap();
     let filename = path.file_name().unwrap().to_string_lossy();
     assert!(filename.starts_with("0001-auth-middleware"));
+}
+
+#[test]
+fn add_writes_size_field() {
+    let (_tmp, repo) = setup();
+    let path = cmds::cmd_add(&repo, "Sized task", Some("p2"), Some("m")).unwrap();
+    let content = fs::read_to_string(&path).unwrap();
+    assert!(content.contains("priority: p2"));
+    assert!(content.contains("size: m"));
+}
+
+#[test]
+fn add_rejects_invalid_size() {
+    let (_tmp, repo) = setup();
+    let err = cmds::cmd_add(&repo, "Bad size", None, Some("huge")).unwrap_err();
+    assert!(err.to_string().contains("unknown size"));
+}
+
+#[test]
+fn list_row_includes_size() {
+    let (_tmp, repo) = setup();
+    cmds::cmd_add(&repo, "Sized task", None, Some("l")).unwrap();
+    let rows = cmds::cmd_list(&repo, None, false, None, None, None, None, None).unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].size.as_deref(), Some("l"));
 }
 
 // ---------------------------------------------------------------------------

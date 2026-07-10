@@ -1,6 +1,11 @@
 # Changelog
 
 Newest releases appear first.
+## [0.3.10] - 2026-07-10
+
+### Changes
+- feat: add size field (S/M/L) to task schema
+- Test shorthand blocker pruning
 ## [0.3.9] - 2026-07-02
 
 ### Changes

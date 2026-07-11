@@ -1,6 +1,10 @@
 # Changelog
 
 Newest releases appear first.
+## [0.3.11] - 2026-07-11
+
+### Changes
+- feat: add --area/--tags/--blocked-by/--gh-issue/--body-file/--no-edit to add, and headless `stint set`
 ## [0.3.10] - 2026-07-10
 
 ### Changes

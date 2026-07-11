@@ -192,6 +192,20 @@ So users can authenticate.
     }
 
     #[test]
+    fn serialize_is_idempotent_under_repeated_round_trips() {
+        // Regression test: `split_frontmatter` must not leave the blank line that
+        // separates frontmatter from body inside `body`, or each parse/serialize
+        // cycle (as done by `claim`, `done`, `set`, ...) grows an extra blank line.
+        let task = parse_task(FULL_TASK, "0001-auth-middleware.md").unwrap();
+        let once = serialize_task(&task);
+
+        let reparsed = parse_task(&once, "0001-auth-middleware.md").unwrap();
+        let twice = serialize_task(&reparsed);
+
+        assert_eq!(once, twice);
+    }
+
+    #[test]
     fn round_trip_all_blocker_variants() {
         let content = "---\nid: \"0001\"\ntitle: \"T\"\nstatus: backlog\nblocked_by:\n  - 2\n  - \"@5\"\n  - \"../plexi:0003\"\n  - \"../plexi@9\"\n  - \"owner/repo:0004\"\n  - \"owner/repo@10\"\n  - \"waiting for fix\"\n---\n";
         let task = parse_task(content, "0001-t.md").unwrap();

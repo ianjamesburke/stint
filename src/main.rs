@@ -51,6 +51,27 @@ enum Commands {
         /// Size estimate (s|m|l).
         #[arg(long)]
         size: Option<String>,
+        /// Area/component labels (comma-separated or repeated).
+        #[arg(long, value_delimiter = ',')]
+        area: Vec<String>,
+        /// Tags (comma-separated or repeated).
+        #[arg(long, value_delimiter = ',')]
+        tags: Vec<String>,
+        /// Blocker references (comma-separated or repeated): local task id,
+        /// "@N" for a local GitHub issue, "owner/repo:0001" for an external
+        /// task, or a free-text note.
+        #[arg(long = "blocked-by", value_delimiter = ',')]
+        blocked_by: Vec<String>,
+        /// Linked GitHub issue numbers (comma-separated or repeated).
+        #[arg(long = "gh-issue", value_delimiter = ',')]
+        gh_issue: Vec<String>,
+        /// Body markdown source: a file path, or "-" to read from stdin.
+        /// Replaces the default Why/Gotchas/References template wholesale.
+        #[arg(long = "body-file")]
+        body_file: Option<String>,
+        /// Skip opening $EDITOR after creation.
+        #[arg(long)]
+        no_edit: bool,
     },
 
     /// List tasks, optionally filtered.
@@ -92,6 +113,27 @@ enum Commands {
     Edit {
         /// Task ID.
         id: String,
+    },
+
+    /// Update an existing task's metadata or body without opening $EDITOR.
+    Set {
+        /// Task ID.
+        id: String,
+        /// Area/component labels (comma-separated or repeated). Replaces the existing list.
+        #[arg(long, value_delimiter = ',')]
+        area: Vec<String>,
+        /// Tags (comma-separated or repeated). Replaces the existing list.
+        #[arg(long, value_delimiter = ',')]
+        tags: Vec<String>,
+        /// Blocker references (comma-separated or repeated). Replaces the existing list.
+        #[arg(long = "blocked-by", value_delimiter = ',')]
+        blocked_by: Vec<String>,
+        /// Linked GitHub issue numbers (comma-separated or repeated). Replaces the existing list.
+        #[arg(long = "gh-issue", value_delimiter = ',')]
+        gh_issue: Vec<String>,
+        /// Body markdown source: a file path, or "-" to read from stdin. Replaces the body wholesale.
+        #[arg(long = "body-file")]
+        body_file: Option<String>,
     },
 
     /// Remove one or more task files.
@@ -302,9 +344,29 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             title,
             priority,
             size,
+            area,
+            tags,
+            blocked_by,
+            gh_issue,
+            body_file,
+            no_edit,
         }) => {
             let repo = find_repo()?;
-            let path = cmds::cmd_add(&repo, &title, priority.as_deref(), size.as_deref())?;
+            let edits = cmds::TaskFieldEdits {
+                area,
+                tags,
+                blocked_by,
+                gh_issue,
+                body_source: body_file,
+            };
+            let path = cmds::cmd_add(
+                &repo,
+                &title,
+                priority.as_deref(),
+                size.as_deref(),
+                &edits,
+                no_edit,
+            )?;
             println!("{}", path.display());
         }
 
@@ -350,6 +412,26 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Some(Commands::Edit { id }) => {
             let repo = find_repo()?;
             cmds::cmd_edit(&repo, &id)?;
+        }
+
+        Some(Commands::Set {
+            id,
+            area,
+            tags,
+            blocked_by,
+            gh_issue,
+            body_file,
+        }) => {
+            let repo = find_repo()?;
+            let edits = cmds::TaskFieldEdits {
+                area,
+                tags,
+                blocked_by,
+                gh_issue,
+                body_source: body_file,
+            };
+            let path = cmds::cmd_set(&repo, &id, &edits)?;
+            println!("{}", path.display());
         }
 
         Some(Commands::Remove { ids }) => {

@@ -3,7 +3,7 @@
 /// callers handle exit codes.
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::io::{self, IsTerminal, Write};
+use std::io::{self, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -14,8 +14,9 @@ use chrono::{DateTime, SecondsFormat, Utc};
 use stint::check::check;
 use stint::duration::Duration;
 use stint::mutate::{
-    add_actual, new_sprint_content, new_task_content, next_task_id, resolve_id, restart_task,
-    set_actual, set_completed_at, set_started_at_if_absent, set_status, title_to_slug,
+    add_actual, minimal_frontmatter, new_sprint_content, new_task_content, next_task_id,
+    resolve_id, restart_task, set_actual, set_completed_at, set_started_at_if_absent, set_status,
+    title_to_slug, DEFAULT_TASK_BODY,
 };
 use stint::next::{compute_next, compute_next_with_resolution, NextOptions, NextReport, NextTask};
 use stint::schema::{BlockedByRef, Sprint, TaskStatus};
@@ -223,12 +224,54 @@ fn yaml_escape(value: &str) -> String {
 // Task commands
 // ---------------------------------------------------------------------------
 
-/// Create a new task file, open `$EDITOR`, print the created path.
+/// Optional field overrides applied when creating (`add`) or mutating (`set`)
+/// a task. An empty vec / `None` means "leave unchanged" for `set`, or "use
+/// the default" for `add`.
+#[derive(Debug, Default)]
+pub struct TaskFieldEdits {
+    pub area: Vec<String>,
+    pub tags: Vec<String>,
+    pub blocked_by: Vec<String>,
+    pub gh_issue: Vec<String>,
+    /// A file path, or `"-"` to read from stdin. Replaces the task body
+    /// wholesale — the default `## Why` / `## Gotchas` / `## References`
+    /// template is not merged in.
+    pub body_source: Option<String>,
+}
+
+impl TaskFieldEdits {
+    fn is_empty(&self) -> bool {
+        self.area.is_empty()
+            && self.tags.is_empty()
+            && self.blocked_by.is_empty()
+            && self.gh_issue.is_empty()
+            && self.body_source.is_none()
+    }
+}
+
+/// Read task body content from a `--body-file` argument: `"-"` reads stdin,
+/// anything else is treated as a file path.
+fn read_body_source(source: &str) -> anyhow::Result<String> {
+    if source == "-" {
+        let mut buf = String::new();
+        io::stdin()
+            .read_to_string(&mut buf)
+            .context("read body from stdin")?;
+        Ok(buf)
+    } else {
+        fs::read_to_string(source).with_context(|| format!("read body file {:?}", source))
+    }
+}
+
+/// Create a new task file, apply any field overrides, open `$EDITOR` unless
+/// `no_edit` is set, and print the created path.
 pub fn cmd_add(
     repo: &StintRepo,
     title: &str,
     priority: Option<&str>,
     size: Option<&str>,
+    edits: &TaskFieldEdits,
+    no_edit: bool,
 ) -> anyhow::Result<PathBuf> {
     // Validate priority early.
     let parsed_priority = priority
@@ -257,34 +300,77 @@ pub fn cmd_add(
     };
     let path = repo.tasks_dir().join(&filename);
     let created_at = timestamp_or_now(None)?;
-    let mut content = new_task_content(&id, title, Some(&created_at));
 
-    // Insert priority line after status line if provided.
-    if let Some(prio) = parsed_priority {
-        content = content.replacen(
-            "status: backlog\n",
-            &format!("status: backlog\npriority: {}\n", prio),
-            1,
+    let body = match &edits.body_source {
+        Some(source) => read_body_source(source)?,
+        None => DEFAULT_TASK_BODY.to_owned(),
+    };
+
+    let mut frontmatter = minimal_frontmatter(&id, title);
+    frontmatter.priority = parsed_priority;
+    frontmatter.size = parsed_size;
+    frontmatter.created_at = Some(created_at);
+    frontmatter.area = edits.area.clone();
+    frontmatter.tags = edits.tags.clone();
+    frontmatter.gh_issue = edits.gh_issue.clone();
+    frontmatter.blocked_by = edits
+        .blocked_by
+        .iter()
+        .map(|s| BlockedByRef::from_str(s))
+        .collect();
+
+    let task = stint::schema::Task {
+        frontmatter,
+        body,
+        filename,
+    };
+    let content = serialize_task(&task);
+    repo.write_task(&path, &content)?;
+
+    if !no_edit {
+        open_editor(&path)?;
+    }
+    Ok(path)
+}
+
+/// Apply field overrides to an existing task's frontmatter and/or body.
+/// Never opens `$EDITOR` — the headless counterpart to `stint edit`.
+pub fn cmd_set(
+    repo: &StintRepo,
+    id_input: &str,
+    edits: &TaskFieldEdits,
+) -> anyhow::Result<PathBuf> {
+    if edits.is_empty() {
+        bail!(
+            "no fields provided; specify at least one of --area, --tags, --blocked-by, --gh-issue, --body-file"
         );
     }
 
-    // Insert size line after the priority line (or status line) if provided.
-    if let Some(sz) = parsed_size {
-        let (anchor, replacement) = match parsed_priority {
-            Some(prio) => (
-                format!("priority: {}\n", prio),
-                format!("priority: {}\nsize: {}\n", prio, sz),
-            ),
-            None => (
-                "status: backlog\n".to_owned(),
-                format!("status: backlog\nsize: {}\n", sz),
-            ),
-        };
-        content = content.replacen(&anchor, &replacement, 1);
+    let path = repo.resolve_task_path(id_input)?;
+    let mut task = repo.read_task(&path)?;
+
+    if !edits.area.is_empty() {
+        task.frontmatter.area = edits.area.clone();
+    }
+    if !edits.tags.is_empty() {
+        task.frontmatter.tags = edits.tags.clone();
+    }
+    if !edits.gh_issue.is_empty() {
+        task.frontmatter.gh_issue = edits.gh_issue.clone();
+    }
+    if !edits.blocked_by.is_empty() {
+        task.frontmatter.blocked_by = edits
+            .blocked_by
+            .iter()
+            .map(|s| BlockedByRef::from_str(s))
+            .collect();
+    }
+    if let Some(source) = &edits.body_source {
+        task.body = read_body_source(source)?;
     }
 
+    let content = serialize_task(&task);
     repo.write_task(&path, &content)?;
-    open_editor(&path)?;
     Ok(path)
 }
 

@@ -193,7 +193,15 @@ fn resolve_id_with_slug() {
 #[test]
 fn add_creates_file() {
     let (_tmp, repo) = setup();
-    let path = cmds::cmd_add(&repo, "My first task", None, None).unwrap();
+    let path = cmds::cmd_add(
+        &repo,
+        "My first task",
+        None,
+        None,
+        &cmds::TaskFieldEdits::default(),
+        false,
+    )
+    .unwrap();
     assert!(path.exists());
     let content = fs::read_to_string(&path).unwrap();
     assert!(content.contains("id: \"0001\""));
@@ -209,7 +217,15 @@ fn add_increments_id() {
         "0001-existing.md",
         &task_content("0001", "Existing", "backlog"),
     );
-    let path = cmds::cmd_add(&repo, "Second task", None, None).unwrap();
+    let path = cmds::cmd_add(
+        &repo,
+        "Second task",
+        None,
+        None,
+        &cmds::TaskFieldEdits::default(),
+        false,
+    )
+    .unwrap();
     let content = fs::read_to_string(&path).unwrap();
     assert!(content.contains("id: \"0002\""));
 }
@@ -217,7 +233,15 @@ fn add_increments_id() {
 #[test]
 fn add_filename_includes_slug() {
     let (_tmp, repo) = setup();
-    let path = cmds::cmd_add(&repo, "Auth Middleware", None, None).unwrap();
+    let path = cmds::cmd_add(
+        &repo,
+        "Auth Middleware",
+        None,
+        None,
+        &cmds::TaskFieldEdits::default(),
+        false,
+    )
+    .unwrap();
     let filename = path.file_name().unwrap().to_string_lossy();
     assert!(filename.starts_with("0001-auth-middleware"));
 }
@@ -225,7 +249,15 @@ fn add_filename_includes_slug() {
 #[test]
 fn add_writes_size_field() {
     let (_tmp, repo) = setup();
-    let path = cmds::cmd_add(&repo, "Sized task", Some("p2"), Some("m")).unwrap();
+    let path = cmds::cmd_add(
+        &repo,
+        "Sized task",
+        Some("p2"),
+        Some("m"),
+        &cmds::TaskFieldEdits::default(),
+        false,
+    )
+    .unwrap();
     let content = fs::read_to_string(&path).unwrap();
     assert!(content.contains("priority: p2"));
     assert!(content.contains("size: m"));
@@ -234,17 +266,177 @@ fn add_writes_size_field() {
 #[test]
 fn add_rejects_invalid_size() {
     let (_tmp, repo) = setup();
-    let err = cmds::cmd_add(&repo, "Bad size", None, Some("huge")).unwrap_err();
+    let err = cmds::cmd_add(
+        &repo,
+        "Bad size",
+        None,
+        Some("huge"),
+        &cmds::TaskFieldEdits::default(),
+        false,
+    )
+    .unwrap_err();
     assert!(err.to_string().contains("unknown size"));
+}
+
+#[test]
+fn add_writes_metadata_fields() {
+    let (_tmp, repo) = setup();
+    let edits = cmds::TaskFieldEdits {
+        area: vec!["cli".to_owned()],
+        tags: vec!["ergonomics".to_owned()],
+        blocked_by: vec!["0002".to_owned()],
+        gh_issue: vec!["42".to_owned()],
+        body_source: None,
+    };
+    let path = cmds::cmd_add(&repo, "Agent-driven task", None, None, &edits, false).unwrap();
+    let content = fs::read_to_string(&path).unwrap();
+    assert!(content.contains("area:\n  - \"cli\""));
+    assert!(content.contains("tags:\n  - \"ergonomics\""));
+    assert!(content.contains("blocked_by:\n  - 2"));
+    assert!(content.contains("gh_issue:\n  - \"42\""));
+}
+
+#[test]
+fn add_writes_body_from_file() {
+    let (tmp, repo) = setup();
+    let body_path = tmp.path().join("body.md");
+    fs::write(&body_path, "custom body content\n").unwrap();
+    let edits = cmds::TaskFieldEdits {
+        body_source: Some(body_path.to_string_lossy().into_owned()),
+        ..Default::default()
+    };
+    let path = cmds::cmd_add(&repo, "Task with body", None, None, &edits, false).unwrap();
+    let content = fs::read_to_string(&path).unwrap();
+    assert!(content.contains("custom body content"));
+    assert!(!content.contains("## Why"));
+}
+
+#[test]
+fn add_no_edit_skips_editor() {
+    let (_tmp, repo) = setup();
+    // suppress_editor() already routes $EDITOR to a no-op via STINT_TEST_EDITOR;
+    // `no_edit: true` should behave identically (and is exercised directly here).
+    let path = cmds::cmd_add(
+        &repo,
+        "Headless task",
+        None,
+        None,
+        &cmds::TaskFieldEdits::default(),
+        true,
+    )
+    .unwrap();
+    assert!(path.exists());
 }
 
 #[test]
 fn list_row_includes_size() {
     let (_tmp, repo) = setup();
-    cmds::cmd_add(&repo, "Sized task", None, Some("l")).unwrap();
+    cmds::cmd_add(
+        &repo,
+        "Sized task",
+        None,
+        Some("l"),
+        &cmds::TaskFieldEdits::default(),
+        false,
+    )
+    .unwrap();
     let rows = cmds::cmd_list(&repo, None, false, None, None, None, None, None).unwrap();
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].size.as_deref(), Some("l"));
+}
+
+// ---------------------------------------------------------------------------
+// cmd_set
+// ---------------------------------------------------------------------------
+
+#[test]
+fn set_replaces_area_and_tags() {
+    let (_tmp, repo) = setup();
+    let add_path = cmds::cmd_add(
+        &repo,
+        "Task to edit",
+        None,
+        None,
+        &cmds::TaskFieldEdits::default(),
+        false,
+    )
+    .unwrap();
+    let id = add_path
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .split('-')
+        .next()
+        .unwrap()
+        .to_owned();
+
+    let edits = cmds::TaskFieldEdits {
+        area: vec!["backend".to_owned()],
+        tags: vec!["urgent".to_owned(), "flaky".to_owned()],
+        ..Default::default()
+    };
+    let path = cmds::cmd_set(&repo, &id, &edits).unwrap();
+    let content = fs::read_to_string(&path).unwrap();
+    assert!(content.contains("area:\n  - \"backend\""));
+    assert!(content.contains("tags:\n  - \"urgent\"\n  - \"flaky\""));
+}
+
+#[test]
+fn set_replaces_body_from_file() {
+    let (tmp, repo) = setup();
+    let add_path = cmds::cmd_add(
+        &repo,
+        "Task to edit",
+        None,
+        None,
+        &cmds::TaskFieldEdits::default(),
+        false,
+    )
+    .unwrap();
+    let id = add_path
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .split('-')
+        .next()
+        .unwrap()
+        .to_owned();
+
+    let body_path = tmp.path().join("body.md");
+    fs::write(&body_path, "replacement body\n").unwrap();
+    let edits = cmds::TaskFieldEdits {
+        body_source: Some(body_path.to_string_lossy().into_owned()),
+        ..Default::default()
+    };
+    let path = cmds::cmd_set(&repo, &id, &edits).unwrap();
+    let content = fs::read_to_string(&path).unwrap();
+    assert!(content.contains("replacement body"));
+    assert!(!content.contains("## Why"));
+}
+
+#[test]
+fn set_rejects_empty_edits() {
+    let (_tmp, repo) = setup();
+    let add_path = cmds::cmd_add(
+        &repo,
+        "Task to edit",
+        None,
+        None,
+        &cmds::TaskFieldEdits::default(),
+        false,
+    )
+    .unwrap();
+    let id = add_path
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .split('-')
+        .next()
+        .unwrap()
+        .to_owned();
+
+    let err = cmds::cmd_set(&repo, &id, &cmds::TaskFieldEdits::default()).unwrap_err();
+    assert!(err.to_string().contains("no fields provided"));
 }
 
 // ---------------------------------------------------------------------------

@@ -95,6 +95,9 @@ pub fn title_to_slug(title: &str) -> String {
         .join("-")
 }
 
+/// Default markdown body template for a freshly created task.
+pub const DEFAULT_TASK_BODY: &str = "## Why\n\n\n## Gotchas\n\n\n## References\n\n";
+
 /// Build the initial file content for a new task.
 ///
 /// Produces valid frontmatter with the minimum required fields.  `$EDITOR`
@@ -103,9 +106,7 @@ pub fn new_task_content(id: &str, title: &str, created_at: Option<&str>) -> Stri
     let created_at = created_at
         .map(|timestamp| format!("created_at: \"{timestamp}\"\n"))
         .unwrap_or_default();
-    format!(
-        "---\nid: \"{id}\"\ntitle: \"{title}\"\nstatus: backlog\n{created_at}---\n\n## Why\n\n\n## Gotchas\n\n\n## References\n\n"
-    )
+    format!("---\nid: \"{id}\"\ntitle: \"{title}\"\nstatus: backlog\n{created_at}---\n\n{DEFAULT_TASK_BODY}")
 }
 
 /// Build the initial content for a new sprint file.

@@ -107,11 +107,15 @@ Non-obvious constraints, prior attempts, things that will bite you.
 | Command | Description |
 |---|---|
 | `stint add "Title"` | Create a new task, open editor for body |
+| `stint add "Title" --priority p1 --size m --area cli --tags ergonomics --blocked-by 0002 --gh-issue 42` | Create a task with metadata set at creation time (comma-separated or repeated flags) |
+| `stint add "Title" --body-file body.md --no-edit` | Create a task headlessly: body read from a file (or `-` for stdin), skip opening $EDITOR |
 | `stint list` | List all tasks (filterable by status, sprint, area, tag) |
 | `stint list --sprint s12` | List tasks in a sprint |
 | `stint list --status in-progress` | Filter by status |
 | `stint show <id>` | Print full task (frontmatter + body) |
 | `stint edit <id>` | Open task file in $EDITOR |
+| `stint set <id> --area cli --tags ergonomics --blocked-by 0002 --gh-issue 42` | Headlessly replace a task's area/tags/blocked_by/gh_issue lists — no $EDITOR |
+| `stint set <id> --body-file body.md` | Headlessly replace a task's body from a file (or `-` for stdin) |
 | `stint done <id>` | Mark task done, prompt for actual time |
 | `stint log <id> <time>` | Add time to actual (e.g. `stint log 0001 2h`) |
 | `stint archive <id>` | Move task to archived status |

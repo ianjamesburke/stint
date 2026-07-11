@@ -277,11 +277,20 @@ fn split_frontmatter(content: &str) -> Result<(&str, &str), ParseError> {
     let frontmatter_str = &after_newline[..close_pos];
     let after_close = &after_newline[close_pos + 4..]; // skip "\n---"
 
-    // Body is everything after the optional newline following the close marker.
-    let body = after_close
+    // `after_close` starts with the closing marker line's own newline, optionally
+    // followed by the single blank line that conventionally separates frontmatter
+    // from body. `serialize_task` always re-inserts exactly one blank line of its
+    // own before the body, so both newlines must be stripped here — otherwise
+    // every parse/serialize round-trip (`done`, `claim`, `set`, ...) accumulates
+    // an extra blank line at the top of the body.
+    let after_marker = after_close
         .strip_prefix('\n')
         .or_else(|| after_close.strip_prefix("\r\n"))
         .unwrap_or(after_close);
+    let body = after_marker
+        .strip_prefix('\n')
+        .or_else(|| after_marker.strip_prefix("\r\n"))
+        .unwrap_or(after_marker);
 
     Ok((frontmatter_str, body))
 }
@@ -583,6 +592,20 @@ So users can authenticate.
         let content = "---\nid: \"0001\"\ntitle: \"T\"\nstatus: backlog\n---\n\nBody text here.\n";
         let task = parse_task(content, "0001-t.md").unwrap();
         assert_eq!(task.body.trim(), "Body text here.");
+    }
+
+    #[test]
+    fn body_does_not_retain_the_frontmatter_separator_blank_line() {
+        let content = "---\nid: \"0001\"\ntitle: \"T\"\nstatus: backlog\n---\n\nBody text here.\n";
+        let task = parse_task(content, "0001-t.md").unwrap();
+        assert_eq!(task.body, "Body text here.\n");
+    }
+
+    #[test]
+    fn body_without_a_blank_separator_is_unaffected() {
+        let content = "---\nid: \"0001\"\ntitle: \"T\"\nstatus: backlog\n---\nBody text here.\n";
+        let task = parse_task(content, "0001-t.md").unwrap();
+        assert_eq!(task.body, "Body text here.\n");
     }
 
     #[test]

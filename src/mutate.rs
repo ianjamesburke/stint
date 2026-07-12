@@ -45,6 +45,11 @@ pub fn set_completed_at(task: &mut Task, timestamp: String) {
     task.frontmatter.completed_at = Some(timestamp);
 }
 
+/// Clear `started_at` (used by unclaim to return a task to a fresh todo state).
+pub fn clear_started_at(task: &mut Task) {
+    task.frontmatter.started_at = None;
+}
+
 // ---------------------------------------------------------------------------
 // ID helpers
 // ---------------------------------------------------------------------------

@@ -14,9 +14,9 @@ use chrono::{DateTime, SecondsFormat, Utc};
 use stint::check::check;
 use stint::duration::Duration;
 use stint::mutate::{
-    add_actual, minimal_frontmatter, new_sprint_content, new_task_content, next_task_id,
-    resolve_id, restart_task, set_actual, set_completed_at, set_started_at_if_absent, set_status,
-    title_to_slug, DEFAULT_TASK_BODY,
+    add_actual, clear_started_at, minimal_frontmatter, new_sprint_content, new_task_content,
+    next_task_id, resolve_id, restart_task, set_actual, set_completed_at, set_started_at_if_absent,
+    set_status, title_to_slug, DEFAULT_TASK_BODY,
 };
 use stint::next::{compute_next, compute_next_with_resolution, NextOptions, NextReport, NextTask};
 use stint::schema::{BlockedByRef, Sprint, TaskStatus};
@@ -633,6 +633,29 @@ pub fn cmd_start(
         set_started_at_if_absent(&mut task, started_at);
     }
 
+    let content = serialize_task(&task);
+    repo.write_task(&path, &content)?;
+    Ok(path)
+}
+
+/// Revert an in-progress task back to `todo`, clearing `started_at`.
+///
+/// The inverse of `cmd_start`/`cmd_claim`: used when a claimed task is
+/// abandoned before completion (e.g. pre-flight fails) so it returns to the
+/// ready pool with no stale start timestamp. Only `in-progress` tasks can be
+/// unclaimed; any other status is an error.
+pub fn cmd_unclaim(repo: &StintRepo, id_input: &str) -> anyhow::Result<PathBuf> {
+    let path = repo.resolve_task_path(id_input)?;
+    let mut task = repo.read_task(&path)?;
+    if task.frontmatter.status != TaskStatus::InProgress {
+        bail!(
+            "task {} is {}; only in-progress tasks can be unclaimed",
+            task.id(),
+            task.frontmatter.status
+        );
+    }
+    set_status(&mut task, TaskStatus::Todo);
+    clear_started_at(&mut task);
     let content = serialize_task(&task);
     repo.write_task(&path, &content)?;
     Ok(path)

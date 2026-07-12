@@ -875,6 +875,29 @@ fn claim_restart_replaces_started_at_and_clears_completion() {
 }
 
 #[test]
+fn unclaim_reverts_to_todo_and_clears_started_at() {
+    let (_tmp, repo) = setup();
+    write_task_file(
+        &repo,
+        "0001-task.md",
+        "---\nid: \"0001\"\ntitle: \"Task\"\nstatus: in-progress\nstarted_at: \"2026-06-10T12:00:00Z\"\n---\n",
+    );
+    cmds::cmd_unclaim(&repo, "0001").unwrap();
+    let path = repo.resolve_task_path("0001").unwrap();
+    let task = repo.read_task(&path).unwrap();
+    assert_eq!(task.frontmatter.status, stint::schema::TaskStatus::Todo);
+    assert!(task.frontmatter.started_at.is_none());
+}
+
+#[test]
+fn unclaim_rejects_non_in_progress_task() {
+    let (_tmp, repo) = setup();
+    write_task_file(&repo, "0001-task.md", &task_content("0001", "Task", "todo"));
+    let err = cmds::cmd_unclaim(&repo, "0001").unwrap_err();
+    assert!(err.to_string().contains("only in-progress tasks"));
+}
+
+#[test]
 fn done_computes_actual_from_started_at() {
     let (_tmp, repo) = setup();
     write_task_file(

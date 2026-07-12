@@ -162,6 +162,12 @@ enum Commands {
         json: bool,
     },
 
+    /// Revert an in-progress task to todo, clearing started_at (inverse of claim).
+    Unclaim {
+        /// Task ID.
+        id: String,
+    },
+
     /// Mark a task done and optionally record actual time.
     Done {
         /// Task ID.
@@ -458,6 +464,12 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 started_at.as_deref(),
                 json,
             )?;
+        }
+
+        Some(Commands::Unclaim { id }) => {
+            let repo = find_repo()?;
+            let path = cmds::cmd_unclaim(&repo, &id)?;
+            println!("unclaimed: {}", path.display());
         }
 
         Some(Commands::Done {

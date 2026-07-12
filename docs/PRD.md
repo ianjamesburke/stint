@@ -116,6 +116,8 @@ Non-obvious constraints, prior attempts, things that will bite you.
 | `stint edit <id>` | Open task file in $EDITOR |
 | `stint set <id> --area cli --tags ergonomics --blocked-by 0002 --gh-issue 42` | Headlessly replace a task's area/tags/blocked_by/gh_issue lists — no $EDITOR |
 | `stint set <id> --body-file body.md` | Headlessly replace a task's body from a file (or `-` for stdin) |
+| `stint claim <id>` | Mark task in-progress and set `started_at` (omit `<id>` to auto-claim the top ready task) |
+| `stint unclaim <id>` | Revert an in-progress task to todo, clearing `started_at` (inverse of `claim`) |
 | `stint done <id>` | Mark task done, prompt for actual time |
 | `stint log <id> <time>` | Add time to actual (e.g. `stint log 0001 2h`) |
 | `stint archive <id>` | Move task to archived status |

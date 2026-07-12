@@ -137,6 +137,25 @@ pub enum CheckError {
     },
 }
 
+impl CheckError {
+    /// Return the task ID associated with this error, if the error belongs to a task.
+    pub fn task_id(&self) -> Option<&str> {
+        match self {
+            Self::MissingRequiredField { task_id, .. }
+            | Self::InvalidStatus { task_id, .. }
+            | Self::InvalidDuration { task_id, .. }
+            | Self::InvalidTimestamp { task_id, .. }
+            | Self::UnresolvedBlockedBy { task_id, .. }
+            | Self::InvalidBlockedByRef { task_id, .. }
+            | Self::CircularBlockedBy { task_id, .. }
+            | Self::IdFilenameMismatch { task_id, .. }
+            | Self::BlockedTaskNotPending { task_id, .. } => Some(task_id),
+            Self::DuplicateId { id, .. } => Some(id),
+            Self::SprintUnresolvedTask { .. } => None,
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------

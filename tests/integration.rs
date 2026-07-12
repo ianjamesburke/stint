@@ -1096,7 +1096,7 @@ fn check_reports_missing_direct_task_path() {
         "---\nid: \"0001\"\ntitle: \"Dependent\"\nstatus: todo\nblocked_by:\n  - \"./missing/.stint/tasks/0030-target.md\"\n---\n",
     );
 
-    let errors = cmds::cmd_check(&repo, false).unwrap();
+    let errors = cmds::cmd_check(&repo, false, None).unwrap();
     assert!(errors.iter().any(|e| e.contains("file not found")));
 }
 
@@ -1114,7 +1114,7 @@ fn check_reports_malformed_direct_task_path_target() {
         "---\nid: \"0001\"\ntitle: \"Dependent\"\nstatus: todo\nblocked_by:\n  - \"./upstream/.stint/tasks/0030-target.md\"\n---\n",
     );
 
-    let errors = cmds::cmd_check(&repo, false).unwrap();
+    let errors = cmds::cmd_check(&repo, false, None).unwrap();
     assert!(errors.iter().any(|e| e.contains("parse failed")));
 }
 
@@ -1132,7 +1132,7 @@ fn check_reports_direct_task_path_id_mismatch() {
         "---\nid: \"0001\"\ntitle: \"Dependent\"\nstatus: todo\nblocked_by:\n  - \"./upstream/.stint/tasks/0030-target.md\"\n---\n",
     );
 
-    let errors = cmds::cmd_check(&repo, false).unwrap();
+    let errors = cmds::cmd_check(&repo, false, None).unwrap();
     assert!(errors.iter().any(|e| e.contains("does not match")));
 }
 
@@ -1315,7 +1315,7 @@ fn check_passes_clean_graph() {
         &task_content("0001", "Task A", "backlog"),
     );
     write_task_file(&repo, "0002-b.md", &task_content("0002", "Task B", "done"));
-    let errors = cmds::cmd_check(&repo, false).unwrap();
+    let errors = cmds::cmd_check(&repo, false, None).unwrap();
     assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
 }
 
@@ -1325,7 +1325,7 @@ fn check_detects_unresolved_blocked_by() {
     let content =
         "---\nid: \"0001\"\ntitle: \"T\"\nstatus: backlog\nblocked_by:\n  - \"9999\"\n---\n";
     write_task_file(&repo, "0001-t.md", content);
-    let errors = cmds::cmd_check(&repo, false).unwrap();
+    let errors = cmds::cmd_check(&repo, false, None).unwrap();
     assert!(!errors.is_empty(), "expected at least one error");
     assert!(errors.iter().any(|e| e.contains("9999")));
 }
@@ -1344,7 +1344,7 @@ fn check_detects_duplicate_ids() {
         "0001-b.md",
         &task_content("0001", "Task B", "backlog"),
     );
-    let errors = cmds::cmd_check(&repo, false).unwrap();
+    let errors = cmds::cmd_check(&repo, false, None).unwrap();
     assert!(errors.iter().any(|e| e.contains("duplicate")));
 }
 
@@ -1354,15 +1354,60 @@ fn check_detects_id_filename_mismatch() {
     // id field says 0099 but filename prefix is 0001.
     let content = "---\nid: \"0099\"\ntitle: \"T\"\nstatus: backlog\n---\n";
     write_task_file(&repo, "0001-t.md", content);
-    let errors = cmds::cmd_check(&repo, false).unwrap();
+    let errors = cmds::cmd_check(&repo, false, None).unwrap();
     assert!(errors.iter().any(|e| e.contains("filename")));
 }
 
 #[test]
 fn check_empty_repo_passes() {
     let (_tmp, repo) = setup();
-    let errors = cmds::cmd_check(&repo, false).unwrap();
+    let errors = cmds::cmd_check(&repo, false, None).unwrap();
     assert!(errors.is_empty());
+}
+
+#[test]
+fn check_by_id_reports_not_found_when_task_is_not_loaded() {
+    let (_tmp, repo) = setup();
+
+    let errors = cmds::cmd_check(&repo, false, Some("0014")).unwrap();
+
+    assert_eq!(errors, vec!["task 0014: not found"]);
+}
+
+#[test]
+fn check_by_id_ignores_errors_for_other_tasks() {
+    let (_tmp, repo) = setup();
+    write_task_file(
+        &repo,
+        "0014-target.md",
+        &task_content("0014", "Target", "backlog"),
+    );
+    write_task_file(
+        &repo,
+        "0015-other.md",
+        "---\nid: \"0015\"\ntitle: \"\"\nstatus: backlog\n---\n",
+    );
+
+    let errors = cmds::cmd_check(&repo, false, Some("0014")).unwrap();
+
+    assert!(errors.is_empty(), "unexpected errors: {errors:?}");
+}
+
+#[test]
+fn check_by_id_reports_errors_for_requested_task() {
+    let (_tmp, repo) = setup();
+    write_task_file(
+        &repo,
+        "0014-target.md",
+        "---\nid: \"0014\"\ntitle: \"Target\"\nstatus: backlog\nblocked_by: \"9999\"\n---\n",
+    );
+
+    let errors = cmds::cmd_check(&repo, false, Some("0014")).unwrap();
+
+    assert_eq!(
+        errors,
+        vec!["task 0014: blocked_by references unknown local task '9999'"]
+    );
 }
 
 // ---------------------------------------------------------------------------

@@ -243,8 +243,10 @@ enum Commands {
         command: SprintCommands,
     },
 
-    /// Validate the entire task graph; exit 1 if any errors are found.
+    /// Validate the task graph, or one task by ID; exit 1 if errors are found.
     Check {
+        /// Task ID to validate. Omit to validate the entire task graph.
+        id: Option<String>,
         /// Walk sibling repositories and validate cross-repo references (stub; not yet implemented).
         #[arg(long)]
         cross_repo: bool,
@@ -586,9 +588,9 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             }
         },
 
-        Some(Commands::Check { cross_repo }) => {
+        Some(Commands::Check { id, cross_repo }) => {
             let repo = find_repo()?;
-            let errors = cmds::cmd_check(&repo, cross_repo)?;
+            let errors = cmds::cmd_check(&repo, cross_repo, id.as_deref())?;
             if errors.is_empty() {
                 println!("ok");
             } else {

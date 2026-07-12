@@ -1403,12 +1403,38 @@ pub fn cmd_sprint_remove(
 /// repositories to validate external task IDs.  This is a stub — the feature
 /// is out of scope for v1.  The flag is accepted and acknowledged so the CLI
 /// surface matches the spec, but only the local check runs.
-pub fn cmd_check(repo: &StintRepo, cross_repo: bool) -> anyhow::Result<Vec<String>> {
+pub fn cmd_check(
+    repo: &StintRepo,
+    cross_repo: bool,
+    task_id: Option<&str>,
+) -> anyhow::Result<Vec<String>> {
     if cross_repo {
         // STUB: cross-repo resolution not yet implemented.
         eprintln!("cross-repo resolution not yet implemented");
     }
     let (tasks, parse_errors) = repo.load_tasks_with_errors()?;
+    if let Some(task_id) = task_id {
+        if !tasks.iter().any(|task| task.frontmatter.id == task_id) {
+            return Ok(vec![format!("task {task_id}: not found")]);
+        }
+
+        let sprints = repo.load_sprints()?;
+        let direct_resolution = repo.resolve_direct_task_path_blockers(&tasks)?;
+        let task_prefix = format!("task {task_id}:");
+        let mut errors: Vec<String> = direct_resolution
+            .errors
+            .into_iter()
+            .filter(|error| error.starts_with(&task_prefix))
+            .collect();
+        errors.extend(
+            check(&tasks, &sprints)
+                .into_iter()
+                .filter(|error| error.task_id() == Some(task_id))
+                .map(|error| error.to_string()),
+        );
+        return Ok(errors);
+    }
+
     let sprints = repo.load_sprints()?;
     let direct_resolution = repo.resolve_direct_task_path_blockers(&tasks)?;
     let mut errors: Vec<String> = parse_errors

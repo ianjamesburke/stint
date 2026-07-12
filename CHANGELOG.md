@@ -1,6 +1,11 @@
 # Changelog
 
 Newest releases appear first.
+## [0.3.12] - 2026-07-12
+
+### Changes
+- feat: stint check <id> validates a single task by ID (0014)
+- feat: add stint unclaim — revert in-progress task to todo, clearing started_at
 ## [0.3.11] - 2026-07-11
 
 ### Changes

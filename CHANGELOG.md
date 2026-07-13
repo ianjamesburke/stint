@@ -1,6 +1,10 @@
 # Changelog
 
 Newest releases appear first.
+## [0.3.13] - 2026-07-13
+
+### Changes
+- fix(set): empty --blocked-by/--tags/--area/--gh-issue clears the list
 ## [0.3.12] - 2026-07-12
 
 ### Changes

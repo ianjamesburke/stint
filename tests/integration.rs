@@ -49,6 +49,17 @@ fn setup() -> (TempDir, StintRepo) {
     (tmp, repo)
 }
 
+/// Task id ("0001") from a created task file path.
+fn id_from_path(path: &std::path::Path) -> String {
+    path.file_name()
+        .unwrap()
+        .to_string_lossy()
+        .split('-')
+        .next()
+        .unwrap()
+        .to_owned()
+}
+
 fn setup_empty_dir() -> TempDir {
     suppress_editor();
     TempDir::new().unwrap()
@@ -282,10 +293,10 @@ fn add_rejects_invalid_size() {
 fn add_writes_metadata_fields() {
     let (_tmp, repo) = setup();
     let edits = cmds::TaskFieldEdits {
-        area: vec!["cli".to_owned()],
-        tags: vec!["ergonomics".to_owned()],
-        blocked_by: vec!["0002".to_owned()],
-        gh_issue: vec!["42".to_owned()],
+        area: Some(vec!["cli".to_owned()]),
+        tags: Some(vec!["ergonomics".to_owned()]),
+        blocked_by: Some(vec!["0002".to_owned()]),
+        gh_issue: Some(vec!["42".to_owned()]),
         body_source: None,
     };
     let path = cmds::cmd_add(&repo, "Agent-driven task", None, None, &edits, false).unwrap();
@@ -371,14 +382,53 @@ fn set_replaces_area_and_tags() {
         .to_owned();
 
     let edits = cmds::TaskFieldEdits {
-        area: vec!["backend".to_owned()],
-        tags: vec!["urgent".to_owned(), "flaky".to_owned()],
+        area: Some(vec!["backend".to_owned()]),
+        tags: Some(vec!["urgent".to_owned(), "flaky".to_owned()]),
         ..Default::default()
     };
     let path = cmds::cmd_set(&repo, &id, &edits).unwrap();
     let content = fs::read_to_string(&path).unwrap();
     assert!(content.contains("area:\n  - \"backend\""));
     assert!(content.contains("tags:\n  - \"urgent\"\n  - \"flaky\""));
+}
+
+#[test]
+fn set_empty_blocked_by_clears_list() {
+    let (_tmp, repo) = setup();
+    let add_edits = cmds::TaskFieldEdits {
+        blocked_by: Some(vec!["other/repo:0001".to_owned()]),
+        ..Default::default()
+    };
+    let path = cmds::cmd_add(&repo, "Blocked task", None, None, &add_edits, false).unwrap();
+    let id = id_from_path(&path);
+
+    // `--blocked-by ""` arrives as Some([""]) — must clear, not store "".
+    let edits = cmds::TaskFieldEdits {
+        blocked_by: Some(vec![String::new()]),
+        ..Default::default()
+    };
+    cmds::cmd_set(&repo, &id, &edits).unwrap();
+    let content = fs::read_to_string(&path).unwrap();
+    assert!(content.contains("blocked_by: []"), "list not cleared:\n{content}");
+}
+
+#[test]
+fn set_omitted_lists_left_unchanged() {
+    let (_tmp, repo) = setup();
+    let add_edits = cmds::TaskFieldEdits {
+        blocked_by: Some(vec!["other/repo:0001".to_owned()]),
+        ..Default::default()
+    };
+    let path = cmds::cmd_add(&repo, "Blocked task", None, None, &add_edits, false).unwrap();
+    let id = id_from_path(&path);
+
+    let edits = cmds::TaskFieldEdits {
+        tags: Some(vec!["kept".to_owned()]),
+        ..Default::default()
+    };
+    cmds::cmd_set(&repo, &id, &edits).unwrap();
+    let content = fs::read_to_string(&path).unwrap();
+    assert!(content.contains("other/repo:0001"), "blocker dropped:\n{content}");
 }
 
 #[test]

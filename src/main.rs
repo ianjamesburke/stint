@@ -119,18 +119,18 @@ enum Commands {
     Set {
         /// Task ID.
         id: String,
-        /// Area/component labels (comma-separated or repeated). Replaces the existing list.
+        /// Area/component labels (comma-separated or repeated). Replaces the existing list; "" clears it.
         #[arg(long, value_delimiter = ',')]
-        area: Vec<String>,
-        /// Tags (comma-separated or repeated). Replaces the existing list.
+        area: Option<Vec<String>>,
+        /// Tags (comma-separated or repeated). Replaces the existing list; "" clears it.
         #[arg(long, value_delimiter = ',')]
-        tags: Vec<String>,
-        /// Blocker references (comma-separated or repeated). Replaces the existing list.
+        tags: Option<Vec<String>>,
+        /// Blocker references (comma-separated or repeated). Replaces the existing list; "" clears it.
         #[arg(long = "blocked-by", value_delimiter = ',')]
-        blocked_by: Vec<String>,
-        /// Linked GitHub issue numbers (comma-separated or repeated). Replaces the existing list.
+        blocked_by: Option<Vec<String>>,
+        /// Linked GitHub issue numbers (comma-separated or repeated). Replaces the existing list; "" clears it.
         #[arg(long = "gh-issue", value_delimiter = ',')]
-        gh_issue: Vec<String>,
+        gh_issue: Option<Vec<String>>,
         /// Body markdown source: a file path, or "-" to read from stdin. Replaces the body wholesale.
         #[arg(long = "body-file")]
         body_file: Option<String>,
@@ -361,10 +361,10 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         }) => {
             let repo = find_repo()?;
             let edits = cmds::TaskFieldEdits {
-                area,
-                tags,
-                blocked_by,
-                gh_issue,
+                area: Some(area),
+                tags: Some(tags),
+                blocked_by: Some(blocked_by),
+                gh_issue: Some(gh_issue),
                 body_source: body_file,
             };
             let path = cmds::cmd_add(

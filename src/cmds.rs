@@ -225,14 +225,15 @@ fn yaml_escape(value: &str) -> String {
 // ---------------------------------------------------------------------------
 
 /// Optional field overrides applied when creating (`add`) or mutating (`set`)
-/// a task. An empty vec / `None` means "leave unchanged" for `set`, or "use
-/// the default" for `add`.
+/// a task. `None` means "leave unchanged" for `set`, or "use the default" for
+/// `add`. `Some` replaces the list wholesale; empty/whitespace segments are
+/// dropped, so `--blocked-by ""` clears the list.
 #[derive(Debug, Default)]
 pub struct TaskFieldEdits {
-    pub area: Vec<String>,
-    pub tags: Vec<String>,
-    pub blocked_by: Vec<String>,
-    pub gh_issue: Vec<String>,
+    pub area: Option<Vec<String>>,
+    pub tags: Option<Vec<String>>,
+    pub blocked_by: Option<Vec<String>>,
+    pub gh_issue: Option<Vec<String>>,
     /// A file path, or `"-"` to read from stdin. Replaces the task body
     /// wholesale — the default `## Why` / `## Gotchas` / `## References`
     /// template is not merged in.
@@ -241,12 +242,23 @@ pub struct TaskFieldEdits {
 
 impl TaskFieldEdits {
     fn is_empty(&self) -> bool {
-        self.area.is_empty()
-            && self.tags.is_empty()
-            && self.blocked_by.is_empty()
-            && self.gh_issue.is_empty()
+        self.area.is_none()
+            && self.tags.is_none()
+            && self.blocked_by.is_none()
+            && self.gh_issue.is_none()
             && self.body_source.is_none()
     }
+}
+
+/// Drop empty/whitespace segments from a replacement list, so a bare `""`
+/// argument (or a stray trailing comma) clears the list instead of storing
+/// an empty-string entry.
+fn clean_list(values: &[String]) -> Vec<String> {
+    values
+        .iter()
+        .filter(|s| !s.trim().is_empty())
+        .cloned()
+        .collect()
 }
 
 /// Read task body content from a `--body-file` argument: `"-"` reads stdin,
@@ -310,11 +322,10 @@ pub fn cmd_add(
     frontmatter.priority = parsed_priority;
     frontmatter.size = parsed_size;
     frontmatter.created_at = Some(created_at);
-    frontmatter.area = edits.area.clone();
-    frontmatter.tags = edits.tags.clone();
-    frontmatter.gh_issue = edits.gh_issue.clone();
-    frontmatter.blocked_by = edits
-        .blocked_by
+    frontmatter.area = clean_list(edits.area.as_deref().unwrap_or_default());
+    frontmatter.tags = clean_list(edits.tags.as_deref().unwrap_or_default());
+    frontmatter.gh_issue = clean_list(edits.gh_issue.as_deref().unwrap_or_default());
+    frontmatter.blocked_by = clean_list(edits.blocked_by.as_deref().unwrap_or_default())
         .iter()
         .map(|s| BlockedByRef::from_str(s))
         .collect();
@@ -349,18 +360,17 @@ pub fn cmd_set(
     let path = repo.resolve_task_path(id_input)?;
     let mut task = repo.read_task(&path)?;
 
-    if !edits.area.is_empty() {
-        task.frontmatter.area = edits.area.clone();
+    if let Some(area) = &edits.area {
+        task.frontmatter.area = clean_list(area);
     }
-    if !edits.tags.is_empty() {
-        task.frontmatter.tags = edits.tags.clone();
+    if let Some(tags) = &edits.tags {
+        task.frontmatter.tags = clean_list(tags);
     }
-    if !edits.gh_issue.is_empty() {
-        task.frontmatter.gh_issue = edits.gh_issue.clone();
+    if let Some(gh_issue) = &edits.gh_issue {
+        task.frontmatter.gh_issue = clean_list(gh_issue);
     }
-    if !edits.blocked_by.is_empty() {
-        task.frontmatter.blocked_by = edits
-            .blocked_by
+    if let Some(blocked_by) = &edits.blocked_by {
+        task.frontmatter.blocked_by = clean_list(blocked_by)
             .iter()
             .map(|s| BlockedByRef::from_str(s))
             .collect();

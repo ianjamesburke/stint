@@ -1,6 +1,10 @@
 # Changelog
 
 Newest releases appear first.
+## [0.3.15] - 2026-07-14
+
+### Changes
+- feat(tui): runway color legend in border and help overlay
 ## [0.3.14] - 2026-07-14
 
 ### Changes

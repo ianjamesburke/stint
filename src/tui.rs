@@ -722,7 +722,7 @@ impl App {
             self.render_detail(frame, centered_rect(78, 82, area));
         }
         if self.show_help {
-            self.render_help(frame, centered_rect(70, 70, area));
+            self.render_help(frame, centered_rect(72, 84, area));
         }
         if self.prompt.is_some() {
             let prompt_area = if self.prompt == Some(PromptKind::Command) {
@@ -836,7 +836,12 @@ impl App {
             })
             .collect::<Vec<_>>();
         frame.render_widget(
-            Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title(title)),
+            Paragraph::new(lines).block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(title)
+                    .title_bottom(runway_legend()),
+            ),
             area,
         );
     }
@@ -1168,6 +1173,36 @@ impl App {
             Line::from("/ search         f filter        s sort"),
             Line::from("D show done      x custom cmds    : command pal."),
             Line::from("u undo           ctrl-r redo      ? shortcuts"),
+            Line::from(""),
+            Line::styled(
+                "Runway legend",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Line::from(vec![
+                Span::styled(
+                    "\u{25b6} green",
+                    Style::default()
+                        .fg(Color::Green)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(" running   "),
+                Span::styled("cyan", Style::default().fg(Color::Cyan)),
+                Span::raw(" ready   "),
+                Span::styled("~yellow", Style::default().fg(Color::Yellow)),
+                Span::raw(" area held by the wait: task"),
+            ]),
+            Line::from(vec![
+                Span::raw("parked = blocked by blocked_by   "),
+                Span::styled(
+                    "idle",
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(" = lane free, work queued"),
+            ]),
         ];
         frame.render_widget(
             Paragraph::new(lines)
@@ -2036,6 +2071,20 @@ fn load_commands(repo: &StintRepo) -> LoadedCommands {
         claim: config.claim.map(|claim| claim.run),
         custom,
     }
+}
+
+fn runway_legend() -> Line<'static> {
+    Line::from(vec![
+        Span::styled(
+            " \u{25b6} running ",
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled("ready ", Style::default().fg(Color::Cyan)),
+        Span::styled("~waiting on holder ", Style::default().fg(Color::Yellow)),
+        Span::styled("parked = blocked ", Style::default().fg(Color::Gray)),
+    ])
 }
 
 fn runway_lane_line(

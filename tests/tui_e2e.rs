@@ -106,6 +106,8 @@ fn renders_views_detail_navigation_and_quit() {
     // Backlog tasks stay off the runway entirely.
     assert!(!screen.contains("0006"));
     assert!(screen.contains("? shortcuts"));
+    assert!(screen.contains("\u{25b6} running"));
+    assert!(screen.contains("~waiting on holder"));
 
     tui.press_char('?').unwrap();
     let screen = tui.render_text().unwrap();
@@ -113,6 +115,8 @@ fn renders_views_detail_navigation_and_quit() {
     assert!(screen.contains("Task actions"));
     assert!(screen.contains("c claim"));
     assert!(screen.contains("space/B backlog overlay"));
+    assert!(screen.contains("Runway legend"));
+    assert!(screen.contains("area held by the wait: task"));
     tui.press_char('?').unwrap();
     assert!(!tui.render_text().unwrap().contains("Shortcuts"));
 

@@ -128,7 +128,7 @@ pub fn compute_next_with_resolution(
     NextReport { ready, blocked }
 }
 
-fn compare_next_order(a: &Task, b: &Task) -> std::cmp::Ordering {
+pub fn compare_next_order(a: &Task, b: &Task) -> std::cmp::Ordering {
     cmp_priority(&a.frontmatter.priority, &b.frontmatter.priority)
         .then_with(|| compare_created_at(a, b))
         .then_with(|| a.frontmatter.id.cmp(&b.frontmatter.id))

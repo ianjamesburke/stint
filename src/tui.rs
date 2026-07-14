@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::io::{self, Stdout};
 use std::path::PathBuf;
@@ -27,9 +27,10 @@ use stint::mutate::{
     new_task_content, next_task_id, set_completed_at, set_started_at_if_absent, set_status,
     title_to_slug,
 };
+use stint::next::{compare_next_order, compute_next, NextOptions};
 use stint::schema::{BlockedByRef, Sprint, Task, TaskStatus};
 use stint::serialize::serialize_task;
-use stint::state::{active_blockers, classify, done_ids, TaskState};
+use stint::state::{active_blockers, classify, done_ids};
 use stint::status::{compute_status, StatusReport};
 
 use crate::repo::StintRepo;
@@ -133,18 +134,18 @@ fn suspend_terminal<T>(
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum View {
-    Board,
+    Runway,
     Table,
 }
 
 impl View {
     fn all() -> [Self; 2] {
-        [Self::Board, Self::Table]
+        [Self::Runway, Self::Table]
     }
 
     fn label(self) -> &'static str {
         match self {
-            View::Board => "Board",
+            View::Runway => "Runway",
             View::Table => "Table",
         }
     }
@@ -162,33 +163,206 @@ impl View {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum BoardColumn {
-    Backlog,
-    Todo,
-    Active,
+const CHIP_WIDTH: usize = 24;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum RunwayItemKind {
+    Running,
+    Ready,
+    /// Ready by dependencies but its area is occupied; holders are the
+    /// in-progress (or earlier-selected) task ids holding the area.
+    Conflicted { holders: Vec<String> },
 }
 
-impl BoardColumn {
-    fn all() -> [Self; 3] {
-        [Self::Backlog, Self::Todo, Self::Active]
+#[derive(Debug, Clone)]
+struct RunwayItem {
+    id: String,
+    title: String,
+    extra_areas: Vec<String>,
+    kind: RunwayItemKind,
+}
+
+#[derive(Debug, Clone)]
+struct RunwayLane {
+    name: Option<String>,
+    items: Vec<RunwayItem>,
+}
+
+impl RunwayLane {
+    fn label(&self) -> &str {
+        self.name.as_deref().unwrap_or("unassigned")
     }
 
-    fn label(self) -> &'static str {
-        match self {
-            Self::Backlog => "backlog",
-            Self::Todo => "todo",
-            Self::Active => "active",
+    fn is_idle(&self) -> bool {
+        !self
+            .items
+            .iter()
+            .any(|item| item.kind == RunwayItemKind::Running)
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ParkedItem {
+    id: String,
+    title: String,
+    blockers: Vec<BlockedByRef>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct RunwayModel {
+    lanes: Vec<RunwayLane>,
+    parked: Vec<ParkedItem>,
+}
+
+impl RunwayModel {
+    /// Row lengths in traversal order: one row per lane, plus a final row for
+    /// the parked section when it is non-empty. Rows are never empty.
+    fn row_lens(&self) -> Vec<usize> {
+        let mut lens: Vec<usize> = self.lanes.iter().map(|lane| lane.items.len()).collect();
+        if !self.parked.is_empty() {
+            lens.push(self.parked.len());
         }
+        lens
     }
 
-    fn index(self) -> usize {
-        match self {
-            Self::Backlog => 0,
-            Self::Todo => 1,
-            Self::Active => 2,
-        }
+    fn flat_ids(&self) -> Vec<&str> {
+        self.lanes
+            .iter()
+            .flat_map(|lane| lane.items.iter().map(|item| item.id.as_str()))
+            .chain(self.parked.iter().map(|item| item.id.as_str()))
+            .collect()
     }
+
+    fn locate(&self, flat: usize) -> Option<(usize, usize)> {
+        let mut offset = 0;
+        for (row, len) in self.row_lens().into_iter().enumerate() {
+            if flat < offset + len {
+                return Some((row, flat - offset));
+            }
+            offset += len;
+        }
+        None
+    }
+
+    fn flat_of(&self, row: usize, slot: usize) -> usize {
+        self.row_lens().into_iter().take(row).sum::<usize>() + slot
+    }
+}
+
+fn build_runway_model(
+    tasks: &[Task],
+    sprints: &[Sprint],
+    search: &str,
+    filter: &str,
+) -> RunwayModel {
+    let report = compute_next(
+        tasks,
+        sprints,
+        NextOptions {
+            sprint: None,
+            include_area_conflicts: true,
+            include_backlog: false,
+        },
+    );
+    let done = done_ids(tasks);
+    let task_sprint = task_sprint_map(sprints);
+    let by_id: HashMap<&str, &Task> = tasks
+        .iter()
+        .map(|task| (task.frontmatter.id.as_str(), task))
+        .collect();
+    let search_needle = search.to_lowercase();
+    let filter_needle = filter.to_lowercase();
+    let keep = |id: &str| -> bool {
+        let Some(task) = by_id.get(id) else {
+            return false;
+        };
+        (search_needle.is_empty() || task_matches_text(task, &search_needle))
+            && (filter_needle.is_empty()
+                || task_matches_filter(task, &filter_needle, &task_sprint, &done))
+    };
+
+    let mut named: BTreeMap<String, Vec<RunwayItem>> = BTreeMap::new();
+    let mut unassigned: Vec<RunwayItem> = Vec::new();
+    let mut place = |first_area: Option<String>, item: RunwayItem| match first_area {
+        Some(area) => named.entry(area).or_default().push(item),
+        None => unassigned.push(item),
+    };
+
+    let mut running: Vec<&Task> = tasks
+        .iter()
+        .filter(|task| matches!(task.frontmatter.status, TaskStatus::InProgress))
+        .collect();
+    running.sort_by(|a, b| a.frontmatter.id.cmp(&b.frontmatter.id));
+    for task in running {
+        if !keep(&task.frontmatter.id) {
+            continue;
+        }
+        let areas = &task.frontmatter.area;
+        place(
+            areas.first().cloned(),
+            RunwayItem {
+                id: task.frontmatter.id.clone(),
+                title: task.frontmatter.title.clone(),
+                extra_areas: areas.iter().skip(1).cloned().collect(),
+                kind: RunwayItemKind::Running,
+            },
+        );
+    }
+
+    for task in &report.ready {
+        if !keep(&task.id) {
+            continue;
+        }
+        let mut holders: Vec<String> = task
+            .area_conflicts
+            .iter()
+            .chain(task.selected_conflicts.iter())
+            .cloned()
+            .collect();
+        holders.sort();
+        holders.dedup();
+        let kind = if holders.is_empty() {
+            RunwayItemKind::Ready
+        } else {
+            RunwayItemKind::Conflicted { holders }
+        };
+        place(
+            task.area.first().cloned(),
+            RunwayItem {
+                id: task.id.clone(),
+                title: task.title.clone(),
+                extra_areas: task.area.iter().skip(1).cloned().collect(),
+                kind,
+            },
+        );
+    }
+
+    let mut lanes: Vec<RunwayLane> = named
+        .into_iter()
+        .map(|(name, items)| RunwayLane {
+            name: Some(name),
+            items,
+        })
+        .collect();
+    if !unassigned.is_empty() {
+        lanes.push(RunwayLane {
+            name: None,
+            items: unassigned,
+        });
+    }
+
+    let parked = report
+        .blocked
+        .iter()
+        .filter(|task| keep(&task.id))
+        .map(|task| ParkedItem {
+            id: task.id.clone(),
+            title: task.title.clone(),
+            blockers: task.blockers.clone(),
+        })
+        .collect();
+
+    RunwayModel { lanes, parked }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -331,7 +505,6 @@ struct App {
     data: AppData,
     view: View,
     selected: usize,
-    board_column: BoardColumn,
     sprint_index: usize,
     sort: SortMode,
     table_show_done: bool,
@@ -341,6 +514,8 @@ struct App {
     input: String,
     show_detail: bool,
     show_help: bool,
+    show_backlog: bool,
+    backlog_index: usize,
     command_index: usize,
     custom_menu: bool,
     custom_index: usize,
@@ -360,9 +535,8 @@ impl App {
         Ok(Self {
             repo,
             data,
-            view: View::Board,
+            view: View::Runway,
             selected: 0,
-            board_column: BoardColumn::Backlog,
             sprint_index: 0,
             sort: SortMode::Id,
             table_show_done: false,
@@ -372,6 +546,8 @@ impl App {
             input: String::new(),
             show_detail: false,
             show_help: false,
+            show_backlog: false,
+            backlog_index: 0,
             command_index: 0,
             custom_menu: false,
             custom_index: 0,
@@ -426,37 +602,52 @@ impl App {
     }
 
     fn visible_tasks(&self) -> Vec<&Task> {
-        let done = done_ids(&self.data.tasks);
-        let tasks: Vec<&Task> = match self.view {
-            View::Board => self.board_tasks_for_column(self.board_column, &done),
-            View::Table => self
-                .data
-                .tasks
-                .iter()
-                .filter(|task| self.table_show_done || !is_closed_task(task))
-                .collect(),
-        };
-
-        self.filtered_sorted_tasks(tasks, &done)
+        match self.view {
+            View::Runway => {
+                let model = self.runway_model();
+                let by_id: HashMap<&str, &Task> = self
+                    .data
+                    .tasks
+                    .iter()
+                    .map(|task| (task.frontmatter.id.as_str(), task))
+                    .collect();
+                model
+                    .flat_ids()
+                    .into_iter()
+                    .filter_map(|id| by_id.get(id).copied())
+                    .collect()
+            }
+            View::Table => {
+                let done = done_ids(&self.data.tasks);
+                let tasks: Vec<&Task> = self
+                    .data
+                    .tasks
+                    .iter()
+                    .filter(|task| self.table_show_done || !is_closed_task(task))
+                    .collect();
+                self.filtered_sorted_tasks(tasks, &done)
+            }
+        }
     }
 
-    fn board_tasks_for_column<'a>(
-        &'a self,
-        column: BoardColumn,
-        done: &HashSet<&str>,
-    ) -> Vec<&'a Task> {
-        self.data
+    fn runway_model(&self) -> RunwayModel {
+        build_runway_model(
+            &self.data.tasks,
+            &self.data.sprints,
+            &self.search,
+            &self.filter,
+        )
+    }
+
+    fn backlog_tasks(&self) -> Vec<&Task> {
+        let mut tasks: Vec<&Task> = self
+            .data
             .tasks
             .iter()
-            .filter(|task| match column {
-                BoardColumn::Backlog => matches!(task.frontmatter.status, TaskStatus::Backlog),
-                BoardColumn::Todo => {
-                    matches!(task.frontmatter.status, TaskStatus::Todo)
-                        && classify(task, done) == TaskState::Ready
-                }
-                BoardColumn::Active => matches!(task.frontmatter.status, TaskStatus::InProgress),
-            })
-            .collect()
+            .filter(|task| matches!(task.frontmatter.status, TaskStatus::Backlog))
+            .collect();
+        tasks.sort_by(|a, b| compare_next_order(a, b));
+        tasks
     }
 
     fn filtered_sorted_tasks<'a>(
@@ -468,38 +659,11 @@ impl App {
             let needle = self.search.to_lowercase();
             tasks.retain(|task| task_matches_text(task, &needle));
         }
-        // Build task_id -> sprint_id lookup from sprint index files.
-        let task_sprint: HashMap<&str, &str> = self
-            .data
-            .sprints
-            .iter()
-            .flat_map(|s| {
-                s.task_ids
-                    .iter()
-                    .map(move |e| (numeric_prefix(e), s.header.id.as_str()))
-            })
-            .collect();
+        let task_sprint = task_sprint_map(&self.data.sprints);
 
         if !self.filter.is_empty() {
             let needle = self.filter.to_lowercase();
-            tasks.retain(|task| {
-                classify(task, &done).as_str().contains(&needle)
-                    || task_sprint
-                        .get(task.frontmatter.id.as_str())
-                        .unwrap_or(&"")
-                        .to_lowercase()
-                        .contains(&needle)
-                    || task
-                        .frontmatter
-                        .area
-                        .iter()
-                        .any(|area| area.to_lowercase().contains(&needle))
-                    || task
-                        .frontmatter
-                        .tags
-                        .iter()
-                        .any(|tag| tag.to_lowercase().contains(&needle))
-            });
+            tasks.retain(|task| task_matches_filter(task, &needle, &task_sprint, done));
         }
 
         match self.sort {
@@ -523,12 +687,6 @@ impl App {
             }),
         }
         tasks
-    }
-
-    fn board_column_has_visible_tasks(&self, column: BoardColumn, done: &HashSet<&str>) -> bool {
-        !self
-            .filtered_sorted_tasks(self.board_tasks_for_column(column, done), done)
-            .is_empty()
     }
 
     fn selected_task_id(&self) -> Option<&str> {
@@ -555,7 +713,7 @@ impl App {
 
         self.render_header(frame, chunks[0]);
         match self.view {
-            View::Board => self.render_board(frame, chunks[1]),
+            View::Runway => self.render_runway(frame, chunks[1]),
             View::Table => self.render_table(frame, chunks[1]),
         }
         self.render_footer(frame, chunks[2]);
@@ -576,6 +734,9 @@ impl App {
         }
         if self.custom_menu {
             self.render_custom_menu(frame, centered_rect(64, 60, area));
+        }
+        if self.show_backlog {
+            self.render_backlog_overlay(frame, centered_rect(64, 60, area));
         }
     }
 
@@ -606,36 +767,180 @@ impl App {
         frame.render_widget(tabs, area);
     }
 
-    fn render_board(&self, frame: &mut Frame<'_>, area: Rect) {
-        let board_columns = BoardColumn::all();
-        let constraints = board_columns.map(|_| Constraint::Percentage(33));
-        let areas = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints(constraints)
+    fn render_runway(&self, frame: &mut Frame<'_>, area: Rect) {
+        let model = self.runway_model();
+        let parked_height = if model.parked.is_empty() {
+            0
+        } else {
+            (model.parked.len() as u16 + 2).min(8)
+        };
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(3), Constraint::Length(parked_height)])
             .split(area);
-        let done = done_ids(&self.data.tasks);
-        let visible_rows = list_body_rows(area);
-        for (index, column) in board_columns.iter().enumerate() {
-            let tasks =
-                self.filtered_sorted_tasks(self.board_tasks_for_column(*column, &done), &done);
-            let (start, selected) = if *column == self.board_column {
-                let start = viewport_start(self.selected, tasks.len(), visible_rows);
-                (start, self.selected.saturating_sub(start))
-            } else {
-                (0, usize::MAX)
-            };
-            let visible_tasks = tasks
-                .iter()
-                .skip(start)
-                .take(visible_rows)
-                .copied()
-                .collect::<Vec<_>>();
-            let title = format!("{} {}", column.label(), tasks.len());
-            frame.render_widget(
-                board_task_list(&title, &visible_tasks, selected, &self.data.tasks),
-                areas[index],
-            );
+        let selected_loc = model.locate(self.selected);
+        self.render_runway_lanes(frame, chunks[0], &model, selected_loc);
+        if !model.parked.is_empty() {
+            self.render_parked(frame, chunks[1], &model, selected_loc);
         }
+    }
+
+    fn render_runway_lanes(
+        &self,
+        frame: &mut Frame<'_>,
+        area: Rect,
+        model: &RunwayModel,
+        selected_loc: Option<(usize, usize)>,
+    ) {
+        let title = format!("Runway {}", model.lanes.len());
+        if model.lanes.is_empty() {
+            frame.render_widget(
+                Paragraph::new(Line::styled(
+                    "no ready or in-progress tasks",
+                    Style::default().fg(Color::Gray),
+                ))
+                .block(Block::default().borders(Borders::ALL).title(title)),
+                area,
+            );
+            return;
+        }
+        let visible_rows = list_body_rows(area);
+        let selected_lane = selected_loc
+            .map(|(row, _)| row)
+            .unwrap_or(0)
+            .min(model.lanes.len() - 1);
+        let start = viewport_start(selected_lane, model.lanes.len(), visible_rows);
+        let label_width = model
+            .lanes
+            .iter()
+            .map(|lane| lane.label().chars().count())
+            .max()
+            .unwrap_or(0)
+            .max(10);
+        let chip_capacity = usize::from(area.width)
+            .saturating_sub(2 + label_width + 6)
+            .checked_div(CHIP_WIDTH + 3)
+            .unwrap_or(0)
+            .max(1);
+        let lines = model
+            .lanes
+            .iter()
+            .enumerate()
+            .skip(start)
+            .take(visible_rows)
+            .map(|(lane_index, lane)| {
+                let selected_slot = selected_loc
+                    .filter(|(row, _)| *row == lane_index)
+                    .map(|(_, slot)| slot);
+                runway_lane_line(lane, selected_slot, label_width, chip_capacity)
+            })
+            .collect::<Vec<_>>();
+        frame.render_widget(
+            Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title(title)),
+            area,
+        );
+    }
+
+    fn render_parked(
+        &self,
+        frame: &mut Frame<'_>,
+        area: Rect,
+        model: &RunwayModel,
+        selected_loc: Option<(usize, usize)>,
+    ) {
+        let parked_row = model.lanes.len();
+        let selected_slot = selected_loc
+            .filter(|(row, _)| *row == parked_row)
+            .map(|(_, slot)| slot);
+        let visible_rows = list_body_rows(area);
+        let start = viewport_start(
+            selected_slot.unwrap_or(0),
+            model.parked.len(),
+            visible_rows,
+        );
+        let items = model
+            .parked
+            .iter()
+            .enumerate()
+            .skip(start)
+            .take(visible_rows)
+            .map(|(slot, item)| {
+                let selected = selected_slot == Some(slot);
+                let marker = if selected { "> " } else { "  " };
+                let style = if selected {
+                    Style::default().bg(Color::DarkGray)
+                } else {
+                    Style::default()
+                };
+                ListItem::new(Line::from(vec![
+                    Span::styled(marker, Style::default().fg(Color::Gray)),
+                    Span::styled(
+                        item.id.clone(),
+                        Style::default()
+                            .fg(Color::Cyan)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::raw(" "),
+                    Span::raw(truncate(&item.title, 48)),
+                    Span::styled(
+                        format!(" - blocked: {}", format_blockers_inline(&item.blockers)),
+                        Style::default().fg(Color::Yellow),
+                    ),
+                ]))
+                .style(style)
+            })
+            .collect::<Vec<_>>();
+        frame.render_widget(
+            List::new(items).block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(format!("Parked {}", model.parked.len())),
+            ),
+            area,
+        );
+    }
+
+    fn render_backlog_overlay(&self, frame: &mut Frame<'_>, area: Rect) {
+        frame.render_widget(Clear, area);
+        let tasks = self.backlog_tasks();
+        let index = self.backlog_index.min(tasks.len().saturating_sub(1));
+        let items = if tasks.is_empty() {
+            vec![ListItem::new("backlog is empty")]
+        } else {
+            tasks
+                .iter()
+                .enumerate()
+                .map(|(i, task)| {
+                    let selected = i == index;
+                    let marker = if selected { "> " } else { "  " };
+                    let style = if selected {
+                        Style::default().bg(Color::DarkGray)
+                    } else {
+                        Style::default()
+                    };
+                    ListItem::new(Line::from(vec![
+                        Span::styled(marker, Style::default().fg(Color::Gray)),
+                        Span::styled(
+                            task.frontmatter.id.clone(),
+                            Style::default()
+                                .fg(Color::Cyan)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::raw(" "),
+                        Span::raw(truncate(&task.frontmatter.title, 56)),
+                    ]))
+                    .style(style)
+                })
+                .collect()
+        };
+        frame.render_widget(
+            List::new(items).block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title("Backlog - r promote - Esc close"),
+            ),
+            area,
+        );
     }
 
     fn render_table(&self, frame: &mut Frame<'_>, area: Rect) {
@@ -717,7 +1022,7 @@ impl App {
         let lines = if self.message.is_empty() || self.message_at.elapsed() > MESSAGE_TTL {
             vec![
                 Line::styled(
-                    "tab views - arrows/hjkl move - enter detail - c claim - ? shortcuts - q quit",
+                    "tab views - hjkl move - enter detail - c claim - space backlog - ? shortcuts - q quit",
                     Style::default().fg(Color::Gray),
                 ),
                 Line::from(vec![
@@ -836,6 +1141,7 @@ impl App {
                     .add_modifier(Modifier::BOLD),
             ),
             Line::from("tab / shift-tab  switch views"),
+            Line::from("j/k lanes        h/l within lane (runway)"),
             Line::from("arrows or hjkl    move selection"),
             Line::from("enter            open task detail"),
             Line::from("c                claim selected task"),
@@ -850,7 +1156,7 @@ impl App {
             ),
             Line::from("c claim          d done          r ready"),
             Line::from("b defer          a archive       e edit"),
-            Line::from("space toggle backlog/todo"),
+            Line::from("space/B backlog overlay - r promote"),
             Line::from("n new            N new + edit"),
             Line::from(""),
             Line::styled(
@@ -968,6 +1274,9 @@ impl App {
         if self.custom_menu {
             return self.handle_custom_key(key, terminal);
         }
+        if self.show_backlog {
+            return self.handle_backlog_key(key);
+        }
         if self.prompt.is_some() {
             return self.handle_prompt_key(key, terminal);
         }
@@ -1034,8 +1343,9 @@ impl App {
             KeyCode::Char('b') if plain_key(key) => {
                 return self.transition_selected("defer", TaskStatus::Backlog, false)
             }
-            KeyCode::Char(' ') if plain_key(key) => {
-                return self.space_toggle();
+            KeyCode::Char(' ') | KeyCode::Char('B') if plain_key(key) => {
+                self.show_backlog = true;
+                self.backlog_index = 0;
             }
             KeyCode::Char('a') if plain_key(key) => {
                 return self.transition_selected("archive", TaskStatus::Archived, false)
@@ -1053,8 +1363,12 @@ impl App {
                 self.open_prompt(PromptKind::Filter, &self.filter.clone())
             }
             KeyCode::Char('s') if plain_key(key) => {
-                self.sort = self.sort.next();
-                self.set_message(format!("sort: {}", self.sort.label()));
+                if self.view == View::Runway {
+                    self.set_message("sort applies to table view".to_owned());
+                } else {
+                    self.sort = self.sort.next();
+                    self.set_message(format!("sort: {}", self.sort.label()));
+                }
             }
             KeyCode::Char('x') if plain_key(key) => self.custom_menu = true,
             KeyCode::Char(':') if plain_key(key) => self.open_prompt(PromptKind::Command, ""),
@@ -1220,6 +1534,20 @@ impl App {
     }
 
     fn move_selection(&mut self, delta: isize) {
+        match self.view {
+            View::Runway => self.move_runway_lane(delta),
+            View::Table => self.move_linear(delta),
+        }
+    }
+
+    fn move_horizontal(&mut self, delta: isize) {
+        match self.view {
+            View::Runway => self.move_runway_slot(delta),
+            View::Table => self.move_linear(delta),
+        }
+    }
+
+    fn move_linear(&mut self, delta: isize) {
         let len = self.visible_tasks().len();
         if len == 0 {
             self.selected = 0;
@@ -1228,36 +1556,68 @@ impl App {
         self.selected = wrap_index(self.selected, len, delta);
     }
 
-    fn move_horizontal(&mut self, delta: isize) {
-        match self.view {
-            View::Board => {
-                self.move_board_column(delta);
-            }
-            _ => self.move_selection(delta),
-        }
+    fn move_runway_slot(&mut self, delta: isize) {
+        let model = self.runway_model();
+        let Some((row, slot)) = model.locate(self.selected) else {
+            return;
+        };
+        let len = model.row_lens()[row];
+        let new_slot = if delta.is_negative() {
+            slot.saturating_sub(delta.unsigned_abs())
+        } else {
+            (slot + delta as usize).min(len - 1)
+        };
+        self.selected = model.flat_of(row, new_slot);
     }
 
-    fn move_board_column(&mut self, delta: isize) {
-        let columns = BoardColumn::all();
-        if delta == 0 {
+    fn move_runway_lane(&mut self, delta: isize) {
+        let model = self.runway_model();
+        let lens = model.row_lens();
+        if lens.is_empty() {
+            self.selected = 0;
             return;
         }
+        let (row, slot) = model.locate(self.selected).unwrap_or((0, 0));
+        let new_row = wrap_index(row, lens.len(), delta);
+        let new_slot = slot.min(lens[new_row] - 1);
+        self.selected = model.flat_of(new_row, new_slot);
+    }
 
-        let done = done_ids(&self.data.tasks);
-        let direction = if delta.is_negative() { -1 } else { 1 };
-        for offset in 1..=columns.len() {
-            let candidate_index = wrap_index(
-                self.board_column.index(),
-                columns.len(),
-                direction * offset as isize,
-            );
-            let candidate = columns[candidate_index];
-            if self.board_column_has_visible_tasks(candidate, &done) {
-                self.board_column = candidate;
-                self.selected = 0;
-                return;
+    fn handle_backlog_key(&mut self, key: KeyEvent) -> anyhow::Result<bool> {
+        let len = self.backlog_tasks().len();
+        self.backlog_index = self.backlog_index.min(len.saturating_sub(1));
+        match key.code {
+            KeyCode::Esc => self.show_backlog = false,
+            KeyCode::Char(' ') | KeyCode::Char('B') if plain_key(key) => self.show_backlog = false,
+            KeyCode::Char('q') if plain_key(key) => self.should_quit = true,
+            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.should_quit = true
             }
+            KeyCode::Down => self.backlog_index = wrap_index(self.backlog_index, len, 1),
+            KeyCode::Char('j') if plain_key(key) => {
+                self.backlog_index = wrap_index(self.backlog_index, len, 1)
+            }
+            KeyCode::Up => self.backlog_index = wrap_index(self.backlog_index, len, -1),
+            KeyCode::Char('k') if plain_key(key) => {
+                self.backlog_index = wrap_index(self.backlog_index, len, -1)
+            }
+            KeyCode::Enter => return self.promote_backlog_selection(),
+            KeyCode::Char('r') if plain_key(key) => return self.promote_backlog_selection(),
+            _ => {}
         }
+        Ok(false)
+    }
+
+    fn promote_backlog_selection(&mut self) -> anyhow::Result<bool> {
+        let id = {
+            let tasks = self.backlog_tasks();
+            let Some(task) = tasks.get(self.backlog_index) else {
+                self.set_message("backlog is empty".to_owned());
+                return Ok(false);
+            };
+            task.frontmatter.id.clone()
+        };
+        self.transition_task_by_id(&id, "ready", TaskStatus::Todo, false)
     }
 
     fn open_prompt(&mut self, prompt: PromptKind, value: &str) {
@@ -1300,36 +1660,6 @@ impl App {
             );
         }
         Ok(())
-    }
-
-    fn space_toggle(&mut self) -> anyhow::Result<bool> {
-        let (target_status, label, target_column) =
-            match self.selected_task().map(|t| &t.frontmatter.status) {
-                Some(TaskStatus::Backlog) => (TaskStatus::Todo, "ready", BoardColumn::Todo),
-                Some(TaskStatus::Todo) => (TaskStatus::Backlog, "defer", BoardColumn::Backlog),
-                _ => return Ok(false),
-            };
-        let task_id = self.selected_task_id().map(str::to_owned);
-        let visible_len = self.visible_tasks().len();
-        let was_last = visible_len > 0 && self.selected + 1 >= visible_len;
-        self.transition_selected(label, target_status, false)?;
-        // Reload data and handle focus: follow the task only when it was the
-        // last item in the current column; otherwise let the next item fill
-        // the vacated slot (clamp_selection handles this automatically).
-        match load_data(&self.repo) {
-            Ok(data) => {
-                self.data = data;
-                let commands = load_commands(&self.repo);
-                self.claim_command = commands.claim;
-                self.custom_commands = commands.custom;
-                if was_last && matches!(self.view, View::Board) {
-                    self.board_column = target_column;
-                }
-                self.restore_selection(task_id.as_deref());
-            }
-            Err(error) => self.set_message(format!("reload failed: {error:#}")),
-        }
-        Ok(false)
     }
 
     fn claim_selected<H: TerminalHost>(&mut self, terminal: &mut H) -> anyhow::Result<bool> {
@@ -1380,7 +1710,17 @@ impl App {
             .selected_task_id()
             .ok_or_else(|| anyhow::anyhow!("no selected task"))?
             .to_owned();
-        let path = self.repo.resolve_task_path(&id)?;
+        self.transition_task_by_id(&id, label, status, set_started)
+    }
+
+    fn transition_task_by_id(
+        &mut self,
+        id: &str,
+        label: &str,
+        status: TaskStatus,
+        set_started: bool,
+    ) -> anyhow::Result<bool> {
+        let path = self.repo.resolve_task_path(id)?;
         let before = read_optional(&path)?;
         let mut task = self.repo.read_task(&path)?;
         set_status(&mut task, status);
@@ -1698,50 +2038,112 @@ fn load_commands(repo: &StintRepo) -> LoadedCommands {
     }
 }
 
-fn board_task_list<'a>(
-    title: &str,
-    tasks: &[&'a Task],
-    selected: usize,
-    all_tasks: &[Task],
-) -> List<'a> {
-    let done = done_ids(all_tasks);
-    let items = tasks
+fn runway_lane_line(
+    lane: &RunwayLane,
+    selected_slot: Option<usize>,
+    label_width: usize,
+    chip_capacity: usize,
+) -> Line<'static> {
+    let idle = lane.is_idle();
+    let label_style = if idle {
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::Gray)
+    };
+    let mut spans = vec![
+        Span::styled(
+            format!("{:<width$}", lane.label(), width = label_width),
+            label_style,
+        ),
+        Span::styled(if idle { " idle " } else { "      " }, label_style),
+    ];
+    let start = viewport_start(selected_slot.unwrap_or(0), lane.items.len(), chip_capacity);
+    for (slot, item) in lane
+        .items
         .iter()
         .enumerate()
-        .map(|(index, task)| {
-            let state = classify(task, &done);
-            let marker = if index == selected { "> " } else { "  " };
-            let style = if index == selected {
-                Style::default().bg(Color::DarkGray)
-            } else {
-                Style::default()
-            };
-            let reason = if state == TaskState::Blocked {
-                let blockers = active_blockers(task, &done);
-                format!(" - {}", format_blockers_inline(&blockers))
-            } else {
-                String::new()
-            };
-            ListItem::new(Line::from(vec![
-                Span::styled(marker, Style::default().fg(Color::Gray)),
-                Span::styled(
-                    task.frontmatter.id.clone(),
-                    Style::default()
-                        .fg(Color::Cyan)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::raw(" "),
-                Span::raw(truncate(&task.frontmatter.title, 56)),
-                Span::styled(reason, Style::default().fg(Color::Yellow)),
-            ]))
-            .style(style)
-        })
-        .collect::<Vec<_>>();
-    List::new(items).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title(title.to_owned()),
+        .skip(start)
+        .take(chip_capacity)
+    {
+        spans.push(runway_chip(item, selected_slot == Some(slot)));
+        spans.push(Span::raw(" "));
+    }
+    let hidden = lane.items.len().saturating_sub(start + chip_capacity);
+    if hidden > 0 {
+        spans.push(Span::styled(
+            format!("+{hidden}"),
+            Style::default().fg(Color::DarkGray),
+        ));
+    }
+    Line::from(spans)
+}
+
+fn runway_chip(item: &RunwayItem, selected: bool) -> Span<'static> {
+    let mut style = match &item.kind {
+        RunwayItemKind::Running => Style::default()
+            .fg(Color::Green)
+            .add_modifier(Modifier::BOLD),
+        RunwayItemKind::Ready => Style::default().fg(Color::Cyan),
+        RunwayItemKind::Conflicted { .. } => Style::default().fg(Color::Yellow),
+    };
+    if selected {
+        style = style.bg(Color::DarkGray);
+    }
+    let mut text = match &item.kind {
+        RunwayItemKind::Running => format!("\u{25b6}{}", item.id),
+        RunwayItemKind::Ready => item.id.clone(),
+        RunwayItemKind::Conflicted { holders } => {
+            format!("~{} wait:{}", item.id, holders.join(","))
+        }
+    };
+    text.push(' ');
+    text.push_str(&item.title);
+    if !item.extra_areas.is_empty() {
+        text.push_str(" +");
+        text.push_str(&item.extra_areas.join("+"));
+    }
+    Span::styled(
+        format!("[{:<width$}]", truncate(&text, CHIP_WIDTH), width = CHIP_WIDTH),
+        style,
     )
+}
+
+// Build task_id -> sprint_id lookup from sprint index files.
+fn task_sprint_map(sprints: &[Sprint]) -> HashMap<&str, &str> {
+    sprints
+        .iter()
+        .flat_map(|s| {
+            s.task_ids
+                .iter()
+                .map(move |e| (numeric_prefix(e), s.header.id.as_str()))
+        })
+        .collect()
+}
+
+fn task_matches_filter(
+    task: &Task,
+    needle: &str,
+    task_sprint: &HashMap<&str, &str>,
+    done: &HashSet<&str>,
+) -> bool {
+    classify(task, done).as_str().contains(needle)
+        || task_sprint
+            .get(task.frontmatter.id.as_str())
+            .unwrap_or(&"")
+            .to_lowercase()
+            .contains(needle)
+        || task
+            .frontmatter
+            .area
+            .iter()
+            .any(|area| area.to_lowercase().contains(needle))
+        || task
+            .frontmatter
+            .tags
+            .iter()
+            .any(|tag| tag.to_lowercase().contains(needle))
 }
 
 fn task_matches_text(task: &Task, needle: &str) -> bool {
@@ -1994,7 +2396,138 @@ fn run_shell_command(command: &str) -> anyhow::Result<bool> {
 
 #[cfg(test)]
 mod tests {
-    use super::viewport_start;
+    use super::*;
+    use stint::parse::parse_task;
+
+    fn task(id: &str, title: &str, status: &str, extra: &str) -> Task {
+        let content =
+            format!("---\nid: \"{id}\"\ntitle: \"{title}\"\nstatus: {status}\n{extra}\n---\n");
+        parse_task(&content, &format!("{id}-task.md")).unwrap()
+    }
+
+    fn model(tasks: &[Task]) -> RunwayModel {
+        build_runway_model(tasks, &[], "", "")
+    }
+
+    fn lane_names(model: &RunwayModel) -> Vec<&str> {
+        model.lanes.iter().map(|lane| lane.label()).collect()
+    }
+
+    fn lane_ids(model: &RunwayModel, lane: usize) -> Vec<&str> {
+        model.lanes[lane]
+            .items
+            .iter()
+            .map(|item| item.id.as_str())
+            .collect()
+    }
+
+    #[test]
+    fn lanes_group_by_first_area_alphabetically_with_unassigned_last() {
+        let tasks = vec![
+            task("0001", "A", "todo", "area: [network]"),
+            task("0002", "B", "in-progress", "area: [cli]"),
+            task("0003", "C", "todo", ""),
+        ];
+        let model = model(&tasks);
+        assert_eq!(lane_names(&model), vec!["cli", "network", "unassigned"]);
+        assert_eq!(lane_ids(&model, 0), vec!["0002"]);
+        assert_eq!(lane_ids(&model, 1), vec!["0001"]);
+        assert_eq!(lane_ids(&model, 2), vec!["0003"]);
+        assert!(model.parked.is_empty());
+    }
+
+    #[test]
+    fn running_task_precedes_ready_queue_in_its_lane() {
+        let tasks = vec![
+            task("0001", "A", "todo", "area: [cli]"),
+            task("0002", "B", "in-progress", "area: [cli]"),
+        ];
+        let model = model(&tasks);
+        assert_eq!(lane_ids(&model, 0), vec!["0002", "0001"]);
+        assert_eq!(model.lanes[0].items[0].kind, RunwayItemKind::Running);
+        assert!(matches!(
+            model.lanes[0].items[1].kind,
+            RunwayItemKind::Conflicted { .. }
+        ));
+    }
+
+    #[test]
+    fn conflicted_item_names_the_holding_task() {
+        let tasks = vec![
+            task("0001", "A", "in-progress", "area: [cli]"),
+            task("0002", "B", "todo", "area: [cli]"),
+        ];
+        let model = model(&tasks);
+        let RunwayItemKind::Conflicted { holders } = &model.lanes[0].items[1].kind else {
+            panic!("expected conflicted item");
+        };
+        assert_eq!(holders, &vec!["0001".to_owned()]);
+    }
+
+    #[test]
+    fn dependency_blocked_todos_are_parked_with_blockers() {
+        let tasks = vec![
+            task("0001", "A", "todo", ""),
+            task("0002", "B", "todo", "blocked_by: [\"0001\"]"),
+        ];
+        let model = model(&tasks);
+        assert_eq!(model.parked.len(), 1);
+        assert_eq!(model.parked[0].id, "0002");
+        assert_eq!(model.parked[0].blockers.len(), 1);
+    }
+
+    #[test]
+    fn multi_area_task_renders_once_with_extra_area_annotation() {
+        let tasks = vec![task("0001", "A", "todo", "area: [cli, docs]")];
+        let model = model(&tasks);
+        assert_eq!(lane_names(&model), vec!["cli"]);
+        assert_eq!(model.lanes[0].items[0].extra_areas, vec!["docs".to_owned()]);
+    }
+
+    #[test]
+    fn ready_queue_keeps_next_order_within_lane() {
+        let tasks = vec![
+            task("0001", "Low", "todo", "area: [cli]\npriority: p3"),
+            task("0002", "High", "todo", "area: [cli]\npriority: p0"),
+        ];
+        let model = model(&tasks);
+        assert_eq!(lane_ids(&model, 0), vec!["0002", "0001"]);
+    }
+
+    #[test]
+    fn search_drops_items_and_empty_lanes() {
+        let tasks = vec![
+            task("0001", "Parser work", "todo", "area: [cli]"),
+            task("0002", "Docs pass", "todo", "area: [docs]"),
+        ];
+        let model = build_runway_model(&tasks, &[], "parser", "");
+        assert_eq!(lane_names(&model), vec!["cli"]);
+    }
+
+    #[test]
+    fn backlog_tasks_are_excluded_from_the_runway() {
+        let tasks = vec![task("0001", "A", "backlog", "area: [cli]")];
+        let model = model(&tasks);
+        assert!(model.lanes.is_empty());
+        assert!(model.parked.is_empty());
+    }
+
+    #[test]
+    fn flat_traversal_roundtrips_lane_and_slot() {
+        let tasks = vec![
+            task("0001", "A", "todo", "area: [cli]"),
+            task("0002", "B", "in-progress", "area: [cli]"),
+            task("0003", "C", "todo", "area: [docs]"),
+            task("0004", "D", "todo", "blocked_by: [\"0003\"]"),
+        ];
+        let model = model(&tasks);
+        assert_eq!(model.flat_ids(), vec!["0002", "0001", "0003", "0004"]);
+        assert_eq!(model.locate(1), Some((0, 1)));
+        assert_eq!(model.locate(2), Some((1, 0)));
+        assert_eq!(model.locate(3), Some((2, 0)));
+        assert_eq!(model.flat_of(2, 0), 3);
+        assert_eq!(model.locate(4), None);
+    }
 
     #[test]
     fn viewport_start_keeps_selected_row_visible() {

@@ -57,11 +57,20 @@ fn replace_task_status(repo: &StintRepo, name: &str, from: &str, to: &str) {
 }
 
 fn write_task(repo: &StintRepo, id: &str, title: &str, status: &str) {
+    write_task_extra(repo, id, title, status, "");
+}
+
+fn write_task_extra(repo: &StintRepo, id: &str, title: &str, status: &str, extra: &str) {
     let slug = title.to_lowercase().replace(' ', "-");
     let path = repo.tasks_dir().join(format!("{id}-{slug}.md"));
+    let extra = if extra.is_empty() {
+        String::new()
+    } else {
+        format!("{extra}\n")
+    };
     fs::write(
         path,
-        format!("---\nid: \"{id}\"\ntitle: \"{title}\"\nstatus: {status}\n---\n"),
+        format!("---\nid: \"{id}\"\ntitle: \"{title}\"\nstatus: {status}\n{extra}---\n"),
     )
     .unwrap();
 }
@@ -86,38 +95,43 @@ fn renders_views_detail_navigation_and_quit() {
     });
 
     let screen = tui.render_text().unwrap();
-    assert!(screen.contains("Board"));
-    assert!(screen.contains("backlog"));
-    assert!(screen.contains("todo"));
-    assert!(screen.contains("active"));
-    assert!(screen.contains("CLI argument parsing"));
+    assert!(screen.contains("Runway"));
+    assert!(screen.contains("build"));
+    assert!(screen.contains("cli"));
+    assert!(screen.contains("\u{25b6}0004 CLI argument"));
+    assert!(screen.contains("0001 Project scaffold"));
+    assert!(screen.contains("Parked 3"));
+    assert!(screen.contains("blocked: 0001"));
+    assert!(screen.contains("blocked: 0003, 0004"));
+    // Backlog tasks stay off the runway entirely.
+    assert!(!screen.contains("0006"));
     assert!(screen.contains("? shortcuts"));
-    assert!(!screen.contains("c claim - d done"));
 
     tui.press_char('?').unwrap();
     let screen = tui.render_text().unwrap();
     assert!(screen.contains("Shortcuts"));
     assert!(screen.contains("Task actions"));
     assert!(screen.contains("c claim"));
+    assert!(screen.contains("space/B backlog overlay"));
     tui.press_char('?').unwrap();
     assert!(!tui.render_text().unwrap().contains("Shortcuts"));
 
-    let screen = tui.render_text().unwrap();
-    assert!(screen.contains("0006 Cache API responses on disk"));
-    assert!(screen.contains("0001"));
-    assert!(!screen.contains("0006 backlog"));
-    assert!(!screen.contains("0001 todo"));
-
-    tui.press_char('l').unwrap();
+    // j/k move between lanes (parked is the last row), h/l move within a row.
     assert_eq!(tui.selected_task_id(), Some("0001"));
-    tui.press_char('l').unwrap();
+    tui.press_char('j').unwrap();
     assert_eq!(tui.selected_task_id(), Some("0004"));
+    tui.press_char('j').unwrap();
+    assert_eq!(tui.selected_task_id(), Some("0002"));
     tui.press_char('l').unwrap();
-    assert_eq!(tui.selected_task_id(), Some("0006"));
+    assert_eq!(tui.selected_task_id(), Some("0003"));
+    tui.press_char('l').unwrap();
+    assert_eq!(tui.selected_task_id(), Some("0005"));
+    tui.press_char('l').unwrap();
+    assert_eq!(tui.selected_task_id(), Some("0005"));
     press(&mut tui, KeyCode::Left);
+    assert_eq!(tui.selected_task_id(), Some("0003"));
+    tui.press_char('k').unwrap();
     assert_eq!(tui.selected_task_id(), Some("0004"));
-    tui.press_char('l').unwrap();
-    assert_eq!(tui.selected_task_id(), Some("0006"));
 
     press(&mut tui, KeyCode::Tab);
     let screen = tui.render_text().unwrap();
@@ -129,7 +143,7 @@ fn renders_views_detail_navigation_and_quit() {
     assert_eq!(tui.selected_task_id(), Some("0001"));
 
     press(&mut tui, KeyCode::BackTab);
-    assert!(tui.render_text().unwrap().contains("Board"));
+    assert!(tui.render_text().unwrap().contains("Runway"));
     press(&mut tui, KeyCode::Tab);
     assert!(tui
         .render_text()
@@ -137,7 +151,7 @@ fn renders_views_detail_navigation_and_quit() {
         .contains("Table - sort id - done hidden"));
 
     press(&mut tui, KeyCode::BackTab);
-    tui.press_char('l').unwrap();
+    assert_eq!(tui.selected_task_id(), Some("0001"));
     enter(&mut tui);
     let screen = tui.render_text().unwrap();
     assert!(screen.contains("Detail - e editor - Esc close"));
@@ -151,6 +165,80 @@ fn renders_views_detail_navigation_and_quit() {
 
     tui.press_char('q').unwrap();
     assert!(tui.should_quit());
+}
+
+#[test]
+fn blocked_todos_are_visible_in_parked_section() {
+    let (_tmp, repo) = setup();
+    let mut tui = driver(repo);
+
+    let screen = tui.render_text().unwrap();
+    assert!(screen.contains("Parked 3"));
+    assert!(screen.contains("0002"));
+    assert!(screen.contains("0003"));
+    assert!(screen.contains("0005"));
+    assert!(screen.contains("blocked: 0001"));
+}
+
+#[test]
+fn conflicted_ready_task_shows_holder_and_lane_goes_idle_when_freed() {
+    let (_tmp, repo) = setup();
+    write_task_extra(&repo, "0008", "Cli follow-up", "todo", "area:\n  - \"cli\"");
+    let mut tui = driver(StintRepo {
+        stint_dir: repo.stint_dir.clone(),
+    });
+
+    // 0004 (in-progress) holds the cli lane: 0008 is ready but waiting.
+    let screen = tui.render_text().unwrap();
+    assert!(screen.contains("~0008 wait:0004"));
+    assert_eq!(screen.matches("idle").count(), 1);
+
+    replace_task_status(&repo, "0004-cli-args.md", "status: in-progress", "status: done");
+    tui.reload();
+    let screen = tui.render_text().unwrap();
+    assert!(screen.contains("[0008 Cli follow-up"));
+    assert!(!screen.contains("~0008"));
+    assert_eq!(screen.matches("idle").count(), 2);
+}
+
+#[test]
+fn unassigned_lane_collects_area_less_tasks() {
+    let (_tmp, repo) = setup();
+    write_task(&repo, "0008", "Free task", "todo");
+    let mut tui = driver(repo);
+
+    let screen = tui.render_text().unwrap();
+    assert!(screen.contains("unassigned"));
+    assert!(screen.contains("[0008 Free task"));
+}
+
+#[test]
+fn backlog_overlay_lists_promotes_and_undoes() {
+    let (_tmp, repo) = setup();
+    let mut tui = driver(StintRepo {
+        stint_dir: repo.stint_dir.clone(),
+    });
+
+    assert!(!tui.render_text().unwrap().contains("0006"));
+
+    tui.press_char(' ').unwrap();
+    let screen = tui.render_text().unwrap();
+    assert!(screen.contains("Backlog - r promote - Esc close"));
+    assert!(screen.contains("0006 Cache API responses on disk"));
+
+    tui.press_char('r').unwrap();
+    assert!(task(&repo, "0006-caching-layer.md").contains("status: todo"));
+    let screen = tui.render_text().unwrap();
+    assert!(screen.contains("backlog is empty"));
+
+    press(&mut tui, KeyCode::Esc);
+    // 0006 is blocked by 0003, so it lands in Parked once promoted.
+    let screen = tui.render_text().unwrap();
+    assert!(screen.contains("Parked 4"));
+    assert!(screen.contains("0006"));
+
+    tui.press_char('u').unwrap();
+    assert!(task(&repo, "0006-caching-layer.md").contains("status: backlog"));
 }
 
 #[test]
@@ -248,7 +336,6 @@ fn status_shortcuts_update_markdown_and_undo_redo() {
     let mut tui = driver(StintRepo {
         stint_dir: repo.stint_dir.clone(),
     });
-    tui.press_char('l').unwrap();
     assert_eq!(tui.selected_task_id(), Some("0001"));
 
     tui.press_char('c').unwrap();
@@ -277,25 +364,26 @@ fn status_shortcuts_update_markdown_and_undo_redo() {
     tui.press_ctrl('r').unwrap();
     let content = task(&repo, "0001-project-scaffold.md");
     assert!(content.contains("status: in-progress"));
+    assert_eq!(tui.selected_task_id(), Some("0001"));
 
-    tui.press_char('l').unwrap();
     tui.press_char('d').unwrap();
     let content = task(&repo, "0001-project-scaffold.md");
     assert!(content.contains("status: done"));
     assert!(content.contains("completed_at:"));
 
+    // With 0001 done, selection falls to the cli lane's running task 0004.
+    assert_eq!(tui.selected_task_id(), Some("0004"));
     tui.press_char('r').unwrap();
     assert!(task(&repo, "0004-cli-args.md").contains("status: todo"));
 
-    tui.press_char('h').unwrap();
-    press(&mut tui, KeyCode::Down);
-    press(&mut tui, KeyCode::Down);
+    assert_eq!(tui.selected_task_id(), Some("0004"));
     tui.press_char('b').unwrap();
     assert!(task(&repo, "0004-cli-args.md").contains("status: backlog"));
 
-    tui.press_char('h').unwrap();
+    // 0004 left the runway for the backlog; archive the new selection.
+    assert_eq!(tui.selected_task_id(), Some("0002"));
     tui.press_char('a').unwrap();
-    assert!(task(&repo, "0004-cli-args.md").contains("status: archived"));
+    assert!(task(&repo, "0002-config-loader.md").contains("status: archived"));
 }
 
 #[test]
@@ -391,7 +479,7 @@ fn command_palette_and_custom_commands_run_against_selected_task() {
     let mut tui = driver(StintRepo {
         stint_dir: repo.stint_dir.clone(),
     });
-    tui.press_char('l').unwrap();
+    assert_eq!(tui.selected_task_id(), Some("0001"));
 
     tui.press_char(':').unwrap();
     enter(&mut tui);
@@ -412,6 +500,10 @@ fn command_palette_and_custom_commands_run_against_selected_task() {
     assert!(task(&repo, "0001-project-scaffold.md").contains("status: done"));
     tui.press_char('u').unwrap();
     assert!(task(&repo, "0001-project-scaffold.md").contains("status: todo"));
+
+    // Selection drifted while 0001 was done; move back to the build lane.
+    tui.press_char('k').unwrap();
+    assert_eq!(tui.selected_task_id(), Some("0001"));
 
     tui.press_char('x').unwrap();
     tui.press_char('z').unwrap();

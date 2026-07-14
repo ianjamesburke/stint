@@ -26,7 +26,7 @@ Use `just --list` for release/install helper commands.
 
 ## After Every Code Change
 
-Run `just install` immediately after any Rust change so the local binary is updated and can be tested with `stint tui`.
+Run `just install` immediately after any Rust change so the local binary is updated and can be tested by running bare `stint` (which opens the TUI in a terminal; there is no `tui` subcommand).
 
 ## Releases
 

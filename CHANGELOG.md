@@ -1,6 +1,10 @@
 # Changelog
 
 Newest releases appear first.
+## [0.3.14] - 2026-07-14
+
+### Changes
+- feat(tui): replace Board view with Runway dispatch view
 ## [0.3.13] - 2026-07-13
 
 ### Changes

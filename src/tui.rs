@@ -24,8 +24,7 @@ use ratatui::{Frame, Terminal};
 use serde::Deserialize;
 use stint::check::check;
 use stint::mutate::{
-    new_task_content, next_task_id, set_completed_at, set_started_at_if_absent, set_status,
-    title_to_slug,
+    new_task_content, set_completed_at, set_started_at_if_absent, set_status, title_to_slug,
 };
 use stint::next::{compare_next_order, compute_next, NextOptions};
 use stint::schema::{BlockedByRef, Sprint, Task, TaskStatus};
@@ -171,7 +170,9 @@ enum RunwayItemKind {
     Ready,
     /// Ready by dependencies but its area is occupied; holders are the
     /// in-progress (or earlier-selected) task ids holding the area.
-    Conflicted { holders: Vec<String> },
+    Conflicted {
+        holders: Vec<String>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -858,11 +859,7 @@ impl App {
             .filter(|(row, _)| *row == parked_row)
             .map(|(_, slot)| slot);
         let visible_rows = list_body_rows(area);
-        let start = viewport_start(
-            selected_slot.unwrap_or(0),
-            model.parked.len(),
-            visible_rows,
-        );
+        let start = viewport_start(selected_slot.unwrap_or(0), model.parked.len(), visible_rows);
         let items = model
             .parked
             .iter()
@@ -1807,8 +1804,8 @@ impl App {
         terminal: &mut H,
     ) -> anyhow::Result<bool> {
         self.repo.ensure_dirs()?;
-        let tasks = self.repo.load_tasks()?;
-        let id = next_task_id(&tasks);
+        let space = crate::idspace::IdSpace::survey(&self.repo.stint_dir);
+        let id = crate::idspace::allocate_next_id(&self.repo.stint_dir, &space)?;
         let slug = title_to_slug(title);
         let filename = if slug.is_empty() {
             format!("{id}.md")
@@ -1818,7 +1815,7 @@ impl App {
         let path = self.repo.tasks_dir().join(filename);
         let created_at = now_timestamp();
         let content = new_task_content(&id, title, Some(&created_at));
-        self.repo.write_task(&path, &content)?;
+        self.repo.write_new_task(&path, &content)?;
         if edit_after {
             terminal.edit_path(&path)?;
         }
@@ -2154,7 +2151,11 @@ fn runway_chip(item: &RunwayItem, selected: bool) -> Span<'static> {
         text.push_str(&item.extra_areas.join("+"));
     }
     Span::styled(
-        format!("[{:<width$}]", truncate(&text, CHIP_WIDTH), width = CHIP_WIDTH),
+        format!(
+            "[{:<width$}]",
+            truncate(&text, CHIP_WIDTH),
+            width = CHIP_WIDTH
+        ),
         style,
     )
 }

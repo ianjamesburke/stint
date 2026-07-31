@@ -21,8 +21,17 @@ Stint is a Rust CLI for task and sprint tracking as markdown files in your repo.
       s01.md
       s02.md
       ...
+    ids/
+      0001
+      0002
+      ...
     config.toml
 ```
+
+`ids/` is the append-only ID allocation ledger. Every ID `stint` has ever
+handed out has a zero-byte file here. Entries are never removed, so an ID is
+never reused even if its task file is renamed or deleted. Commit it alongside
+`tasks/`.
 
 ### Crate layout
 
@@ -109,6 +118,21 @@ Non-obvious constraints, prior attempts, things that will bite you.
 | `stint add "Title"` | Create a new task, open editor for body |
 | `stint add "Title" --priority p1 --size m --area cli --tags ergonomics --blocked-by 0002 --gh-issue 42` | Create a task with metadata set at creation time (comma-separated or repeated flags) |
 | `stint add "Title" --body-file body.md --no-edit` | Create a task headlessly: body read from a file (or `-` for stdin), skip opening $EDITOR |
+| `stint add "Title" --id 0042` | Use an exact ID instead of auto-numbering; fails if that ID is claimed on any branch, worktree, or in the ledger |
+| `stint add "Title" --commit` | Commit the new task file immediately, so its ID is visible to every other branch and worktree |
+
+### ID allocation
+
+`stint add` numbers against every ID it can see: this working tree, every other
+git worktree's `.stint/tasks/` on disk (so untracked files count), every local
+branch and remote-tracking ref's committed tree, and the `.stint/ids/` ledger.
+The ID is then reserved by an exclusive create in the ledger, so two agents
+filing at the same instant cannot both win the same number.
+
+When the surveyed space is knowably incomplete — uncommitted task files, a
+git-ignored `.stint/`, no git — `stint add` warns on stderr and allocates
+anyway. Commit task files promptly, or use `--commit`; an ID that only exists
+in one working tree is invisible to every other clone.
 | `stint list` | List all tasks (filterable by status, sprint, area, tag) |
 | `stint list --sprint s12` | List tasks in a sprint |
 | `stint list --status in-progress` | Filter by status |
@@ -168,6 +192,7 @@ Non-obvious constraints, prior attempts, things that will bite you.
 12. Timestamp fields (`created_at`, `started_at`, `completed_at`) are valid RFC3339 if present
 13. A task listed in a sprint's index file must have a matching `sprint` frontmatter field (bidirectional consistency)
 14. A task with a `sprint` frontmatter field must be listed in that sprint's index file (bidirectional consistency)
+15. No task ID is claimed by two different task filenames anywhere visible — this working tree, another git worktree, or any local branch or remote-tracking ref. `stint check` also warns on stderr when the surveyed ID space is knowably incomplete (uncommitted task files, a git-ignored `.stint/`, or no git at all)
 
 ---
 

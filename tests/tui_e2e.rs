@@ -197,7 +197,12 @@ fn conflicted_ready_task_shows_holder_and_lane_goes_idle_when_freed() {
     assert!(screen.contains("~0008 wait:0004"));
     assert_eq!(screen.matches("idle").count(), 1);
 
-    replace_task_status(&repo, "0004-cli-args.md", "status: in-progress", "status: done");
+    replace_task_status(
+        &repo,
+        "0004-cli-args.md",
+        "status: in-progress",
+        "status: done",
+    );
     tui.reload();
     let screen = tui.render_text().unwrap();
     assert!(screen.contains("[0008 Cli follow-up"));

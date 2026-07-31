@@ -246,6 +246,21 @@ impl StintRepo {
         fs::write(path, content).with_context(|| format!("write {}", path.display()))
     }
 
+    /// Write a task file that must not already exist.
+    ///
+    /// Uses an exclusive create so a task file can never silently clobber
+    /// another agent's task that landed at the same path first.
+    pub fn write_new_task(&self, path: &Path, content: &str) -> anyhow::Result<()> {
+        use std::io::Write;
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)
+            .with_context(|| format!("create {}", path.display()))?;
+        file.write_all(content.as_bytes())
+            .with_context(|| format!("write {}", path.display()))
+    }
+
     /// Read the raw string content of a sprint file.
     pub fn read_sprint_raw(&self, path: &Path) -> anyhow::Result<String> {
         fs::read_to_string(path).with_context(|| format!("read {}", path.display()))

@@ -11,7 +11,7 @@ Single crate with `[lib]` and `[[bin]]` targets. Library modules handle schema, 
 - Library modules must have zero I/O, except `repo.rs` and `idspace.rs`, which are the filesystem/git layer. Everything else takes data in and returns data out.
 - `blocked_by`, `blocked_by_gh`, `gh_issue`, `area`, `tags` are all polymorphic: accept string or list in YAML, always stored as `Vec<T>` internally.
 - `priority` is optional: `p0` (highest) through `p4` (lowest). Omitted = unprioritized (sorts after all prioritized tasks in `stint next`).
-- Task IDs are allocated only through `stint::idspace` — survey the whole visible ID space, then reserve via the `.stint/ids/` ledger. Never number off `.stint/tasks/` alone; that is what caused cross-branch ID collisions.
+- Task IDs are allocated only through `stint::idspace`: reserve from the repo-wide ledger in the common git dir, which every worktree shares. Never number off `.stint/tasks/` — each worktree has its own copy, so task files cannot coordinate between worktrees. Allocation must never depend on `.stint/` being git-tracked.
 - `stint check` is the source of truth for schema validity. Add a new field = add a new check rule.
 - Duration strings: `h` for hours, `m` for minutes, decimals allowed ("1.5h", "30m"). Parse at the core level.
 

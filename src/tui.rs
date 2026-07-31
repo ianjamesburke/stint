@@ -1804,8 +1804,9 @@ impl App {
         terminal: &mut H,
     ) -> anyhow::Result<bool> {
         self.repo.ensure_dirs()?;
-        let space = crate::idspace::IdSpace::survey(&self.repo.stint_dir);
-        let id = crate::idspace::allocate_next_id(&self.repo.stint_dir, &space)?;
+        let ledger = crate::idspace::Ledger::locate(&self.repo.stint_dir);
+        let space = crate::idspace::IdSpace::survey(&self.repo.stint_dir, &ledger);
+        let id = crate::idspace::allocate_next_id(&ledger, &space)?;
         let slug = title_to_slug(title);
         let filename = if slug.is_empty() {
             format!("{id}.md")

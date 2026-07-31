@@ -13,7 +13,7 @@ use anyhow::{bail, Context};
 use chrono::{DateTime, SecondsFormat, Utc};
 use stint::check::check;
 use stint::duration::Duration;
-use stint::idspace::{allocate_explicit_id, allocate_next_id, IdSpace};
+use stint::idspace::{allocate_explicit_id, allocate_next_id, IdSpace, Ledger};
 use stint::mutate::{
     add_actual, clear_started_at, minimal_frontmatter, new_sprint_content, new_task_content,
     resolve_id, restart_task, set_actual, set_completed_at, set_started_at_if_absent, set_status,
@@ -160,7 +160,8 @@ pub(crate) fn import_github_issues(
     issues: &[GithubIssue],
 ) -> anyhow::Result<GithubImportReport> {
     repo.ensure_dirs()?;
-    let space = IdSpace::survey(&repo.stint_dir);
+    let ledger = Ledger::locate(&repo.stint_dir);
+    let space = IdSpace::survey(&repo.stint_dir, &ledger);
     let mut tasks = repo.load_tasks()?;
     let mut seen_issues: HashSet<String> = tasks
         .iter()
@@ -175,7 +176,7 @@ pub(crate) fn import_github_issues(
             continue;
         }
 
-        let id = allocate_next_id(&repo.stint_dir, &space)?;
+        let id = allocate_next_id(&ledger, &space)?;
         let filename = format!("{}-{}.md", id, title_to_slug(&issue.title));
         let path = repo.tasks_dir().join(filename);
         let content = github_issue_task_content(&id, issue)?;
@@ -307,15 +308,14 @@ pub fn cmd_add(
 
     repo.ensure_dirs()?;
 
-    // Number against every ID the tool can see — other worktrees, other
-    // branches, the allocation ledger — not just this working directory.
-    let space = IdSpace::survey(&repo.stint_dir);
-    for warning in &space.warnings {
-        eprintln!("{} {}", "warning:".yellow(), warning);
-    }
+    // The repository-wide ledger owns allocation; the survey reconciles it
+    // against every worktree and ref so a cold or stale ledger still cannot
+    // hand out an ID something else already uses.
+    let ledger = Ledger::locate(&repo.stint_dir);
+    let space = IdSpace::survey(&repo.stint_dir, &ledger);
     let id = match explicit_id {
-        Some(explicit) => allocate_explicit_id(&repo.stint_dir, &space, explicit)?,
-        None => allocate_next_id(&repo.stint_dir, &space)?,
+        Some(explicit) => allocate_explicit_id(&ledger, &space, explicit)?,
+        None => allocate_next_id(&ledger, &space)?,
     };
 
     let slug = title_to_slug(title);
@@ -1472,13 +1472,10 @@ pub fn cmd_sprint_remove(
 /// repositories to validate external task IDs.  This is a stub — the feature
 /// is out of scope for v1.  The flag is accepted and acknowledged so the CLI
 /// surface matches the spec, but only the local check runs.
-/// Report task IDs claimed by two different files anywhere the tool can see,
-/// and warn (on stderr) when the surveyed ID space is knowably incomplete.
+/// Report task IDs claimed by two different files anywhere the tool can see.
 pub fn id_space_errors(repo: &StintRepo) -> Vec<String> {
-    let space = IdSpace::survey(&repo.stint_dir);
-    for warning in &space.warnings {
-        eprintln!("{} {}", "warning:".yellow(), warning);
-    }
+    let ledger = Ledger::locate(&repo.stint_dir);
+    let space = IdSpace::survey(&repo.stint_dir, &ledger);
     space
         .collisions()
         .into_iter()
@@ -1491,6 +1488,71 @@ pub fn id_space_errors(repo: &StintRepo) -> Vec<String> {
             format!("task id {id}: claimed by more than one task file: {detail}")
         })
         .collect()
+}
+
+/// What `stint doctor` found about the ID space.
+pub struct DoctorReport {
+    pub ledger_dir: PathBuf,
+    pub ledger_shared: bool,
+    pub known_ids: usize,
+    pub adopted: Vec<String>,
+    pub warnings: Vec<String>,
+    pub collisions: Vec<String>,
+}
+
+/// Reconcile the shared ID ledger against every worktree and git ref, and
+/// report anything inconsistent about the ID space.
+///
+/// Adopting IDs into the ledger is purely additive — it can only ever prevent
+/// a future collision — so `doctor` always heals rather than only reporting.
+pub fn cmd_doctor(repo: &StintRepo) -> anyhow::Result<DoctorReport> {
+    let ledger = Ledger::locate(&repo.stint_dir);
+    let space = IdSpace::survey(&repo.stint_dir, &ledger);
+    let adopted = ledger.reconcile(&space)?;
+
+    Ok(DoctorReport {
+        ledger_dir: ledger.dir.clone(),
+        ledger_shared: ledger.shared,
+        known_ids: ledger.ids().len(),
+        adopted,
+        warnings: space.warnings.clone(),
+        collisions: space
+            .collisions()
+            .into_iter()
+            .map(|(id, claims)| {
+                let detail = claims
+                    .iter()
+                    .map(|claim| claim.to_string())
+                    .collect::<Vec<_>>()
+                    .join("; ");
+                format!("task id {id}: claimed by more than one task file: {detail}")
+            })
+            .collect(),
+    })
+}
+
+/// Print a `DoctorReport`. Returns true when nothing is wrong.
+pub fn print_doctor(report: &DoctorReport) -> bool {
+    println!("id ledger: {}", report.ledger_dir.display());
+    println!(
+        "  shared across worktrees: {}",
+        if report.ledger_shared { "yes" } else { "no" }
+    );
+    println!("  ids recorded: {}", report.known_ids);
+    if !report.adopted.is_empty() {
+        println!(
+            "  adopted {} id(s) found outside the ledger: {}",
+            report.adopted.len(),
+            report.adopted.join(", ")
+        );
+    }
+    for warning in &report.warnings {
+        eprintln!("{} {}", "warning:".yellow(), warning);
+    }
+    for collision in &report.collisions {
+        eprintln!("{} {}", "error:".red(), collision);
+    }
+    report.collisions.is_empty()
 }
 
 pub fn cmd_check(

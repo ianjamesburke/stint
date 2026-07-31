@@ -1812,8 +1812,9 @@ fn concurrent_adds_never_share_an_id() {
 #[test]
 fn reserving_the_same_id_twice_fails_the_second_time() {
     let (_tmp, repo) = setup();
-    assert!(stint::idspace::reserve(&repo.stint_dir, "0042").unwrap());
-    assert!(!stint::idspace::reserve(&repo.stint_dir, "0042").unwrap());
+    let ledger = stint::idspace::Ledger::locate(&repo.stint_dir);
+    assert!(ledger.reserve("0042").unwrap());
+    assert!(!ledger.reserve("0042").unwrap());
 }
 
 #[test]
@@ -1880,4 +1881,111 @@ fn check_reports_an_id_claimed_by_two_different_files() {
             .any(|e| e.contains("task id 0001") && e.contains("0001-theirs.md")),
         "{errors:?}"
     );
+}
+
+/// A second worktree of `root`, with its own `.stint/tasks/`, as a `StintRepo`.
+fn add_worktree(root: &std::path::Path, name: &str) -> (std::path::PathBuf, StintRepo) {
+    let path = root.join(name);
+    git(
+        root,
+        &["worktree", "add", "-b", name, path.to_str().unwrap()],
+    );
+    let stint_dir = path.join(".stint");
+    fs::create_dir_all(stint_dir.join("tasks")).unwrap();
+    (path.clone(), StintRepo { stint_dir })
+}
+
+#[test]
+fn the_ledger_is_shared_by_every_worktree_of_a_repo() {
+    let (tmp, repo) = setup_git_repo();
+    let (_path, sibling) = add_worktree(tmp.path(), "sibling");
+
+    let here = stint::idspace::Ledger::locate(&repo.stint_dir);
+    let there = stint::idspace::Ledger::locate(&sibling.stint_dir);
+    assert!(here.shared && there.shared);
+    assert_eq!(here.dir, there.dir);
+}
+
+#[test]
+fn concurrent_adds_from_two_worktrees_never_share_an_id() {
+    let (tmp, repo) = setup_git_repo();
+    let (_path, sibling) = add_worktree(tmp.path(), "sibling");
+
+    let repos = [std::sync::Arc::new(repo), std::sync::Arc::new(sibling)];
+    let threads: Vec<_> = (0..8)
+        .map(|n| {
+            let repo = std::sync::Arc::clone(&repos[n % 2]);
+            std::thread::spawn(move || default_add(&repo, &format!("Concurrent {n}")))
+        })
+        .collect();
+
+    let ids: Vec<String> = threads.into_iter().map(|t| t.join().unwrap()).collect();
+    let unique: std::collections::BTreeSet<&String> = ids.iter().collect();
+    assert_eq!(unique.len(), ids.len(), "duplicate ids allocated: {ids:?}");
+}
+
+#[test]
+fn allocation_survives_a_repo_that_never_commits_its_tasks() {
+    let (tmp, repo) = setup_git_repo();
+    let root = tmp.path();
+    fs::write(root.join(".gitignore"), ".stint/\n").unwrap();
+    git(root, &["add", "-A"]);
+    git(root, &["commit", "-m", "ignore .stint"]);
+
+    let (_path, sibling) = add_worktree(root, "sibling");
+
+    // Nothing here is tracked, or trackable. Ids must still not collide.
+    let first = default_add(&repo, "In root");
+    let second = default_add(&sibling, "In sibling");
+    let third = default_add(&repo, "In root again");
+    assert_eq!(vec![first, second, third], vec!["0001", "0002", "0003"]);
+}
+
+#[test]
+fn ledger_reconciles_a_repo_that_has_task_files_but_no_ledger() {
+    let (_tmp, repo) = setup_git_repo();
+    write_task_file(
+        &repo,
+        "0042-preexisting.md",
+        &task_content("0042", "Preexisting", "backlog"),
+    );
+
+    let ledger = stint::idspace::Ledger::locate(&repo.stint_dir);
+    assert!(ledger.ids().is_empty(), "ledger should start cold");
+
+    let report = cmds::cmd_doctor(&repo).unwrap();
+    assert!(report.ledger_shared);
+    assert_eq!(report.adopted, vec!["0042".to_owned()]);
+    assert!(report.collisions.is_empty());
+    assert_eq!(ledger.ids(), vec!["0042".to_owned()]);
+
+    // And a cold ledger must never hand out an id a task file already uses.
+    assert_eq!(default_add(&repo, "Next"), "0043");
+}
+
+#[test]
+fn allocation_skips_an_id_that_only_exists_on_an_unmerged_branch() {
+    let (tmp, repo) = setup_git_repo();
+    let root = tmp.path();
+    git(root, &["checkout", "-b", "unmerged"]);
+    write_task_file(
+        &repo,
+        "0007-unmerged.md",
+        &task_content("0007", "Unmerged", "backlog"),
+    );
+    git(root, &["add", "-A"]);
+    git(root, &["commit", "-m", "task 0007"]);
+    git(root, &["checkout", "main"]);
+    fs::remove_file(repo.tasks_dir().join("0007-unmerged.md")).ok();
+
+    assert!(repo.load_tasks().unwrap().is_empty());
+    assert_eq!(default_add(&repo, "Mine"), "0008");
+}
+
+#[test]
+fn a_deleted_task_file_never_gives_its_id_back() {
+    let (_tmp, repo) = setup_git_repo();
+    let first = default_add(&repo, "Doomed");
+    fs::remove_file(repo.tasks_dir().join(format!("{first}-doomed.md"))).unwrap();
+    assert_eq!(default_add(&repo, "Successor"), "0002");
 }

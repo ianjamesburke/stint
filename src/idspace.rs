@@ -1,22 +1,22 @@
-//! Survey of the task ID space across everywhere the tool can see, plus
-//! atomic ID allocation.
+//! Task ID allocation: one shared ledger per repository, plus a survey of
+//! every other place an ID might already be claimed.
 //!
-//! Auto-numbering a new task from `.stint/tasks/` alone is unsafe: task files
-//! routinely sit untracked in one worktree, staged but uncommitted, or only on
-//! an unmerged branch. Two agents then each compute the same "next" ID and
-//! neither notices. This module widens the view to:
+//! Each git worktree carries its own copy of `.stint/tasks/`, so a task file
+//! in one worktree is structurally invisible to every other worktree until it
+//! is committed and merged. Numbering off task files therefore cannot be made
+//! correct, and requiring `.stint/` to be git-tracked would be the wrong
+//! dependency — a repo that deliberately keeps its plan out of git still
+//! deserves collision-free numbering.
 //!
-//! - the working directory's `.stint/tasks/`
-//! - every other git worktree's `.stint/tasks/` (on disk, so untracked and
-//!   git-ignored files count)
-//! - every local branch and remote-tracking ref's committed tree
-//! - the append-only allocation ledger (`.stint/ids/`)
+//! So allocation is owned by a ledger that lives outside every worktree, in
+//! the common git directory, shared by all worktrees of the repository. See
+//! [`Ledger`]. Reserving an ID is an exclusive `create_new` there, which is
+//! the entire mutual-exclusion mechanism.
 //!
-//! and to record why the view might still be incomplete so callers can warn.
-//!
-//! Allocation itself goes through the ledger: reserving an ID is an exclusive
-//! `create_new` on `.stint/ids/<id>`, so two processes racing on the same
-//! filesystem cannot both win the same number.
+//! [`IdSpace`] is the reconciliation half: it scans every worktree's task
+//! directory on disk and every git ref's committed tree, so a ledger that is
+//! missing or behind — a first run on an existing repo, or hand-created task
+//! files — heals instead of handing out an ID something else already uses.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -35,7 +35,7 @@ pub enum Origin {
     Worktree(PathBuf),
     /// A file committed on a git ref (branch or remote-tracking branch).
     Ref(String),
-    /// An entry in the `.stint/ids/` allocation ledger.
+    /// An entry in the shared ID allocation ledger.
     Ledger,
 }
 
@@ -45,7 +45,7 @@ impl std::fmt::Display for Origin {
             Origin::Working => write!(f, "this working tree"),
             Origin::Worktree(path) => write!(f, "worktree {}", path.display()),
             Origin::Ref(name) => write!(f, "ref {name}"),
-            Origin::Ledger => write!(f, "the .stint/ids/ allocation ledger"),
+            Origin::Ledger => write!(f, "the id allocation ledger"),
         }
     }
 }
@@ -80,17 +80,18 @@ impl IdSpace {
     /// Never fails on git problems: a repo with no git, a detached checkout or
     /// a missing `git` binary degrades to a working-directory-only survey plus
     /// a warning, because refusing to create tasks would be worse.
-    pub fn survey(stint_dir: &Path) -> IdSpace {
+    pub fn survey(stint_dir: &Path, ledger: &Ledger) -> IdSpace {
         let mut space = IdSpace::default();
 
         space.add_dir(&stint_dir.join("tasks"), Origin::Working);
-        space.add_ledger(stint_dir);
+        space.add_ledger(ledger);
 
         let git = match GitView::discover(stint_dir) {
             Ok(Some(git)) => git,
             Ok(None) => {
                 space.warnings.push(
-                    "not a git repository: ids on other branches and worktrees are invisible"
+                    "not a git repository: task files on other branches and worktrees cannot be \
+                     surveyed; allocation still relies on the local ledger"
                         .to_owned(),
                 );
                 return space;
@@ -126,21 +127,22 @@ impl IdSpace {
         }
     }
 
-    fn add_ledger(&mut self, stint_dir: &Path) {
-        let Ok(entries) = fs::read_dir(ledger_dir(stint_dir)) else {
-            return;
-        };
-        for entry in entries.flatten() {
-            let name = entry.file_name().to_string_lossy().into_owned();
-            if let Some(id) = canonical_id(&name) {
-                self.insert(
-                    id.clone(),
-                    Claim {
-                        filename: id,
-                        origin: Origin::Ledger,
-                    },
-                );
-            }
+    fn add_ledger(&mut self, ledger: &Ledger) {
+        for id in ledger.ids() {
+            self.insert(
+                id.clone(),
+                Claim {
+                    filename: id,
+                    origin: Origin::Ledger,
+                },
+            );
+        }
+        if !ledger.shared {
+            self.warnings.push(format!(
+                "no git repository: the id ledger at {} is only shared with processes using that \
+                 same directory",
+                ledger.dir.display()
+            ));
         }
     }
 
@@ -223,48 +225,117 @@ impl IdSpace {
 }
 
 // ---------------------------------------------------------------------------
-// Allocation
+// Ledger
 // ---------------------------------------------------------------------------
 
-/// Directory holding the append-only ID allocation ledger.
-pub fn ledger_dir(stint_dir: &Path) -> PathBuf {
-    stint_dir.join("ids")
+/// The append-only record of every ID this repository has ever handed out.
+///
+/// One ledger per repository, shared by every worktree, living in the common
+/// git directory (`git rev-parse --git-common-dir`) — the one place all
+/// worktrees of a repo agree on and which no branch checkout can change. Task
+/// files cannot play this role: each worktree carries its own copy of
+/// `.stint/tasks/`, so a task file in one worktree is structurally invisible
+/// to the others until it is committed and merged.
+///
+/// Entries are zero-byte files created with `O_EXCL`. They are never removed,
+/// so an ID stays spent even if its task file is deleted, renamed, or never
+/// committed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Ledger {
+    /// Directory holding one file per allocated ID.
+    pub dir: PathBuf,
+    /// Whether this ledger is shared by every worktree of the repository.
+    ///
+    /// False only outside git, where the fallback ledger lives in `.stint/`
+    /// and can only serialise processes sharing that directory.
+    pub shared: bool,
 }
 
-/// Try to reserve `id` in the ledger.
-///
-/// Returns `Ok(true)` when this call created the entry, `Ok(false)` when
-/// somebody else already holds it. Ledger entries are never removed, so an ID
-/// is allocated at most once for the life of the repository even if its task
-/// file is later renamed or deleted.
-pub fn reserve(stint_dir: &Path, id: &str) -> anyhow::Result<bool> {
-    let dir = ledger_dir(stint_dir);
-    fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
-    let path = dir.join(id);
-    match fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&path)
-    {
-        Ok(_) => Ok(true),
-        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => Ok(false),
-        Err(error) => Err(error).with_context(|| format!("reserve {}", path.display())),
+impl Ledger {
+    /// Locate the ledger for the repository containing `stint_dir`.
+    pub fn locate(stint_dir: &Path) -> Ledger {
+        let parent = stint_dir.parent().unwrap_or(stint_dir);
+        let common_dir = git_stdout(
+            parent,
+            &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+        )
+        .ok()
+        .flatten()
+        .map(|out| PathBuf::from(out.trim_end_matches('\n').to_owned()))
+        .filter(|path| path.is_dir());
+
+        match common_dir {
+            Some(git_dir) => Ledger {
+                dir: git_dir.join("stint").join("ids"),
+                shared: true,
+            },
+            None => Ledger {
+                dir: stint_dir.join("ids"),
+                shared: false,
+            },
+        }
+    }
+
+    /// Every ID currently recorded in the ledger.
+    pub fn ids(&self) -> Vec<String> {
+        let Ok(entries) = fs::read_dir(&self.dir) else {
+            return vec![];
+        };
+        entries
+            .flatten()
+            .filter_map(|entry| canonical_id(&entry.file_name().to_string_lossy()))
+            .collect()
+    }
+
+    /// Try to claim `id`.
+    ///
+    /// `Ok(true)` when this call created the entry, `Ok(false)` when another
+    /// process already holds it. The exclusive create is the whole mutual
+    /// exclusion mechanism: two agents filing at the same instant cannot both
+    /// see `true`.
+    pub fn reserve(&self, id: &str) -> anyhow::Result<bool> {
+        fs::create_dir_all(&self.dir)
+            .with_context(|| format!("create ledger {}", self.dir.display()))?;
+        let path = self.dir.join(id);
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(_) => Ok(true),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => Ok(false),
+            Err(error) => Err(error).with_context(|| format!("reserve {}", path.display())),
+        }
+    }
+
+    /// Record every ID in `space` that the ledger does not yet know about.
+    ///
+    /// Self-healing for a repository whose task files predate the ledger, or
+    /// where somebody hand-created a task file. Returns the IDs adopted.
+    pub fn reconcile(&self, space: &IdSpace) -> anyhow::Result<Vec<String>> {
+        let mut adopted = Vec::new();
+        for id in space.claims.keys() {
+            if self.reserve(id)? {
+                adopted.push(id.clone());
+            }
+        }
+        Ok(adopted)
     }
 }
 
+// ---------------------------------------------------------------------------
+// Allocation
+// ---------------------------------------------------------------------------
+
 /// Reserve the next free task ID.
 ///
-/// Starts one past the highest ID seen anywhere in `space` and walks forward,
-/// skipping IDs claimed elsewhere and retrying whenever another process wins
-/// the exclusive create.
-pub fn allocate_next_id(stint_dir: &Path, space: &IdSpace) -> anyhow::Result<String> {
-    let start = space.max_id() + 1;
-    for n in start..=9999 {
+/// Starts one past the highest ID seen anywhere — ledger, any worktree's task
+/// files, any git ref — and walks forward, retrying whenever another process
+/// wins the exclusive create.
+pub fn allocate_next_id(ledger: &Ledger, space: &IdSpace) -> anyhow::Result<String> {
+    for n in space.max_id() + 1..=9999 {
         let id = format!("{n:04}");
-        if space.is_claimed(&id) {
-            continue;
-        }
-        if reserve(stint_dir, &id)? {
+        if ledger.reserve(&id)? {
             return Ok(id);
         }
     }
@@ -272,7 +343,7 @@ pub fn allocate_next_id(stint_dir: &Path, space: &IdSpace) -> anyhow::Result<Str
 }
 
 /// Reserve a caller-supplied ID, refusing loudly if it is already claimed.
-pub fn allocate_explicit_id(stint_dir: &Path, space: &IdSpace, id: &str) -> anyhow::Result<String> {
+pub fn allocate_explicit_id(ledger: &Ledger, space: &IdSpace, id: &str) -> anyhow::Result<String> {
     let id = canonical_id(id)
         .ok_or_else(|| anyhow::anyhow!("invalid task id {id:?}: expected up to 4 digits"))?;
 
@@ -285,8 +356,11 @@ pub fn allocate_explicit_id(stint_dir: &Path, space: &IdSpace, id: &str) -> anyh
             .join("\n");
         bail!("task id {id} is already claimed:\n{claims}");
     }
-    if !reserve(stint_dir, &id)? {
-        bail!("task id {id} was claimed by another process while allocating");
+    if !ledger.reserve(&id)? {
+        bail!(
+            "task id {id} is already claimed:\n  {id} in {}",
+            Origin::Ledger
+        );
     }
     Ok(id)
 }
@@ -426,7 +500,8 @@ impl GitView {
             &["check-ignore", "-q", &self.relative_tasks_dir],
         ) {
             warnings.push(format!(
-                "{} is git-ignored: task ids are invisible to every other clone of this repo",
+                "{} is git-ignored: ids stay unique via the shared ledger, but the tasks \
+                 themselves never reach another clone of this repo",
                 self.relative_tasks_dir
             ));
             return warnings;
@@ -450,8 +525,8 @@ impl GitView {
 
         if !uncommitted.is_empty() {
             warnings.push(format!(
-                "{} task file(s) are not committed on HEAD, so their ids are invisible to other \
-                 branches and clones: {}{}. Commit them.",
+                "{} task file(s) are not committed on HEAD, so the tasks are invisible to other \
+                 clones (their ids are still safe): {}{}. Commit them.",
                 uncommitted.len(),
                 uncommitted
                     .iter()

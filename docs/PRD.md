@@ -21,17 +21,12 @@ Stint is a Rust CLI for task and sprint tracking as markdown files in your repo.
       s01.md
       s02.md
       ...
-    ids/
-      0001
-      0002
-      ...
     config.toml
 ```
 
-`ids/` is the append-only ID allocation ledger. Every ID `stint` has ever
-handed out has a zero-byte file here. Entries are never removed, so an ID is
-never reused even if its task file is renamed or deleted. Commit it alongside
-`tasks/`.
+The task-ID ledger does NOT live here. It lives in the repository's common git
+directory (`$(git rev-parse --git-common-dir)/stint/ids/`), one per repository
+and shared by every worktree. See "ID allocation".
 
 ### Crate layout
 
@@ -119,32 +114,30 @@ Non-obvious constraints, prior attempts, things that will bite you.
 | `stint add "Title" --priority p1 --size m --area cli --tags ergonomics --blocked-by 0002 --gh-issue 42` | Create a task with metadata set at creation time (comma-separated or repeated flags) |
 | `stint add "Title" --body-file body.md --no-edit` | Create a task headlessly: body read from a file (or `-` for stdin), skip opening $EDITOR |
 | `stint add "Title" --id 0042` | Use an exact ID instead of auto-numbering; fails if that ID is claimed on any branch, worktree, or in the ledger |
-| `stint add "Title" --commit` | Commit the new task file immediately, so its ID is visible to every other branch and worktree |
+| `stint add "Title" --commit` | Commit the new task file immediately (hygiene, not required for ID safety) |
 
 ### ID allocation
 
-`stint add` numbers against every ID it can see: this working tree, every other
-git worktree's `.stint/tasks/` on disk (so untracked files count), every local
-branch and remote-tracking ref's committed tree, and the `.stint/ids/` ledger.
-The ID is then reserved by an exclusive create in the ledger, so two agents
-filing at the same instant cannot both win the same number.
+Task IDs come from an append-only ledger: one directory per repository, at
+`$(git rev-parse --git-common-dir)/stint/ids/`, holding one zero-byte file per
+ID ever allocated. That location is shared by every worktree of the repository
+and is unaffected by which branch is checked out. Reserving an ID is an
+exclusive create there, so two agents filing at the same instant cannot both
+win the same number.
 
-When the surveyed space is knowably incomplete — uncommitted task files, a
-git-ignored `.stint/`, no git — `stint add` warns on stderr and allocates
-anyway. Commit task files promptly, or use `--commit`; an ID that only exists
-in one working tree is invisible to every other clone.
-| `stint list` | List all tasks (filterable by status, sprint, area, tag) |
-| `stint list --sprint s12` | List tasks in a sprint |
-| `stint list --status in-progress` | Filter by status |
-| `stint show <id>` | Print full task (frontmatter + body) |
-| `stint edit <id>` | Open task file in $EDITOR |
-| `stint set <id> --area cli --tags ergonomics --blocked-by 0002 --gh-issue 42` | Headlessly replace a task's area/tags/blocked_by/gh_issue lists — no $EDITOR |
-| `stint set <id> --body-file body.md` | Headlessly replace a task's body from a file (or `-` for stdin) |
-| `stint claim <id>` | Mark task in-progress and set `started_at` (omit `<id>` to auto-claim the top ready task) |
-| `stint unclaim <id>` | Revert an in-progress task to todo, clearing `started_at` (inverse of `claim`) |
-| `stint done <id>` | Mark task done, prompt for actual time |
-| `stint log <id> <time>` | Add time to actual (e.g. `stint log 0001 2h`) |
-| `stint archive <id>` | Move task to archived status |
+The ledger is deliberately independent of whether `.stint/` is git-tracked. Each
+worktree carries its own copy of `.stint/tasks/`, so task files cannot be the
+coordination channel between worktrees, and a repo that keeps its plan out of
+git still gets collision-free numbering. Entries are never removed: an ID stays
+spent even if its task file is deleted, renamed, or never committed.
+
+Before numbering, `stint add` reconciles the ledger against every worktree's
+`.stint/tasks/` on disk and every local branch and remote-tracking ref, taking
+the maximum. A cold ledger (first run on an existing repo) or hand-created task
+files therefore heal automatically rather than reissuing a used ID.
+
+Outside a git repository the ledger falls back to `.stint/ids/`, which still
+serialises processes sharing that directory. `stint doctor` says so.
 
 ### Sprint management
 
@@ -156,6 +149,12 @@ in one working tree is invisible to every other clone.
 | `stint sprint add <sprint-id> <task-id>` | Append task to sprint |
 | `stint sprint remove <sprint-id> <task-id>` | Remove task from sprint |
 | `stint sprint reorder <id>` | Interactive reorder (uses $EDITOR) |
+
+### Diagnostics
+
+| Command | Description |
+|---|---|
+| `stint doctor` | Reconcile the shared ID ledger against every worktree and git ref, report its location, whether it is shared, IDs adopted, and any ID claimed by two different files. Exits 1 on a collision |
 
 ### Validation
 
@@ -192,7 +191,7 @@ in one working tree is invisible to every other clone.
 12. Timestamp fields (`created_at`, `started_at`, `completed_at`) are valid RFC3339 if present
 13. A task listed in a sprint's index file must have a matching `sprint` frontmatter field (bidirectional consistency)
 14. A task with a `sprint` frontmatter field must be listed in that sprint's index file (bidirectional consistency)
-15. No task ID is claimed by two different task filenames anywhere visible — this working tree, another git worktree, or any local branch or remote-tracking ref. `stint check` also warns on stderr when the surveyed ID space is knowably incomplete (uncommitted task files, a git-ignored `.stint/`, or no git at all)
+15. No task ID is claimed by two different task filenames anywhere visible — this working tree, another git worktree, or any local branch or remote-tracking ref
 
 ---
 

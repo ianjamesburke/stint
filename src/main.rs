@@ -260,6 +260,9 @@ enum Commands {
         cross_repo: bool,
     },
 
+    /// Reconcile the shared task-ID ledger and report an inconsistent ID space.
+    Doctor,
+
     /// Show a summary: open tasks, blocked tasks, current sprint progress.
     Status,
 
@@ -609,6 +612,14 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 for e in &errors {
                     eprintln!("{}", e);
                 }
+                process::exit(1);
+            }
+        }
+
+        Some(Commands::Doctor) => {
+            let repo = find_repo()?;
+            let report = cmds::cmd_doctor(&repo)?;
+            if !cmds::print_doctor(&report) {
                 process::exit(1);
             }
         }

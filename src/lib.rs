@@ -3,6 +3,7 @@ extern crate self as stint;
 pub mod check;
 pub mod duration;
 pub mod filter;
+pub mod idspace;
 pub mod mutate;
 pub mod next;
 pub mod parse;

@@ -13,10 +13,11 @@ use anyhow::{bail, Context};
 use chrono::{DateTime, SecondsFormat, Utc};
 use stint::check::check;
 use stint::duration::Duration;
+use stint::idspace::{allocate_explicit_id, allocate_next_id, IdSpace, Ledger};
 use stint::mutate::{
     add_actual, clear_started_at, minimal_frontmatter, new_sprint_content, new_task_content,
-    next_task_id, resolve_id, restart_task, set_actual, set_completed_at, set_started_at_if_absent,
-    set_status, title_to_slug, DEFAULT_TASK_BODY,
+    resolve_id, restart_task, set_actual, set_completed_at, set_started_at_if_absent, set_status,
+    title_to_slug, DEFAULT_TASK_BODY,
 };
 use stint::next::{compute_next, compute_next_with_resolution, NextOptions, NextReport, NextTask};
 use stint::schema::{BlockedByRef, Sprint, TaskStatus};
@@ -159,6 +160,8 @@ pub(crate) fn import_github_issues(
     issues: &[GithubIssue],
 ) -> anyhow::Result<GithubImportReport> {
     repo.ensure_dirs()?;
+    let ledger = Ledger::locate(&repo.stint_dir);
+    let space = IdSpace::survey(&repo.stint_dir, &ledger);
     let mut tasks = repo.load_tasks()?;
     let mut seen_issues: HashSet<String> = tasks
         .iter()
@@ -173,11 +176,11 @@ pub(crate) fn import_github_issues(
             continue;
         }
 
-        let id = next_task_id(&tasks);
+        let id = allocate_next_id(&ledger, &space)?;
         let filename = format!("{}-{}.md", id, title_to_slug(&issue.title));
         let path = repo.tasks_dir().join(filename);
         let content = github_issue_task_content(&id, issue)?;
-        repo.write_task(&path, &content)?;
+        repo.write_new_task(&path, &content)?;
         let task = repo.read_task(&path)?;
         tasks.push(task);
         seen_issues.insert(issue.number.clone());
@@ -284,6 +287,8 @@ pub fn cmd_add(
     size: Option<&str>,
     edits: &TaskFieldEdits,
     no_edit: bool,
+    explicit_id: Option<&str>,
+    commit: bool,
 ) -> anyhow::Result<PathBuf> {
     // Validate priority early.
     let parsed_priority = priority
@@ -302,8 +307,17 @@ pub fn cmd_add(
         .transpose()?;
 
     repo.ensure_dirs()?;
-    let tasks = repo.load_tasks()?;
-    let id = next_task_id(&tasks);
+
+    // The repository-wide ledger owns allocation; the survey reconciles it
+    // against every worktree and ref so a cold or stale ledger still cannot
+    // hand out an ID something else already uses.
+    let ledger = Ledger::locate(&repo.stint_dir);
+    let space = IdSpace::survey(&repo.stint_dir, &ledger);
+    let id = match explicit_id {
+        Some(explicit) => allocate_explicit_id(&ledger, &space, explicit)?,
+        None => allocate_next_id(&ledger, &space)?,
+    };
+
     let slug = title_to_slug(title);
     let filename = if slug.is_empty() {
         format!("{}.md", id)
@@ -336,12 +350,57 @@ pub fn cmd_add(
         filename,
     };
     let content = serialize_task(&task);
-    repo.write_task(&path, &content)?;
+    repo.write_new_task(&path, &content)?;
 
     if !no_edit {
         open_editor(&path)?;
     }
+    if commit {
+        commit_task_file(repo, &path, &id, title)?;
+    }
     Ok(path)
+}
+
+/// Stage and commit a freshly created task file so its ID becomes visible to
+/// every other branch and worktree immediately.
+fn commit_task_file(repo: &StintRepo, path: &Path, id: &str, title: &str) -> anyhow::Result<()> {
+    let dir = repo
+        .stint_dir
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("path has no parent: {}", repo.stint_dir.display()))?;
+    let message = format!("chore(stint): add task {id} {title}");
+    run_git(dir, &["add".as_ref(), path.as_os_str()])?;
+    run_git(
+        dir,
+        &[
+            "commit".as_ref(),
+            "-m".as_ref(),
+            message.as_ref(),
+            "--".as_ref(),
+            path.as_os_str(),
+        ],
+    )?;
+    Ok(())
+}
+
+fn run_git(dir: &Path, args: &[&std::ffi::OsStr]) -> anyhow::Result<()> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .output()
+        .context("run git")?;
+    if !output.status.success() {
+        bail!(
+            "git {} failed: {}",
+            args.iter()
+                .map(|a| a.to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+                .join(" "),
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok(())
 }
 
 /// Apply field overrides to an existing task's frontmatter and/or body.
@@ -1413,6 +1472,89 @@ pub fn cmd_sprint_remove(
 /// repositories to validate external task IDs.  This is a stub — the feature
 /// is out of scope for v1.  The flag is accepted and acknowledged so the CLI
 /// surface matches the spec, but only the local check runs.
+/// Report task IDs claimed by two different files anywhere the tool can see.
+pub fn id_space_errors(repo: &StintRepo) -> Vec<String> {
+    let ledger = Ledger::locate(&repo.stint_dir);
+    let space = IdSpace::survey(&repo.stint_dir, &ledger);
+    space
+        .collisions()
+        .into_iter()
+        .map(|(id, claims)| {
+            let detail = claims
+                .iter()
+                .map(|claim| claim.to_string())
+                .collect::<Vec<_>>()
+                .join("; ");
+            format!("task id {id}: claimed by more than one task file: {detail}")
+        })
+        .collect()
+}
+
+/// What `stint doctor` found about the ID space.
+pub struct DoctorReport {
+    pub ledger_dir: PathBuf,
+    pub ledger_shared: bool,
+    pub known_ids: usize,
+    pub adopted: Vec<String>,
+    pub warnings: Vec<String>,
+    pub collisions: Vec<String>,
+}
+
+/// Reconcile the shared ID ledger against every worktree and git ref, and
+/// report anything inconsistent about the ID space.
+///
+/// Adopting IDs into the ledger is purely additive — it can only ever prevent
+/// a future collision — so `doctor` always heals rather than only reporting.
+pub fn cmd_doctor(repo: &StintRepo) -> anyhow::Result<DoctorReport> {
+    let ledger = Ledger::locate(&repo.stint_dir);
+    let space = IdSpace::survey(&repo.stint_dir, &ledger);
+    let adopted = ledger.reconcile(&space)?;
+
+    Ok(DoctorReport {
+        ledger_dir: ledger.dir.clone(),
+        ledger_shared: ledger.shared,
+        known_ids: ledger.ids().len(),
+        adopted,
+        warnings: space.warnings.clone(),
+        collisions: space
+            .collisions()
+            .into_iter()
+            .map(|(id, claims)| {
+                let detail = claims
+                    .iter()
+                    .map(|claim| claim.to_string())
+                    .collect::<Vec<_>>()
+                    .join("; ");
+                format!("task id {id}: claimed by more than one task file: {detail}")
+            })
+            .collect(),
+    })
+}
+
+/// Print a `DoctorReport`. Returns true when nothing is wrong.
+pub fn print_doctor(report: &DoctorReport) -> bool {
+    println!("id ledger: {}", report.ledger_dir.display());
+    println!(
+        "  shared across worktrees: {}",
+        if report.ledger_shared { "yes" } else { "no" }
+    );
+    println!("  ids recorded: {}", report.known_ids);
+    if !report.adopted.is_empty() {
+        println!(
+            "  adopted {} id(s) found outside the ledger: {}",
+            report.adopted.len(),
+            report.adopted.join(", ")
+        );
+    }
+    for warning in &report.warnings {
+        eprintln!("{} {}", "warning:".yellow(), warning);
+    }
+    for collision in &report.collisions {
+        eprintln!("{} {}", "error:".red(), collision);
+    }
+    report.collisions.is_empty()
+}
+
 pub fn cmd_check(
     repo: &StintRepo,
     cross_repo: bool,
@@ -1453,6 +1595,7 @@ pub fn cmd_check(
         .collect();
     errors.extend(direct_resolution.errors);
     errors.extend(check(&tasks, &sprints).iter().map(|e| e.to_string()));
+    errors.extend(id_space_errors(repo));
     Ok(errors)
 }
 

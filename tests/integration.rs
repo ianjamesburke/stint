@@ -49,6 +49,18 @@ fn setup() -> (TempDir, StintRepo) {
     (tmp, repo)
 }
 
+/// `cmd_add` with the default ID-allocation options (auto-number, no commit).
+fn add_task(
+    repo: &StintRepo,
+    title: &str,
+    priority: Option<&str>,
+    size: Option<&str>,
+    edits: &cmds::TaskFieldEdits,
+    no_edit: bool,
+) -> anyhow::Result<std::path::PathBuf> {
+    cmds::cmd_add(repo, title, priority, size, edits, no_edit, None, false)
+}
+
 /// Task id ("0001") from a created task file path.
 fn id_from_path(path: &std::path::Path) -> String {
     path.file_name()
@@ -204,7 +216,7 @@ fn resolve_id_with_slug() {
 #[test]
 fn add_creates_file() {
     let (_tmp, repo) = setup();
-    let path = cmds::cmd_add(
+    let path = add_task(
         &repo,
         "My first task",
         None,
@@ -228,7 +240,7 @@ fn add_increments_id() {
         "0001-existing.md",
         &task_content("0001", "Existing", "backlog"),
     );
-    let path = cmds::cmd_add(
+    let path = add_task(
         &repo,
         "Second task",
         None,
@@ -244,7 +256,7 @@ fn add_increments_id() {
 #[test]
 fn add_filename_includes_slug() {
     let (_tmp, repo) = setup();
-    let path = cmds::cmd_add(
+    let path = add_task(
         &repo,
         "Auth Middleware",
         None,
@@ -260,7 +272,7 @@ fn add_filename_includes_slug() {
 #[test]
 fn add_writes_size_field() {
     let (_tmp, repo) = setup();
-    let path = cmds::cmd_add(
+    let path = add_task(
         &repo,
         "Sized task",
         Some("p2"),
@@ -277,7 +289,7 @@ fn add_writes_size_field() {
 #[test]
 fn add_rejects_invalid_size() {
     let (_tmp, repo) = setup();
-    let err = cmds::cmd_add(
+    let err = add_task(
         &repo,
         "Bad size",
         None,
@@ -299,7 +311,7 @@ fn add_writes_metadata_fields() {
         gh_issue: Some(vec!["42".to_owned()]),
         body_source: None,
     };
-    let path = cmds::cmd_add(&repo, "Agent-driven task", None, None, &edits, false).unwrap();
+    let path = add_task(&repo, "Agent-driven task", None, None, &edits, false).unwrap();
     let content = fs::read_to_string(&path).unwrap();
     assert!(content.contains("area:\n  - \"cli\""));
     assert!(content.contains("tags:\n  - \"ergonomics\""));
@@ -316,7 +328,7 @@ fn add_writes_body_from_file() {
         body_source: Some(body_path.to_string_lossy().into_owned()),
         ..Default::default()
     };
-    let path = cmds::cmd_add(&repo, "Task with body", None, None, &edits, false).unwrap();
+    let path = add_task(&repo, "Task with body", None, None, &edits, false).unwrap();
     let content = fs::read_to_string(&path).unwrap();
     assert!(content.contains("custom body content"));
     assert!(!content.contains("## Why"));
@@ -327,7 +339,7 @@ fn add_no_edit_skips_editor() {
     let (_tmp, repo) = setup();
     // suppress_editor() already routes $EDITOR to a no-op via STINT_TEST_EDITOR;
     // `no_edit: true` should behave identically (and is exercised directly here).
-    let path = cmds::cmd_add(
+    let path = add_task(
         &repo,
         "Headless task",
         None,
@@ -342,7 +354,7 @@ fn add_no_edit_skips_editor() {
 #[test]
 fn list_row_includes_size() {
     let (_tmp, repo) = setup();
-    cmds::cmd_add(
+    add_task(
         &repo,
         "Sized task",
         None,
@@ -363,7 +375,7 @@ fn list_row_includes_size() {
 #[test]
 fn set_replaces_area_and_tags() {
     let (_tmp, repo) = setup();
-    let add_path = cmds::cmd_add(
+    let add_path = add_task(
         &repo,
         "Task to edit",
         None,
@@ -399,7 +411,7 @@ fn set_empty_blocked_by_clears_list() {
         blocked_by: Some(vec!["other/repo:0001".to_owned()]),
         ..Default::default()
     };
-    let path = cmds::cmd_add(&repo, "Blocked task", None, None, &add_edits, false).unwrap();
+    let path = add_task(&repo, "Blocked task", None, None, &add_edits, false).unwrap();
     let id = id_from_path(&path);
 
     // `--blocked-by ""` arrives as Some([""]) — must clear, not store "".
@@ -409,7 +421,10 @@ fn set_empty_blocked_by_clears_list() {
     };
     cmds::cmd_set(&repo, &id, &edits).unwrap();
     let content = fs::read_to_string(&path).unwrap();
-    assert!(content.contains("blocked_by: []"), "list not cleared:\n{content}");
+    assert!(
+        content.contains("blocked_by: []"),
+        "list not cleared:\n{content}"
+    );
 }
 
 #[test]
@@ -419,7 +434,7 @@ fn set_omitted_lists_left_unchanged() {
         blocked_by: Some(vec!["other/repo:0001".to_owned()]),
         ..Default::default()
     };
-    let path = cmds::cmd_add(&repo, "Blocked task", None, None, &add_edits, false).unwrap();
+    let path = add_task(&repo, "Blocked task", None, None, &add_edits, false).unwrap();
     let id = id_from_path(&path);
 
     let edits = cmds::TaskFieldEdits {
@@ -428,13 +443,16 @@ fn set_omitted_lists_left_unchanged() {
     };
     cmds::cmd_set(&repo, &id, &edits).unwrap();
     let content = fs::read_to_string(&path).unwrap();
-    assert!(content.contains("other/repo:0001"), "blocker dropped:\n{content}");
+    assert!(
+        content.contains("other/repo:0001"),
+        "blocker dropped:\n{content}"
+    );
 }
 
 #[test]
 fn set_replaces_body_from_file() {
     let (tmp, repo) = setup();
-    let add_path = cmds::cmd_add(
+    let add_path = add_task(
         &repo,
         "Task to edit",
         None,
@@ -467,7 +485,7 @@ fn set_replaces_body_from_file() {
 #[test]
 fn set_rejects_empty_edits() {
     let (_tmp, repo) = setup();
-    let add_path = cmds::cmd_add(
+    let add_path = add_task(
         &repo,
         "Task to edit",
         None,
@@ -1678,4 +1696,296 @@ fn sprint_add_errors_when_task_already_present() {
     write_sprint_file(&repo, "s1.md", "# Sprint 1 \u{00B7} Jun 1-14\n\n- 0001\n");
     let err = cmds::cmd_sprint_add(&repo, "s1", "0001").unwrap_err();
     assert!(err.to_string().contains("already in the sprint"));
+}
+
+// ---------------------------------------------------------------------------
+// ID space — collisions across branches, worktrees, and concurrent adds
+// ---------------------------------------------------------------------------
+
+/// Run git in `dir`, asserting success.
+fn git(dir: &std::path::Path, args: &[&str]) -> String {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "git {:?} failed: {}",
+        args,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout).into_owned()
+}
+
+/// A temp git repo on branch `main` with an initialised, committed `.stint/`.
+fn setup_git_repo() -> (TempDir, StintRepo) {
+    suppress_editor();
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path().to_path_buf();
+    git(&root, &["init", "-b", "main"]);
+    git(&root, &["config", "user.email", "test@example.com"]);
+    git(&root, &["config", "user.name", "Test"]);
+    let stint_dir = root.join(".stint");
+    fs::create_dir_all(stint_dir.join("tasks")).unwrap();
+    fs::create_dir_all(stint_dir.join("sprints")).unwrap();
+    fs::write(root.join("README.md"), "# test\n").unwrap();
+    git(&root, &["add", "-A"]);
+    git(&root, &["commit", "-m", "init"]);
+    (tmp, StintRepo { stint_dir })
+}
+
+fn default_add(repo: &StintRepo, title: &str) -> String {
+    let path = add_task(
+        repo,
+        title,
+        None,
+        None,
+        &cmds::TaskFieldEdits::default(),
+        true,
+    )
+    .unwrap();
+    id_from_path(&path)
+}
+
+#[test]
+fn add_does_not_reuse_an_id_committed_on_another_branch() {
+    let (tmp, repo) = setup_git_repo();
+    let root = tmp.path();
+
+    // Another agent's branch carries task 0005; it is absent from main's
+    // working tree, which is exactly how silent collisions happened.
+    git(root, &["checkout", "-b", "other"]);
+    write_task_file(
+        &repo,
+        "0005-other-agent.md",
+        &task_content("0005", "Other agent", "backlog"),
+    );
+    git(root, &["add", "-A"]);
+    git(root, &["commit", "-m", "task 0005"]);
+    git(root, &["checkout", "main"]);
+    fs::remove_file(repo.tasks_dir().join("0005-other-agent.md")).ok();
+
+    assert!(repo.load_tasks().unwrap().is_empty());
+    assert_eq!(default_add(&repo, "Mine"), "0006");
+}
+
+#[test]
+fn add_does_not_reuse_an_untracked_id_in_a_sibling_worktree() {
+    let (tmp, repo) = setup_git_repo();
+    let root = tmp.path();
+    let sibling = root.join("sibling");
+    git(
+        root,
+        &["worktree", "add", "-b", "side", sibling.to_str().unwrap()],
+    );
+
+    // Never committed, never staged — only a file on disk in another tree.
+    let sibling_tasks = sibling.join(".stint").join("tasks");
+    fs::create_dir_all(&sibling_tasks).unwrap();
+    fs::write(
+        sibling_tasks.join("0009-untracked.md"),
+        task_content("0009", "Untracked", "backlog"),
+    )
+    .unwrap();
+
+    assert_eq!(default_add(&repo, "Mine"), "0010");
+}
+
+#[test]
+fn concurrent_adds_never_share_an_id() {
+    let (_tmp, repo) = setup_git_repo();
+    let repo = std::sync::Arc::new(repo);
+    let threads: Vec<_> = (0..8)
+        .map(|n| {
+            let repo = std::sync::Arc::clone(&repo);
+            std::thread::spawn(move || default_add(&repo, &format!("Concurrent {n}")))
+        })
+        .collect();
+
+    let ids: Vec<String> = threads.into_iter().map(|t| t.join().unwrap()).collect();
+    let unique: std::collections::BTreeSet<&String> = ids.iter().collect();
+    assert_eq!(unique.len(), ids.len(), "duplicate ids allocated: {ids:?}");
+}
+
+#[test]
+fn reserving_the_same_id_twice_fails_the_second_time() {
+    let (_tmp, repo) = setup();
+    let ledger = stint::idspace::Ledger::locate(&repo.stint_dir);
+    assert!(ledger.reserve("0042").unwrap());
+    assert!(!ledger.reserve("0042").unwrap());
+}
+
+#[test]
+fn explicit_id_is_refused_when_already_claimed_elsewhere() {
+    let (tmp, repo) = setup_git_repo();
+    let root = tmp.path();
+    let sibling = root.join("sibling");
+    git(
+        root,
+        &["worktree", "add", "-b", "side", sibling.to_str().unwrap()],
+    );
+    let sibling_tasks = sibling.join(".stint").join("tasks");
+    fs::create_dir_all(&sibling_tasks).unwrap();
+    fs::write(
+        sibling_tasks.join("0003-taken.md"),
+        task_content("0003", "Taken", "backlog"),
+    )
+    .unwrap();
+
+    let err = cmds::cmd_add(
+        &repo,
+        "Mine",
+        None,
+        None,
+        &cmds::TaskFieldEdits::default(),
+        true,
+        Some("3"),
+        false,
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(err.contains("0003"), "{err}");
+    assert!(err.contains("0003-taken.md"), "{err}");
+    assert!(err.contains("worktree"), "{err}");
+}
+
+#[test]
+fn check_reports_an_id_claimed_by_two_different_files() {
+    let (tmp, repo) = setup_git_repo();
+    let root = tmp.path();
+    write_task_file(
+        &repo,
+        "0001-mine.md",
+        &task_content("0001", "Mine", "backlog"),
+    );
+
+    let sibling = root.join("sibling");
+    git(
+        root,
+        &["worktree", "add", "-b", "side", sibling.to_str().unwrap()],
+    );
+    let sibling_tasks = sibling.join(".stint").join("tasks");
+    fs::create_dir_all(&sibling_tasks).unwrap();
+    fs::write(
+        sibling_tasks.join("0001-theirs.md"),
+        task_content("0001", "Theirs", "backlog"),
+    )
+    .unwrap();
+
+    let errors = cmds::cmd_check(&repo, false, None).unwrap();
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.contains("task id 0001") && e.contains("0001-theirs.md")),
+        "{errors:?}"
+    );
+}
+
+/// A second worktree of `root`, with its own `.stint/tasks/`, as a `StintRepo`.
+fn add_worktree(root: &std::path::Path, name: &str) -> (std::path::PathBuf, StintRepo) {
+    let path = root.join(name);
+    git(
+        root,
+        &["worktree", "add", "-b", name, path.to_str().unwrap()],
+    );
+    let stint_dir = path.join(".stint");
+    fs::create_dir_all(stint_dir.join("tasks")).unwrap();
+    (path.clone(), StintRepo { stint_dir })
+}
+
+#[test]
+fn the_ledger_is_shared_by_every_worktree_of_a_repo() {
+    let (tmp, repo) = setup_git_repo();
+    let (_path, sibling) = add_worktree(tmp.path(), "sibling");
+
+    let here = stint::idspace::Ledger::locate(&repo.stint_dir);
+    let there = stint::idspace::Ledger::locate(&sibling.stint_dir);
+    assert!(here.shared && there.shared);
+    assert_eq!(here.dir, there.dir);
+}
+
+#[test]
+fn concurrent_adds_from_two_worktrees_never_share_an_id() {
+    let (tmp, repo) = setup_git_repo();
+    let (_path, sibling) = add_worktree(tmp.path(), "sibling");
+
+    let repos = [std::sync::Arc::new(repo), std::sync::Arc::new(sibling)];
+    let threads: Vec<_> = (0..8)
+        .map(|n| {
+            let repo = std::sync::Arc::clone(&repos[n % 2]);
+            std::thread::spawn(move || default_add(&repo, &format!("Concurrent {n}")))
+        })
+        .collect();
+
+    let ids: Vec<String> = threads.into_iter().map(|t| t.join().unwrap()).collect();
+    let unique: std::collections::BTreeSet<&String> = ids.iter().collect();
+    assert_eq!(unique.len(), ids.len(), "duplicate ids allocated: {ids:?}");
+}
+
+#[test]
+fn allocation_survives_a_repo_that_never_commits_its_tasks() {
+    let (tmp, repo) = setup_git_repo();
+    let root = tmp.path();
+    fs::write(root.join(".gitignore"), ".stint/\n").unwrap();
+    git(root, &["add", "-A"]);
+    git(root, &["commit", "-m", "ignore .stint"]);
+
+    let (_path, sibling) = add_worktree(root, "sibling");
+
+    // Nothing here is tracked, or trackable. Ids must still not collide.
+    let first = default_add(&repo, "In root");
+    let second = default_add(&sibling, "In sibling");
+    let third = default_add(&repo, "In root again");
+    assert_eq!(vec![first, second, third], vec!["0001", "0002", "0003"]);
+}
+
+#[test]
+fn ledger_reconciles_a_repo_that_has_task_files_but_no_ledger() {
+    let (_tmp, repo) = setup_git_repo();
+    write_task_file(
+        &repo,
+        "0042-preexisting.md",
+        &task_content("0042", "Preexisting", "backlog"),
+    );
+
+    let ledger = stint::idspace::Ledger::locate(&repo.stint_dir);
+    assert!(ledger.ids().is_empty(), "ledger should start cold");
+
+    let report = cmds::cmd_doctor(&repo).unwrap();
+    assert!(report.ledger_shared);
+    assert_eq!(report.adopted, vec!["0042".to_owned()]);
+    assert!(report.collisions.is_empty());
+    assert_eq!(ledger.ids(), vec!["0042".to_owned()]);
+
+    // And a cold ledger must never hand out an id a task file already uses.
+    assert_eq!(default_add(&repo, "Next"), "0043");
+}
+
+#[test]
+fn allocation_skips_an_id_that_only_exists_on_an_unmerged_branch() {
+    let (tmp, repo) = setup_git_repo();
+    let root = tmp.path();
+    git(root, &["checkout", "-b", "unmerged"]);
+    write_task_file(
+        &repo,
+        "0007-unmerged.md",
+        &task_content("0007", "Unmerged", "backlog"),
+    );
+    git(root, &["add", "-A"]);
+    git(root, &["commit", "-m", "task 0007"]);
+    git(root, &["checkout", "main"]);
+    fs::remove_file(repo.tasks_dir().join("0007-unmerged.md")).ok();
+
+    assert!(repo.load_tasks().unwrap().is_empty());
+    assert_eq!(default_add(&repo, "Mine"), "0008");
+}
+
+#[test]
+fn a_deleted_task_file_never_gives_its_id_back() {
+    let (_tmp, repo) = setup_git_repo();
+    let first = default_add(&repo, "Doomed");
+    fs::remove_file(repo.tasks_dir().join(format!("{first}-doomed.md"))).unwrap();
+    assert_eq!(default_add(&repo, "Successor"), "0002");
 }

@@ -54,19 +54,6 @@ pub fn clear_started_at(task: &mut Task) {
 // ID helpers
 // ---------------------------------------------------------------------------
 
-/// Compute the next available task ID given a list of existing tasks.
-///
-/// Finds the highest numeric ID and returns it incremented by 1, zero-padded
-/// to 4 digits.  Returns `"0001"` when no tasks exist.
-pub fn next_task_id(tasks: &[Task]) -> String {
-    let max = tasks
-        .iter()
-        .filter_map(|t| t.frontmatter.id.parse::<u32>().ok())
-        .max()
-        .unwrap_or(0);
-    format!("{:04}", max + 1)
-}
-
 /// Resolve a user-supplied task ID fragment to a canonical 4-digit ID.
 ///
 /// Handles:
@@ -185,17 +172,6 @@ mod tests {
         assert!(task.frontmatter.actual.is_none());
         add_actual(&mut task, Duration::from_minutes(45));
         assert_eq!(task.frontmatter.actual, Some(Duration::from_minutes(45)));
-    }
-
-    #[test]
-    fn next_id_empty() {
-        assert_eq!(next_task_id(&[]), "0001");
-    }
-
-    #[test]
-    fn next_id_increments() {
-        let tasks = vec![make_task("0001", "A"), make_task("0003", "B")];
-        assert_eq!(next_task_id(&tasks), "0004");
     }
 
     #[test]

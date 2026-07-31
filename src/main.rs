@@ -72,6 +72,14 @@ enum Commands {
         /// Skip opening $EDITOR after creation.
         #[arg(long)]
         no_edit: bool,
+        /// Use this exact task id instead of auto-numbering. Fails if the id
+        /// is already claimed on any branch, worktree, or in the ledger.
+        #[arg(long)]
+        id: Option<String>,
+        /// Commit the new task file immediately so its id is visible to every
+        /// other branch and worktree.
+        #[arg(long)]
+        commit: bool,
     },
 
     /// List tasks, optionally filtered.
@@ -252,6 +260,9 @@ enum Commands {
         cross_repo: bool,
     },
 
+    /// Reconcile the shared task-ID ledger and report an inconsistent ID space.
+    Doctor,
+
     /// Show a summary: open tasks, blocked tasks, current sprint progress.
     Status,
 
@@ -358,6 +369,8 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             gh_issue,
             body_file,
             no_edit,
+            id,
+            commit,
         }) => {
             let repo = find_repo()?;
             let edits = cmds::TaskFieldEdits {
@@ -374,6 +387,8 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 size.as_deref(),
                 &edits,
                 no_edit,
+                id.as_deref(),
+                commit,
             )?;
             println!("{}", path.display());
         }
@@ -597,6 +612,14 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 for e in &errors {
                     eprintln!("{}", e);
                 }
+                process::exit(1);
+            }
+        }
+
+        Some(Commands::Doctor) => {
+            let repo = find_repo()?;
+            let report = cmds::cmd_doctor(&repo)?;
+            if !cmds::print_doctor(&report) {
                 process::exit(1);
             }
         }

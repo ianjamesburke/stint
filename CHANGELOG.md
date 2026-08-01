@@ -1,6 +1,10 @@
 # Changelog
 
 Newest releases appear first.
+## [0.3.16] - 2026-08-01
+
+### Changes
+- fix: serialize task id allocation
 ## [0.3.15] - 2026-07-14
 
 ### Changes

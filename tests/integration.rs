@@ -5,7 +5,9 @@
 /// subprocess invocation.
 use std::env;
 use std::fs;
+use std::process::Command;
 use std::sync::OnceLock;
+use std::time::{Duration, Instant};
 
 use tempfile::TempDir;
 
@@ -239,6 +241,61 @@ fn add_increments_id() {
     .unwrap();
     let content = fs::read_to_string(&path).unwrap();
     assert!(content.contains("id: \"0002\""));
+}
+
+#[test]
+fn concurrent_add_processes_allocate_distinct_ids() {
+    let (tmp, _repo) = setup();
+    let binary = env!("CARGO_BIN_EXE_stint");
+    let children: Vec<_> = (0..8)
+        .map(|n| {
+            Command::new(binary)
+                .current_dir(tmp.path())
+                .args(["add", "--no-edit", &format!("Concurrent {n}")])
+                .spawn()
+                .unwrap()
+        })
+        .collect();
+
+    for mut child in children {
+        assert!(child.wait().unwrap().success());
+    }
+
+    let mut ids: Vec<_> = fs::read_dir(tmp.path().join(".stint/tasks"))
+        .unwrap()
+        .map(|entry| id_from_path(&entry.unwrap().path()))
+        .collect();
+    ids.sort();
+    ids.dedup();
+    assert_eq!(ids.len(), 8, "duplicate IDs allocated: {ids:?}");
+}
+
+#[test]
+fn add_recovers_after_lock_holder_is_killed() {
+    let (tmp, _repo) = setup();
+    let binary = env!("CARGO_BIN_EXE_stint");
+    let mut holder = Command::new(binary)
+        .current_dir(tmp.path())
+        .env("STINT_TEST_HOLD_ADD_LOCK", "1")
+        .args(["add", "--no-edit", "Killed holder"])
+        .spawn()
+        .unwrap();
+
+    let lock_path = tmp.path().join(".stint/add.lock");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !lock_path.exists() {
+        assert!(Instant::now() < deadline, "add never opened its lock file");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    holder.kill().unwrap();
+    assert!(!holder.wait().unwrap().success());
+
+    assert!(Command::new(binary)
+        .current_dir(tmp.path())
+        .args(["add", "--no-edit", "Recovered add"])
+        .status()
+        .unwrap()
+        .success());
 }
 
 #[test]

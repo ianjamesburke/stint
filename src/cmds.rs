@@ -2,7 +2,7 @@
 /// whatever arguments the command needs.  No `std::process::exit` here —
 /// callers handle exit codes.
 use std::collections::{HashMap, HashSet};
-use std::fs;
+use std::fs::{self, OpenOptions};
 use std::io::{self, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -11,6 +11,7 @@ use owo_colors::OwoColorize;
 
 use anyhow::{bail, Context};
 use chrono::{DateTime, SecondsFormat, Utc};
+use fs2::FileExt;
 use stint::check::check;
 use stint::duration::Duration;
 use stint::mutate::{
@@ -301,16 +302,7 @@ pub fn cmd_add(
         })
         .transpose()?;
 
-    repo.ensure_dirs()?;
-    let tasks = repo.load_tasks()?;
-    let id = next_task_id(&tasks);
     let slug = title_to_slug(title);
-    let filename = if slug.is_empty() {
-        format!("{}.md", id)
-    } else {
-        format!("{}-{}.md", id, slug)
-    };
-    let path = repo.tasks_dir().join(&filename);
     let created_at = timestamp_or_now(None)?;
 
     let body = match &edits.body_source {
@@ -318,30 +310,68 @@ pub fn cmd_add(
         None => DEFAULT_TASK_BODY.to_owned(),
     };
 
-    let mut frontmatter = minimal_frontmatter(&id, title);
-    frontmatter.priority = parsed_priority;
-    frontmatter.size = parsed_size;
-    frontmatter.created_at = Some(created_at);
-    frontmatter.area = clean_list(edits.area.as_deref().unwrap_or_default());
-    frontmatter.tags = clean_list(edits.tags.as_deref().unwrap_or_default());
-    frontmatter.gh_issue = clean_list(edits.gh_issue.as_deref().unwrap_or_default());
-    frontmatter.blocked_by = clean_list(edits.blocked_by.as_deref().unwrap_or_default())
-        .iter()
-        .map(|s| BlockedByRef::from_str(s))
-        .collect();
+    repo.ensure_dirs()?;
+    let path = with_add_lock(repo, || {
+        let tasks = repo.load_tasks()?;
+        let id = next_task_id(&tasks);
+        let filename = if slug.is_empty() {
+            format!("{}.md", id)
+        } else {
+            format!("{}-{}.md", id, slug)
+        };
+        let path = repo.tasks_dir().join(&filename);
 
-    let task = stint::schema::Task {
-        frontmatter,
-        body,
-        filename,
-    };
-    let content = serialize_task(&task);
-    repo.write_task(&path, &content)?;
+        let mut frontmatter = minimal_frontmatter(&id, title);
+        frontmatter.priority = parsed_priority;
+        frontmatter.size = parsed_size;
+        frontmatter.created_at = Some(created_at);
+        frontmatter.area = clean_list(edits.area.as_deref().unwrap_or_default());
+        frontmatter.tags = clean_list(edits.tags.as_deref().unwrap_or_default());
+        frontmatter.gh_issue = clean_list(edits.gh_issue.as_deref().unwrap_or_default());
+        frontmatter.blocked_by = clean_list(edits.blocked_by.as_deref().unwrap_or_default())
+            .iter()
+            .map(|s| BlockedByRef::from_str(s))
+            .collect();
+
+        let task = stint::schema::Task {
+            frontmatter,
+            body,
+            filename,
+        };
+        repo.write_task(&path, &serialize_task(&task))?;
+        Ok(path)
+    })?;
 
     if !no_edit {
         open_editor(&path)?;
     }
     Ok(path)
+}
+
+/// Run `f` while holding a kernel-managed advisory lock for task allocation.
+/// The kernel releases this lock if the process exits or is killed, so a crash
+/// cannot leave future `stint add` calls wedged behind a stale lock file.
+fn with_add_lock<T, F>(repo: &StintRepo, f: F) -> anyhow::Result<T>
+where
+    F: FnOnce() -> anyhow::Result<T>,
+{
+    let lock_path = repo.stint_dir.join("add.lock");
+    let lock_file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .open(&lock_path)
+        .with_context(|| format!("open {}", lock_path.display()))?;
+    lock_file
+        .lock_exclusive()
+        .with_context(|| format!("lock {}", lock_path.display()))?;
+
+    #[cfg(debug_assertions)]
+    if std::env::var_os("STINT_TEST_HOLD_ADD_LOCK").is_some() {
+        std::thread::sleep(std::time::Duration::from_secs(30));
+    }
+
+    f()
 }
 
 /// Apply field overrides to an existing task's frontmatter and/or body.

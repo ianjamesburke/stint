@@ -1,9 +1,10 @@
-/// Pure mutation helpers for `Task` and sprint content.
-///
-/// All functions are side-effect-free — callers are responsible for writing
-/// results back to disk.
+/// Mutation helpers for `Task` and sprint content.
 use crate::duration::Duration;
+use crate::repo::StintRepo;
 use crate::schema::{Task, TaskFrontmatter, TaskStatus};
+use anyhow::Context;
+use fs2::FileExt;
+use std::fs::{self, OpenOptions};
 
 // ---------------------------------------------------------------------------
 // Task field mutations
@@ -54,17 +55,68 @@ pub fn clear_started_at(task: &mut Task) {
 // ID helpers
 // ---------------------------------------------------------------------------
 
-/// Compute the next available task ID given a list of existing tasks.
+/// Atomically reserve and return the next task ID.
 ///
-/// Finds the highest numeric ID and returns it incremented by 1, zero-padded
-/// to 4 digits.  Returns `"0001"` when no tasks exist.
-pub fn next_task_id(tasks: &[Task]) -> String {
-    let max = tasks
-        .iter()
-        .filter_map(|t| t.frontmatter.id.parse::<u32>().ok())
-        .max()
-        .unwrap_or(0);
-    format!("{:04}", max + 1)
+/// A reservation file remains after the caller writes its task so every task
+/// creator shares one allocation history. The claim lock spans the read-max-
+/// reserve critical section; callers must use this instead of deriving IDs
+/// from task files themselves.
+pub fn next_task_id(repo: &StintRepo) -> anyhow::Result<String> {
+    repo.ensure_dirs()?;
+    with_claim_lock(repo, || {
+        let reservations = repo.stint_dir.join("reservations");
+        fs::create_dir_all(&reservations)
+            .with_context(|| format!("create {}", reservations.display()))?;
+
+        let task_max = repo
+            .load_tasks()?
+            .iter()
+            .filter_map(|task| task.frontmatter.id.parse::<u32>().ok())
+            .max()
+            .unwrap_or(0);
+        let reservation_max = fs::read_dir(&reservations)
+            .with_context(|| format!("read {}", reservations.display()))?
+            .filter_map(Result::ok)
+            .filter_map(|entry| entry.file_name().into_string().ok())
+            .filter_map(|id| id.parse::<u32>().ok())
+            .max()
+            .unwrap_or(0);
+        let id = next_id_after(task_max.max(reservation_max));
+        let reservation = reservations.join(&id);
+        fs::write(&reservation, "")
+            .with_context(|| format!("reserve task ID at {}", reservation.display()))?;
+        Ok(id)
+    })
+}
+
+fn next_id_after(max: u32) -> String {
+    format!("{max:04}", max = max + 1)
+}
+
+/// Acquire `.stint/claim.lock`, run `f`, then release it when the file closes.
+///
+/// Task ID allocation shares the claim lock so every creator serializes the
+/// same critical section, while the kernel releases a killed process's lock.
+pub fn with_claim_lock<T, F: FnOnce() -> anyhow::Result<T>>(
+    repo: &StintRepo,
+    f: F,
+) -> anyhow::Result<T> {
+    let lock_path = repo.stint_dir.join("claim.lock");
+    let lock = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .open(&lock_path)
+        .with_context(|| format!("open {}", lock_path.display()))?;
+    lock.lock_exclusive()
+        .with_context(|| format!("lock {}", lock_path.display()))?;
+
+    #[cfg(debug_assertions)]
+    if std::env::var_os("STINT_TEST_HOLD_CLAIM_LOCK").is_some() {
+        std::thread::sleep(std::time::Duration::from_secs(30));
+    }
+
+    f()
 }
 
 /// Resolve a user-supplied task ID fragment to a canonical 4-digit ID.
@@ -189,13 +241,18 @@ mod tests {
 
     #[test]
     fn next_id_empty() {
-        assert_eq!(next_task_id(&[]), "0001");
+        assert_eq!(next_id_after(0), "0001");
     }
 
     #[test]
     fn next_id_increments() {
         let tasks = vec![make_task("0001", "A"), make_task("0003", "B")];
-        assert_eq!(next_task_id(&tasks), "0004");
+        let max = tasks
+            .iter()
+            .filter_map(|task| task.frontmatter.id.parse::<u32>().ok())
+            .max()
+            .unwrap_or(0);
+        assert_eq!(next_id_after(max), "0004");
     }
 
     #[test]

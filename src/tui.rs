@@ -1807,8 +1807,7 @@ impl App {
         terminal: &mut H,
     ) -> anyhow::Result<bool> {
         self.repo.ensure_dirs()?;
-        let tasks = self.repo.load_tasks()?;
-        let id = next_task_id(&tasks);
+        let id = next_task_id(&self.repo)?;
         let slug = title_to_slug(title);
         let filename = if slug.is_empty() {
             format!("{id}.md")

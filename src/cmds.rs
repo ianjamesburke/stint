@@ -2,7 +2,7 @@
 /// whatever arguments the command needs.  No `std::process::exit` here —
 /// callers handle exit codes.
 use std::collections::{HashMap, HashSet};
-use std::fs::{self, OpenOptions};
+use std::fs;
 use std::io::{self, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -11,13 +11,12 @@ use owo_colors::OwoColorize;
 
 use anyhow::{bail, Context};
 use chrono::{DateTime, SecondsFormat, Utc};
-use fs2::FileExt;
 use stint::check::check;
 use stint::duration::Duration;
 use stint::mutate::{
     add_actual, clear_started_at, minimal_frontmatter, new_sprint_content, new_task_content,
     next_task_id, resolve_id, restart_task, set_actual, set_completed_at, set_started_at_if_absent,
-    set_status, title_to_slug, DEFAULT_TASK_BODY,
+    set_status, title_to_slug, with_claim_lock, DEFAULT_TASK_BODY,
 };
 use stint::next::{compute_next, compute_next_with_resolution, NextOptions, NextReport, NextTask};
 use stint::schema::{BlockedByRef, Sprint, TaskStatus};
@@ -174,7 +173,7 @@ pub(crate) fn import_github_issues(
             continue;
         }
 
-        let id = next_task_id(&tasks);
+        let id = next_task_id(repo)?;
         let filename = format!("{}-{}.md", id, title_to_slug(&issue.title));
         let path = repo.tasks_dir().join(filename);
         let content = github_issue_task_content(&id, issue)?;
@@ -310,68 +309,37 @@ pub fn cmd_add(
         None => DEFAULT_TASK_BODY.to_owned(),
     };
 
-    repo.ensure_dirs()?;
-    let path = with_add_lock(repo, || {
-        let tasks = repo.load_tasks()?;
-        let id = next_task_id(&tasks);
-        let filename = if slug.is_empty() {
-            format!("{}.md", id)
-        } else {
-            format!("{}-{}.md", id, slug)
-        };
-        let path = repo.tasks_dir().join(&filename);
+    let id = next_task_id(repo)?;
+    let filename = if slug.is_empty() {
+        format!("{}.md", id)
+    } else {
+        format!("{}-{}.md", id, slug)
+    };
+    let path = repo.tasks_dir().join(&filename);
 
-        let mut frontmatter = minimal_frontmatter(&id, title);
-        frontmatter.priority = parsed_priority;
-        frontmatter.size = parsed_size;
-        frontmatter.created_at = Some(created_at);
-        frontmatter.area = clean_list(edits.area.as_deref().unwrap_or_default());
-        frontmatter.tags = clean_list(edits.tags.as_deref().unwrap_or_default());
-        frontmatter.gh_issue = clean_list(edits.gh_issue.as_deref().unwrap_or_default());
-        frontmatter.blocked_by = clean_list(edits.blocked_by.as_deref().unwrap_or_default())
-            .iter()
-            .map(|s| BlockedByRef::from_str(s))
-            .collect();
+    let mut frontmatter = minimal_frontmatter(&id, title);
+    frontmatter.priority = parsed_priority;
+    frontmatter.size = parsed_size;
+    frontmatter.created_at = Some(created_at);
+    frontmatter.area = clean_list(edits.area.as_deref().unwrap_or_default());
+    frontmatter.tags = clean_list(edits.tags.as_deref().unwrap_or_default());
+    frontmatter.gh_issue = clean_list(edits.gh_issue.as_deref().unwrap_or_default());
+    frontmatter.blocked_by = clean_list(edits.blocked_by.as_deref().unwrap_or_default())
+        .iter()
+        .map(|s| BlockedByRef::from_str(s))
+        .collect();
 
-        let task = stint::schema::Task {
-            frontmatter,
-            body,
-            filename,
-        };
-        repo.write_task(&path, &serialize_task(&task))?;
-        Ok(path)
-    })?;
+    let task = stint::schema::Task {
+        frontmatter,
+        body,
+        filename,
+    };
+    repo.write_task(&path, &serialize_task(&task))?;
 
     if !no_edit {
         open_editor(&path)?;
     }
     Ok(path)
-}
-
-/// Run `f` while holding a kernel-managed advisory lock for task allocation.
-/// The kernel releases this lock if the process exits or is killed, so a crash
-/// cannot leave future `stint add` calls wedged behind a stale lock file.
-fn with_add_lock<T, F>(repo: &StintRepo, f: F) -> anyhow::Result<T>
-where
-    F: FnOnce() -> anyhow::Result<T>,
-{
-    let lock_path = repo.stint_dir.join("add.lock");
-    let lock_file = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .open(&lock_path)
-        .with_context(|| format!("open {}", lock_path.display()))?;
-    lock_file
-        .lock_exclusive()
-        .with_context(|| format!("lock {}", lock_path.display()))?;
-
-    #[cfg(debug_assertions)]
-    if std::env::var_os("STINT_TEST_HOLD_ADD_LOCK").is_some() {
-        std::thread::sleep(std::time::Duration::from_secs(30));
-    }
-
-    f()
 }
 
 /// Apply field overrides to an existing task's frontmatter and/or body.
@@ -1157,35 +1125,6 @@ pub fn cmd_claim(
         })?;
     }
     Ok(())
-}
-
-/// Acquire `.stint/claim.lock` (mkdir-based advisory lock), run `f`, then
-/// release. Retries up to 20 times at 50 ms intervals before giving up.
-fn with_claim_lock<T, F: FnOnce() -> anyhow::Result<T>>(
-    repo: &StintRepo,
-    f: F,
-) -> anyhow::Result<T> {
-    let lock = repo.stint_dir.join("claim.lock");
-    let mut attempts = 0u32;
-    loop {
-        match std::fs::create_dir(&lock) {
-            Ok(()) => break,
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                attempts += 1;
-                if attempts > 20 {
-                    anyhow::bail!(
-                        "claim lock held after {} retries; remove .stint/claim.lock to reset",
-                        attempts
-                    );
-                }
-                std::thread::sleep(std::time::Duration::from_millis(50));
-            }
-            Err(e) => return Err(e).context("create .stint/claim.lock"),
-        }
-    }
-    let result = f();
-    let _ = std::fs::remove_dir(&lock);
-    result
 }
 
 pub fn print_next(report: &NextReport) {

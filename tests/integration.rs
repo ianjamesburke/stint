@@ -271,20 +271,56 @@ fn concurrent_add_processes_allocate_distinct_ids() {
 }
 
 #[test]
+fn concurrent_reserve_processes_allocate_distinct_ids() {
+    let (tmp, _repo) = setup();
+    let binary = env!("CARGO_BIN_EXE_stint");
+    let children: Vec<_> = (0..8)
+        .map(|_| {
+            Command::new(binary)
+                .current_dir(tmp.path())
+                .arg("reserve")
+                .stdout(std::process::Stdio::piped())
+                .spawn()
+                .unwrap()
+        })
+        .collect();
+
+    let mut ids: Vec<_> = children
+        .into_iter()
+        .map(|child| {
+            let output = child.wait_with_output().unwrap();
+            assert!(
+                output.status.success(),
+                "reserve failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            String::from_utf8(output.stdout).unwrap().trim().to_owned()
+        })
+        .collect();
+    ids.sort();
+    ids.dedup();
+
+    assert_eq!(ids.len(), 8, "each process must reserve a distinct task ID");
+}
+
+#[test]
 fn add_recovers_after_lock_holder_is_killed() {
     let (tmp, _repo) = setup();
     let binary = env!("CARGO_BIN_EXE_stint");
     let mut holder = Command::new(binary)
         .current_dir(tmp.path())
-        .env("STINT_TEST_HOLD_ADD_LOCK", "1")
+        .env("STINT_TEST_HOLD_CLAIM_LOCK", "1")
         .args(["add", "--no-edit", "Killed holder"])
         .spawn()
         .unwrap();
 
-    let lock_path = tmp.path().join(".stint/add.lock");
+    let lock_path = tmp.path().join(".stint/claim.lock");
     let deadline = Instant::now() + Duration::from_secs(5);
     while !lock_path.exists() {
-        assert!(Instant::now() < deadline, "add never opened its lock file");
+        assert!(
+            Instant::now() < deadline,
+            "add never opened the shared lock file"
+        );
         std::thread::sleep(Duration::from_millis(10));
     }
     holder.kill().unwrap();

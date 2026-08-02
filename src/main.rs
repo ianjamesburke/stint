@@ -74,6 +74,9 @@ enum Commands {
         no_edit: bool,
     },
 
+    /// Atomically reserve a task ID for an externally written task file.
+    Reserve,
+
     /// List tasks, optionally filtered.
     #[command(alias = "ls")]
     List {
@@ -376,6 +379,11 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 no_edit,
             )?;
             println!("{}", path.display());
+        }
+
+        Some(Commands::Reserve) => {
+            let repo = find_repo()?;
+            println!("{}", stint::mutate::next_task_id(&repo)?);
         }
 
         Some(Commands::List {

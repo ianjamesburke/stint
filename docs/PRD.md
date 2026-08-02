@@ -109,6 +109,7 @@ Non-obvious constraints, prior attempts, things that will bite you.
 | `stint add "Title"` | Create a new task, open editor for body |
 | `stint add "Title" --priority p1 --size m --area cli --tags ergonomics --blocked-by 0002 --gh-issue 42` | Create a task with metadata set at creation time (comma-separated or repeated flags) |
 | `stint add "Title" --body-file body.md --no-edit` | Create a task headlessly: body read from a file (or `-` for stdin), skip opening $EDITOR |
+| `stint reserve` | Atomically reserve and print an ID for an externally written task file |
 | `stint list` | List all tasks (filterable by status, sprint, area, tag) |
 | `stint list --sprint s12` | List tasks in a sprint |
 | `stint list --status in-progress` | Filter by status |

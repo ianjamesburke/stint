@@ -752,7 +752,7 @@ impl App {
     }
 
     fn render_focus(&self, frame: &mut Frame<'_>, area: Rect) {
-        let card_area = centered_rect(62, 34, area);
+        let card_area = centered_rect(78, 64, area);
         let shortcuts_area = Rect {
             x: card_area.x,
             y: card_area
@@ -782,39 +782,54 @@ impl App {
             .map(|priority| priority.as_str())
             .unwrap_or("unprioritized");
         let unblocks = unblock_count(task, &self.data.tasks);
-        let lines = vec![
-            Line::styled(
-                "Focus now",
-                Style::default()
-                    .fg(Color::Gray)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Line::from(""),
-            Line::styled(
-                format!("{}  {}", task.frontmatter.id, task.frontmatter.title),
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Line::from(format!(
+        let card = Block::default()
+            .borders(Borders::ALL)
+            .title("Calculated next task");
+        let content_area = card.inner(card_area);
+        frame.render_widget(card, card_area);
+        let content = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(3),
+                Constraint::Length(2),
+                Constraint::Min(1),
+            ])
+            .split(content_area);
+        frame.render_widget(
+            Paragraph::new(vec![
+                Line::styled(
+                    "Focus now",
+                    Style::default()
+                        .fg(Color::Gray)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Line::styled(
+                    format!("{}  {}", task.frontmatter.id, task.frontmatter.title),
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                ),
+            ])
+            .alignment(ratatui::layout::Alignment::Center)
+            .wrap(Wrap { trim: true }),
+            content[0],
+        );
+        frame.render_widget(
+            Paragraph::new(Line::from(format!(
                 "{priority} priority  ·  unblocks {unblocks} {}",
                 if unblocks == 1 { "task" } else { "tasks" }
-            )),
-        ];
+            )))
+            .alignment(ratatui::layout::Alignment::Center),
+            content[1],
+        );
         frame.render_widget(
-            Paragraph::new(lines)
-                .alignment(ratatui::layout::Alignment::Center)
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .title("Calculated next task"),
-                ),
-            card_area,
+            Paragraph::new(task.body.as_str()).wrap(Wrap { trim: false }),
+            content[2],
         );
         frame.render_widget(
             Paragraph::new(vec![
                 Line::styled(
-                    "↓ lower priority    C claim    X delete",
+                    "↓ lower priority    C claim    x delete",
                     Style::default().fg(Color::Gray),
                 ),
                 Line::styled(
@@ -1339,14 +1354,13 @@ impl App {
             lines
         } else if let Some(PromptKind::DeleteConfirm { id }) = &self.prompt {
             vec![
-                Line::from("Type the stint ID number to confirm."),
-                Line::from(""),
+                Line::from(format!("type stint id ({id}) to confirm:")),
                 Line::from(vec![
-                    Span::styled("ID: ", Style::default().fg(Color::Gray)),
+                    Span::styled("> ", Style::default().fg(Color::Gray)),
                     Span::raw(&self.input),
                 ]),
                 Line::styled(
-                    format!("This permanently removes task {id}. Esc cancels."),
+                    format!("stint remove {id}  ·  Esc cancels"),
                     Style::default().fg(Color::Yellow),
                 ),
             ]
@@ -1439,7 +1453,7 @@ impl App {
                     return self.lower_selected_priority()
                 }
                 KeyCode::Char('C') if plain_key(key) => return self.claim_selected(terminal),
-                KeyCode::Char('X') if plain_key(key) => {
+                KeyCode::Char('x') if plain_key(key) => {
                     let Some(id) = self.selected_task_id() else {
                         self.set_message("no task to delete".to_owned());
                         return Ok(false);

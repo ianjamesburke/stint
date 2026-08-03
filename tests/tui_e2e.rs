@@ -185,6 +185,83 @@ fn blocked_todos_are_visible_in_parked_section() {
 }
 
 #[test]
+fn focus_view_claims_the_focused_task_and_shows_every_shortcut() {
+    let (_tmp, repo) = setup();
+    write_task_extra(&repo, "0008", "First urgent task", "todo", "priority: p0");
+    write_task_extra(&repo, "0009", "Second urgent task", "todo", "priority: p0");
+    let mut tui = driver(StintRepo {
+        stint_dir: repo.stint_dir.clone(),
+    });
+
+    press(&mut tui, KeyCode::BackTab);
+    let screen = tui.render_text().unwrap();
+    assert!(screen.contains("Calculated next task"));
+    assert!(screen.contains("0008  First urgent task"));
+    assert!(screen.contains("C claim"), "{screen}");
+    assert!(screen.contains("x delete"));
+    assert!(screen.contains("Tab other views"));
+    assert!(screen.contains("? shortcuts"));
+    assert_eq!(tui.selected_task_id(), Some("0008"));
+
+    press(&mut tui, KeyCode::Down);
+    assert!(task(&repo, "0008-first-urgent-task.md").contains("priority: p1"));
+    assert_eq!(tui.selected_task_id(), Some("0009"));
+
+    tui.press_char('C').unwrap();
+    assert!(task(&repo, "0009-second-urgent-task.md").contains("status: in-progress"));
+    assert!(tui
+        .commands_run()
+        .single()
+        .contains("claim-agent --id 0009"));
+    assert_eq!(tui.selected_task_id(), Some("0008"));
+
+    tui.press_char('x').unwrap();
+    let screen = tui.render_text().unwrap();
+    assert!(screen.contains("type stint id (0008) to confirm:"));
+    assert!(screen.contains("stint remove 0008"));
+    assert!(!screen.contains("config.toml"));
+    tui.type_text("0008").unwrap();
+    enter(&mut tui);
+    assert!(!repo.tasks_dir().join("0008-first-urgent-task.md").exists());
+    assert_eq!(tui.selected_task_id(), Some("0001"));
+
+    tui.press_char('u').unwrap();
+    assert!(repo.tasks_dir().join("0008-first-urgent-task.md").exists());
+}
+
+#[test]
+fn focus_view_shows_and_wraps_the_task_body() {
+    let (_tmp, repo) = setup();
+    write_task_extra(&repo, "0008", "First urgent task", "todo", "priority: p0");
+    let path = repo.tasks_dir().join("0008-first-urgent-task.md");
+    let content = fs::read_to_string(&path).unwrap();
+    fs::write(
+        path,
+        format!(
+            "{content}\n## Why\nThis focused stint includes enough descriptive text to wrap across multiple lines instead of being clipped from the focus screen.\n"
+        ),
+    )
+    .unwrap();
+    let mut tui = driver(StintRepo {
+        stint_dir: repo.stint_dir.clone(),
+    });
+
+    press(&mut tui, KeyCode::BackTab);
+    let screen = tui.render_text().unwrap();
+
+    assert!(screen.contains("## Why"), "{screen}");
+    assert!(screen.contains("This focused stint includes enough descriptive text to wrap"));
+    assert!(
+        screen.contains("across multiple lines instead of"),
+        "{screen}"
+    );
+    assert!(
+        screen.contains("being clipped from the focus screen."),
+        "{screen}"
+    );
+}
+
+#[test]
 fn conflicted_ready_task_shows_holder_and_lane_goes_idle_when_freed() {
     let (_tmp, repo) = setup();
     write_task_extra(&repo, "0008", "Cli follow-up", "todo", "area:\n  - \"cli\"");
@@ -197,7 +274,12 @@ fn conflicted_ready_task_shows_holder_and_lane_goes_idle_when_freed() {
     assert!(screen.contains("~0008 wait:0004"));
     assert_eq!(screen.matches("idle").count(), 1);
 
-    replace_task_status(&repo, "0004-cli-args.md", "status: in-progress", "status: done");
+    replace_task_status(
+        &repo,
+        "0004-cli-args.md",
+        "status: in-progress",
+        "status: done",
+    );
     tui.reload();
     let screen = tui.render_text().unwrap();
     assert!(screen.contains("[0008 Cli follow-up"));

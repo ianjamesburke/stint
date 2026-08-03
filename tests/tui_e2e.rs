@@ -185,7 +185,7 @@ fn blocked_todos_are_visible_in_parked_section() {
 }
 
 #[test]
-fn focus_view_calculates_next_task_and_supports_its_shortcuts() {
+fn focus_view_claims_the_focused_task_and_shows_every_shortcut() {
     let (_tmp, repo) = setup();
     write_task_extra(&repo, "0008", "First urgent task", "todo", "priority: p0");
     write_task_extra(&repo, "0009", "Second urgent task", "todo", "priority: p0");
@@ -197,27 +197,34 @@ fn focus_view_calculates_next_task_and_supports_its_shortcuts() {
     let screen = tui.render_text().unwrap();
     assert!(screen.contains("Calculated next task"));
     assert!(screen.contains("0008  First urgent task"));
-    assert!(screen.contains("C copy ID"));
+    assert!(screen.contains("C claim"), "{screen}");
     assert!(screen.contains("X delete"));
+    assert!(screen.contains("Tab other views"));
+    assert!(screen.contains("? shortcuts"));
     assert_eq!(tui.selected_task_id(), Some("0008"));
-
-    tui.press_char('C').unwrap();
-    assert_eq!(tui.clipboard(), Some("0008"));
 
     press(&mut tui, KeyCode::Down);
     assert!(task(&repo, "0008-first-urgent-task.md").contains("priority: p1"));
     assert_eq!(tui.selected_task_id(), Some("0009"));
 
+    tui.press_char('C').unwrap();
+    assert!(task(&repo, "0009-second-urgent-task.md").contains("status: in-progress"));
+    assert!(tui
+        .commands_run()
+        .single()
+        .contains("claim-agent --id 0009"));
+    assert_eq!(tui.selected_task_id(), Some("0008"));
+
     tui.press_char('X').unwrap();
     let screen = tui.render_text().unwrap();
     assert!(screen.contains("Type the stint ID number to confirm."));
-    tui.type_text("0009").unwrap();
+    tui.type_text("0008").unwrap();
     enter(&mut tui);
-    assert!(!repo.tasks_dir().join("0009-second-urgent-task.md").exists());
-    assert_eq!(tui.selected_task_id(), Some("0008"));
+    assert!(!repo.tasks_dir().join("0008-first-urgent-task.md").exists());
+    assert_eq!(tui.selected_task_id(), Some("0001"));
 
     tui.press_char('u').unwrap();
-    assert!(repo.tasks_dir().join("0009-second-urgent-task.md").exists());
+    assert!(repo.tasks_dir().join("0008-first-urgent-task.md").exists());
 }
 
 #[test]

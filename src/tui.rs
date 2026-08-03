@@ -1,8 +1,8 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
-use std::io::{self, Stdout, Write};
+use std::io::{self, Stdout};
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::process::Command;
 use std::sync::mpsc;
 use std::time::{Duration as StdDuration, Instant};
 
@@ -78,7 +78,6 @@ fn run_app(terminal: &mut Term, repo: StintRepo) -> anyhow::Result<()> {
 trait TerminalHost {
     fn edit_path(&mut self, path: &PathBuf) -> anyhow::Result<()>;
     fn run_command(&mut self, command: &str) -> anyhow::Result<bool>;
-    fn copy_to_clipboard(&mut self, text: &str) -> anyhow::Result<()>;
 }
 
 impl TerminalHost for Term {
@@ -88,10 +87,6 @@ impl TerminalHost for Term {
 
     fn run_command(&mut self, command: &str) -> anyhow::Result<bool> {
         suspend_terminal(self, || run_shell_command(command))
-    }
-
-    fn copy_to_clipboard(&mut self, text: &str) -> anyhow::Result<()> {
-        copy_to_clipboard(text)
     }
 }
 
@@ -817,10 +812,16 @@ impl App {
             card_area,
         );
         frame.render_widget(
-            Paragraph::new(Line::styled(
-                "↓ lower priority    C copy ID    X delete    Tab other views    ? shortcuts",
-                Style::default().fg(Color::Gray),
-            ))
+            Paragraph::new(vec![
+                Line::styled(
+                    "↓ lower priority    C claim    X delete",
+                    Style::default().fg(Color::Gray),
+                ),
+                Line::styled(
+                    "Tab other views    ? shortcuts",
+                    Style::default().fg(Color::Gray),
+                ),
+            ])
             .alignment(ratatui::layout::Alignment::Center),
             shortcuts_area,
         );
@@ -1437,7 +1438,7 @@ impl App {
                 KeyCode::Down | KeyCode::Char('j') if plain_key(key) => {
                     return self.lower_selected_priority()
                 }
-                KeyCode::Char('C') if plain_key(key) => return self.copy_selected_id(terminal),
+                KeyCode::Char('C') if plain_key(key) => return self.claim_selected(terminal),
                 KeyCode::Char('X') if plain_key(key) => {
                     let Some(id) = self.selected_task_id() else {
                         self.set_message("no task to delete".to_owned());
@@ -1856,16 +1857,6 @@ impl App {
         Ok(true)
     }
 
-    fn copy_selected_id<H: TerminalHost>(&mut self, terminal: &mut H) -> anyhow::Result<bool> {
-        let id = self
-            .selected_task_id()
-            .ok_or_else(|| anyhow::anyhow!("no selected task"))?
-            .to_owned();
-        terminal.copy_to_clipboard(&id)?;
-        self.set_message(format!("copied: {id}"));
-        Ok(false)
-    }
-
     fn delete_task(&mut self, id: &str) -> anyhow::Result<bool> {
         let path = self.repo.resolve_task_path(id)?;
         let before = read_optional(&path)?;
@@ -2154,10 +2145,6 @@ impl TuiTestDriver {
         &self.host.commands_run
     }
 
-    pub fn clipboard(&self) -> Option<&str> {
-        self.host.clipboard.as_deref()
-    }
-
     pub fn age_message(&mut self) {
         self.app.message_at = Instant::now() - MESSAGE_TTL - StdDuration::from_millis(1);
     }
@@ -2166,7 +2153,6 @@ impl TuiTestDriver {
 struct TestHost {
     edited_paths: Vec<PathBuf>,
     commands_run: Vec<String>,
-    clipboard: Option<String>,
     editor_append: String,
     command_success: bool,
 }
@@ -2176,7 +2162,6 @@ impl Default for TestHost {
         Self {
             edited_paths: Vec::new(),
             commands_run: Vec::new(),
-            clipboard: None,
             editor_append: String::new(),
             command_success: true,
         }
@@ -2198,11 +2183,6 @@ impl TerminalHost for TestHost {
     fn run_command(&mut self, command: &str) -> anyhow::Result<bool> {
         self.commands_run.push(command.to_owned());
         Ok(self.command_success)
-    }
-
-    fn copy_to_clipboard(&mut self, text: &str) -> anyhow::Result<()> {
-        self.clipboard = Some(text.to_owned());
-        Ok(())
     }
 }
 
@@ -2637,25 +2617,6 @@ fn run_shell_command(command: &str) -> anyhow::Result<bool> {
         .status()
         .with_context(|| format!("run custom command {command:?}"))?;
     Ok(status.success())
-}
-
-fn copy_to_clipboard(text: &str) -> anyhow::Result<()> {
-    let mut command = Command::new("pbcopy")
-        .stdin(Stdio::piped())
-        .spawn()
-        .context("start pbcopy")?;
-    let stdin = command
-        .stdin
-        .as_mut()
-        .ok_or_else(|| anyhow::anyhow!("pbcopy stdin unavailable"))?;
-    stdin
-        .write_all(text.as_bytes())
-        .context("write clipboard text")?;
-    let status = command.wait().context("wait for pbcopy")?;
-    if !status.success() {
-        bail!("pbcopy exited with status {status}");
-    }
-    Ok(())
 }
 
 #[cfg(test)]

@@ -134,6 +134,56 @@ pub fn compare_next_order(a: &Task, b: &Task) -> std::cmp::Ordering {
         .then_with(|| a.frontmatter.id.cmp(&b.frontmatter.id))
 }
 
+/// Select the one actionable task that deserves focused attention.
+///
+/// Only dependency- and area-ready todo tasks qualify. Candidates are ordered
+/// by priority, then by the number of open local tasks they directly unblock,
+/// then by their numeric task ID for a stable, transparent tie-break.
+pub fn focus_task<'a>(tasks: &'a [Task], sprints: &[Sprint]) -> Option<&'a Task> {
+    let report = compute_next(
+        tasks,
+        sprints,
+        NextOptions {
+            sprint: None,
+            include_area_conflicts: false,
+            include_backlog: false,
+        },
+    );
+    let ready_ids: HashSet<&str> = report.ready.iter().map(|task| task.id.as_str()).collect();
+
+    tasks
+        .iter()
+        .filter(|task| ready_ids.contains(task.frontmatter.id.as_str()))
+        .min_by(|a, b| {
+            cmp_priority(&a.frontmatter.priority, &b.frontmatter.priority)
+                .then_with(|| unblock_count(b, tasks).cmp(&unblock_count(a, tasks)))
+                .then_with(|| numeric_task_id(a).cmp(&numeric_task_id(b)))
+                .then_with(|| a.frontmatter.id.cmp(&b.frontmatter.id))
+        })
+}
+
+/// Count open local tasks that name `task` as a direct blocker.
+pub fn unblock_count(task: &Task, tasks: &[Task]) -> usize {
+    tasks
+        .iter()
+        .filter(|candidate| {
+            !matches!(
+                candidate.frontmatter.status,
+                TaskStatus::Done | TaskStatus::Archived
+            )
+        })
+        .filter(|candidate| {
+            candidate.frontmatter.blocked_by.iter().any(|blocker| {
+                matches!(blocker, BlockedByRef::LocalTask(id) if id == &task.frontmatter.id)
+            })
+        })
+        .count()
+}
+
+fn numeric_task_id(task: &Task) -> u64 {
+    task.frontmatter.id.parse().unwrap_or(u64::MAX)
+}
+
 fn compare_created_at(a: &Task, b: &Task) -> std::cmp::Ordering {
     match (
         parse_timestamp(a.frontmatter.created_at.as_deref()),
@@ -494,6 +544,40 @@ mod tests {
         );
         assert!(report.ready.is_empty());
         assert!(report.blocked.is_empty());
+    }
+
+    #[test]
+    fn focus_task_prefers_priority_then_unblock_count_then_lowest_id() {
+        let tasks = vec![
+            task("0001", "Older", "todo", "priority: p1"),
+            task("0002", "Unblocks one", "todo", "priority: p1"),
+            task("0003", "High priority", "todo", "priority: p0"),
+            task("0004", "Waits", "todo", "blocked_by: [\"0002\"]"),
+        ];
+
+        assert_eq!(
+            focus_task(&tasks, &[]).map(|task| task.frontmatter.id.as_str()),
+            Some("0003")
+        );
+
+        let same_priority = vec![
+            task("0001", "Older", "todo", "priority: p1"),
+            task("0002", "Unblocks one", "todo", "priority: p1"),
+            task("0003", "Waits", "todo", "blocked_by: [\"0002\"]"),
+        ];
+        assert_eq!(
+            focus_task(&same_priority, &[]).map(|task| task.frontmatter.id.as_str()),
+            Some("0002")
+        );
+
+        let no_dependents = vec![
+            task("0002", "Later", "todo", "priority: p1"),
+            task("0001", "Earlier", "todo", "priority: p1"),
+        ];
+        assert_eq!(
+            focus_task(&no_dependents, &[]).map(|task| task.frontmatter.id.as_str()),
+            Some("0001")
+        );
     }
 
     #[test]

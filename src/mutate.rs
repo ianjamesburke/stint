@@ -3,7 +3,7 @@
 /// All functions are side-effect-free — callers are responsible for writing
 /// results back to disk.
 use crate::duration::Duration;
-use crate::schema::{Task, TaskFrontmatter, TaskStatus};
+use crate::schema::{Priority, Task, TaskFrontmatter, TaskStatus};
 
 // ---------------------------------------------------------------------------
 // Task field mutations
@@ -48,6 +48,21 @@ pub fn set_completed_at(task: &mut Task, timestamp: String) {
 /// Clear `started_at` (used by unclaim to return a task to a fresh todo state).
 pub fn clear_started_at(task: &mut Task) {
     task.frontmatter.started_at = None;
+}
+
+/// Lower a task's priority by one level. P4 becomes unprioritized.
+///
+/// Returns false when the task is already unprioritized.
+pub fn lower_priority(task: &mut Task) -> bool {
+    task.frontmatter.priority = match task.frontmatter.priority {
+        Some(Priority::P0) => Some(Priority::P1),
+        Some(Priority::P1) => Some(Priority::P2),
+        Some(Priority::P2) => Some(Priority::P3),
+        Some(Priority::P3) => Some(Priority::P4),
+        Some(Priority::P4) => None,
+        None => return false,
+    };
+    true
 }
 
 // ---------------------------------------------------------------------------
@@ -169,6 +184,18 @@ mod tests {
         let mut task = make_task("0001", "Task A");
         set_status(&mut task, TaskStatus::Done);
         assert_eq!(task.frontmatter.status, TaskStatus::Done);
+    }
+
+    #[test]
+    fn lower_priority_moves_one_level_and_then_becomes_unprioritized() {
+        let mut task = make_task("0001", "Task A");
+        task.frontmatter.priority = Some(Priority::P3);
+
+        assert!(lower_priority(&mut task));
+        assert_eq!(task.frontmatter.priority, Some(Priority::P4));
+        assert!(lower_priority(&mut task));
+        assert_eq!(task.frontmatter.priority, None);
+        assert!(!lower_priority(&mut task));
     }
 
     #[test]

@@ -1,8 +1,8 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
-use std::io::{self, Stdout};
+use std::io::{self, Stdout, Write};
 use std::path::PathBuf;
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration as StdDuration, Instant};
 
@@ -24,10 +24,10 @@ use ratatui::{Frame, Terminal};
 use serde::Deserialize;
 use stint::check::check;
 use stint::mutate::{
-    new_task_content, next_task_id, set_completed_at, set_started_at_if_absent, set_status,
-    title_to_slug,
+    lower_priority, new_task_content, next_task_id, set_completed_at, set_started_at_if_absent,
+    set_status, title_to_slug,
 };
-use stint::next::{compare_next_order, compute_next, NextOptions};
+use stint::next::{compare_next_order, compute_next, focus_task, unblock_count, NextOptions};
 use stint::schema::{BlockedByRef, Sprint, Task, TaskStatus};
 use stint::serialize::serialize_task;
 use stint::state::{active_blockers, classify, done_ids};
@@ -78,6 +78,7 @@ fn run_app(terminal: &mut Term, repo: StintRepo) -> anyhow::Result<()> {
 trait TerminalHost {
     fn edit_path(&mut self, path: &PathBuf) -> anyhow::Result<()>;
     fn run_command(&mut self, command: &str) -> anyhow::Result<bool>;
+    fn copy_to_clipboard(&mut self, text: &str) -> anyhow::Result<()>;
 }
 
 impl TerminalHost for Term {
@@ -87,6 +88,10 @@ impl TerminalHost for Term {
 
     fn run_command(&mut self, command: &str) -> anyhow::Result<bool> {
         suspend_terminal(self, || run_shell_command(command))
+    }
+
+    fn copy_to_clipboard(&mut self, text: &str) -> anyhow::Result<()> {
+        copy_to_clipboard(text)
     }
 }
 
@@ -134,17 +139,19 @@ fn suspend_terminal<T>(
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum View {
+    Focus,
     Runway,
     Table,
 }
 
 impl View {
-    fn all() -> [Self; 2] {
-        [Self::Runway, Self::Table]
+    fn all() -> [Self; 3] {
+        [Self::Focus, Self::Runway, Self::Table]
     }
 
     fn label(self) -> &'static str {
         match self {
+            View::Focus => "Focus",
             View::Runway => "Runway",
             View::Table => "Table",
         }
@@ -396,12 +403,13 @@ impl SortMode {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum PromptKind {
     Search,
     Filter,
     NewTask { edit_after: bool },
     Command,
+    DeleteConfirm { id: String },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -603,6 +611,9 @@ impl App {
 
     fn visible_tasks(&self) -> Vec<&Task> {
         match self.view {
+            View::Focus => focus_task(&self.data.tasks, &self.data.sprints)
+                .into_iter()
+                .collect(),
             View::Runway => {
                 let model = self.runway_model();
                 let by_id: HashMap<&str, &Task> = self
@@ -702,21 +713,26 @@ impl App {
     fn render(&mut self, frame: &mut Frame<'_>) {
         self.clamp_selection();
         let area = frame.area();
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(3),
-                Constraint::Min(5),
-                Constraint::Length(2),
-            ])
-            .split(area);
+        if self.view == View::Focus {
+            self.render_focus(frame, area);
+        } else {
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Length(3),
+                    Constraint::Min(5),
+                    Constraint::Length(2),
+                ])
+                .split(area);
 
-        self.render_header(frame, chunks[0]);
-        match self.view {
-            View::Runway => self.render_runway(frame, chunks[1]),
-            View::Table => self.render_table(frame, chunks[1]),
+            self.render_header(frame, chunks[0]);
+            match self.view {
+                View::Focus => unreachable!("focus renders without chrome"),
+                View::Runway => self.render_runway(frame, chunks[1]),
+                View::Table => self.render_table(frame, chunks[1]),
+            }
+            self.render_footer(frame, chunks[2]);
         }
-        self.render_footer(frame, chunks[2]);
 
         if self.show_detail {
             self.render_detail(frame, centered_rect(78, 82, area));
@@ -738,6 +754,76 @@ impl App {
         if self.show_backlog {
             self.render_backlog_overlay(frame, centered_rect(64, 60, area));
         }
+    }
+
+    fn render_focus(&self, frame: &mut Frame<'_>, area: Rect) {
+        let card_area = centered_rect(62, 34, area);
+        let shortcuts_area = Rect {
+            x: card_area.x,
+            y: card_area
+                .y
+                .saturating_add(card_area.height)
+                .saturating_add(1),
+            width: card_area.width,
+            height: 2.min(
+                area.bottom()
+                    .saturating_sub(card_area.bottom().saturating_add(1)),
+            ),
+        };
+        let Some(task) = self.selected_task() else {
+            frame.render_widget(
+                Paragraph::new(Line::styled(
+                    "No ready tasks. Everything is either complete, blocked, or already in progress.",
+                    Style::default().fg(Color::Gray),
+                ))
+                .alignment(ratatui::layout::Alignment::Center),
+                centered_rect(70, 12, area),
+            );
+            return;
+        };
+        let priority = task
+            .frontmatter
+            .priority
+            .map(|priority| priority.as_str())
+            .unwrap_or("unprioritized");
+        let unblocks = unblock_count(task, &self.data.tasks);
+        let lines = vec![
+            Line::styled(
+                "Focus now",
+                Style::default()
+                    .fg(Color::Gray)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Line::from(""),
+            Line::styled(
+                format!("{}  {}", task.frontmatter.id, task.frontmatter.title),
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Line::from(format!(
+                "{priority} priority  ·  unblocks {unblocks} {}",
+                if unblocks == 1 { "task" } else { "tasks" }
+            )),
+        ];
+        frame.render_widget(
+            Paragraph::new(lines)
+                .alignment(ratatui::layout::Alignment::Center)
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .title("Calculated next task"),
+                ),
+            card_area,
+        );
+        frame.render_widget(
+            Paragraph::new(Line::styled(
+                "↓ lower priority    C copy ID    X delete    Tab other views    ? shortcuts",
+                Style::default().fg(Color::Gray),
+            ))
+            .alignment(ratatui::layout::Alignment::Center),
+            shortcuts_area,
+        );
     }
 
     fn render_header(&self, frame: &mut Frame<'_>, area: Rect) {
@@ -1220,6 +1306,7 @@ impl App {
             Some(PromptKind::NewTask { edit_after: false }) => "New task",
             Some(PromptKind::NewTask { edit_after: true }) => "New task + edit",
             Some(PromptKind::Command) => "Command palette",
+            Some(PromptKind::DeleteConfirm { .. }) => "Delete task",
             None => "",
         };
         let lines = if self.prompt == Some(PromptKind::Command) {
@@ -1249,6 +1336,19 @@ impl App {
                 }));
             }
             lines
+        } else if let Some(PromptKind::DeleteConfirm { id }) = &self.prompt {
+            vec![
+                Line::from("Type the stint ID number to confirm."),
+                Line::from(""),
+                Line::from(vec![
+                    Span::styled("ID: ", Style::default().fg(Color::Gray)),
+                    Span::raw(&self.input),
+                ]),
+                Line::styled(
+                    format!("This permanently removes task {id}. Esc cancels."),
+                    Style::default().fg(Color::Yellow),
+                ),
+            ]
         } else {
             let label = match self.prompt {
                 Some(PromptKind::Search) => "Search",
@@ -1330,6 +1430,24 @@ impl App {
         if self.show_detail && key.code == KeyCode::Esc {
             self.show_detail = false;
             return Ok(false);
+        }
+
+        if self.view == View::Focus {
+            match key.code {
+                KeyCode::Down | KeyCode::Char('j') if plain_key(key) => {
+                    return self.lower_selected_priority()
+                }
+                KeyCode::Char('C') if plain_key(key) => return self.copy_selected_id(terminal),
+                KeyCode::Char('X') if plain_key(key) => {
+                    let Some(id) = self.selected_task_id() else {
+                        self.set_message("no task to delete".to_owned());
+                        return Ok(false);
+                    };
+                    self.open_prompt(PromptKind::DeleteConfirm { id: id.to_owned() }, "");
+                    return Ok(false);
+                }
+                _ => {}
+            }
         }
 
         match key.code {
@@ -1419,7 +1537,7 @@ impl App {
         key: KeyEvent,
         terminal: &mut H,
     ) -> anyhow::Result<bool> {
-        let Some(prompt) = self.prompt else {
+        let Some(prompt) = self.prompt.clone() else {
             return Ok(false);
         };
         match key.code {
@@ -1429,25 +1547,37 @@ impl App {
             }
             KeyCode::Enter => {
                 let value = self.input.trim().to_owned();
-                self.prompt = None;
                 match prompt {
+                    PromptKind::DeleteConfirm { id } => {
+                        if value == id {
+                            self.prompt = None;
+                            self.input.clear();
+                            return self.delete_task(&id);
+                        }
+                        self.input.clear();
+                        self.set_message(format!("confirmation must match {id}"));
+                    }
                     PromptKind::Search => {
+                        self.prompt = None;
                         self.input.clear();
                         self.search = value;
                         self.selected = 0;
                     }
                     PromptKind::Filter => {
+                        self.prompt = None;
                         self.input.clear();
                         self.filter = value;
                         self.selected = 0;
                     }
                     PromptKind::NewTask { edit_after } => {
+                        self.prompt = None;
                         self.input.clear();
                         if !value.is_empty() {
                             return self.create_task(&value, edit_after, terminal);
                         }
                     }
                     PromptKind::Command => {
+                        self.prompt = None;
                         let result = self.run_palette_item(terminal);
                         if self.prompt.is_none() {
                             self.input.clear();
@@ -1570,6 +1700,7 @@ impl App {
 
     fn move_selection(&mut self, delta: isize) {
         match self.view {
+            View::Focus => {}
             View::Runway => self.move_runway_lane(delta),
             View::Table => self.move_linear(delta),
         }
@@ -1577,6 +1708,7 @@ impl App {
 
     fn move_horizontal(&mut self, delta: isize) {
         match self.view {
+            View::Focus => {}
             View::Runway => self.move_runway_slot(delta),
             View::Table => self.move_linear(delta),
         }
@@ -1656,9 +1788,10 @@ impl App {
     }
 
     fn open_prompt(&mut self, prompt: PromptKind, value: &str) {
+        let is_command = prompt == PromptKind::Command;
         self.prompt = Some(prompt);
         self.input = value.to_owned();
-        if prompt == PromptKind::Command {
+        if is_command {
             self.command_index = 0;
         }
     }
@@ -1695,6 +1828,58 @@ impl App {
             );
         }
         Ok(())
+    }
+
+    fn lower_selected_priority(&mut self) -> anyhow::Result<bool> {
+        let id = self
+            .selected_task_id()
+            .ok_or_else(|| anyhow::anyhow!("no selected task"))?
+            .to_owned();
+        let path = self.repo.resolve_task_path(&id)?;
+        let before = read_optional(&path)?;
+        let mut task = self.repo.read_task(&path)?;
+        if !lower_priority(&mut task) {
+            self.set_message(format!("already unprioritized: {id}"));
+            return Ok(false);
+        }
+        let after_content = serialize_task(&task);
+        self.repo.write_task(&path, &after_content)?;
+        self.push_journal(
+            "lower priority",
+            vec![FileSnapshot {
+                path,
+                before,
+                after: Some(after_content),
+            }],
+        );
+        self.set_message(format!("priority lowered: {id}"));
+        Ok(true)
+    }
+
+    fn copy_selected_id<H: TerminalHost>(&mut self, terminal: &mut H) -> anyhow::Result<bool> {
+        let id = self
+            .selected_task_id()
+            .ok_or_else(|| anyhow::anyhow!("no selected task"))?
+            .to_owned();
+        terminal.copy_to_clipboard(&id)?;
+        self.set_message(format!("copied: {id}"));
+        Ok(false)
+    }
+
+    fn delete_task(&mut self, id: &str) -> anyhow::Result<bool> {
+        let path = self.repo.resolve_task_path(id)?;
+        let before = read_optional(&path)?;
+        fs::remove_file(&path).with_context(|| format!("delete {}", path.display()))?;
+        self.push_journal(
+            "delete",
+            vec![FileSnapshot {
+                path,
+                before,
+                after: None,
+            }],
+        );
+        self.set_message(format!("deleted: {id}"));
+        Ok(true)
     }
 
     fn claim_selected<H: TerminalHost>(&mut self, terminal: &mut H) -> anyhow::Result<bool> {
@@ -1969,6 +2154,10 @@ impl TuiTestDriver {
         &self.host.commands_run
     }
 
+    pub fn clipboard(&self) -> Option<&str> {
+        self.host.clipboard.as_deref()
+    }
+
     pub fn age_message(&mut self) {
         self.app.message_at = Instant::now() - MESSAGE_TTL - StdDuration::from_millis(1);
     }
@@ -1977,6 +2166,7 @@ impl TuiTestDriver {
 struct TestHost {
     edited_paths: Vec<PathBuf>,
     commands_run: Vec<String>,
+    clipboard: Option<String>,
     editor_append: String,
     command_success: bool,
 }
@@ -1986,6 +2176,7 @@ impl Default for TestHost {
         Self {
             edited_paths: Vec::new(),
             commands_run: Vec::new(),
+            clipboard: None,
             editor_append: String::new(),
             command_success: true,
         }
@@ -2007,6 +2198,11 @@ impl TerminalHost for TestHost {
     fn run_command(&mut self, command: &str) -> anyhow::Result<bool> {
         self.commands_run.push(command.to_owned());
         Ok(self.command_success)
+    }
+
+    fn copy_to_clipboard(&mut self, text: &str) -> anyhow::Result<()> {
+        self.clipboard = Some(text.to_owned());
+        Ok(())
     }
 }
 
@@ -2441,6 +2637,25 @@ fn run_shell_command(command: &str) -> anyhow::Result<bool> {
         .status()
         .with_context(|| format!("run custom command {command:?}"))?;
     Ok(status.success())
+}
+
+fn copy_to_clipboard(text: &str) -> anyhow::Result<()> {
+    let mut command = Command::new("pbcopy")
+        .stdin(Stdio::piped())
+        .spawn()
+        .context("start pbcopy")?;
+    let stdin = command
+        .stdin
+        .as_mut()
+        .ok_or_else(|| anyhow::anyhow!("pbcopy stdin unavailable"))?;
+    stdin
+        .write_all(text.as_bytes())
+        .context("write clipboard text")?;
+    let status = command.wait().context("wait for pbcopy")?;
+    if !status.success() {
+        bail!("pbcopy exited with status {status}");
+    }
+    Ok(())
 }
 
 #[cfg(test)]

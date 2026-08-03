@@ -185,6 +185,42 @@ fn blocked_todos_are_visible_in_parked_section() {
 }
 
 #[test]
+fn focus_view_calculates_next_task_and_supports_its_shortcuts() {
+    let (_tmp, repo) = setup();
+    write_task_extra(&repo, "0008", "First urgent task", "todo", "priority: p0");
+    write_task_extra(&repo, "0009", "Second urgent task", "todo", "priority: p0");
+    let mut tui = driver(StintRepo {
+        stint_dir: repo.stint_dir.clone(),
+    });
+
+    press(&mut tui, KeyCode::BackTab);
+    let screen = tui.render_text().unwrap();
+    assert!(screen.contains("Calculated next task"));
+    assert!(screen.contains("0008  First urgent task"));
+    assert!(screen.contains("C copy ID"));
+    assert!(screen.contains("X delete"));
+    assert_eq!(tui.selected_task_id(), Some("0008"));
+
+    tui.press_char('C').unwrap();
+    assert_eq!(tui.clipboard(), Some("0008"));
+
+    press(&mut tui, KeyCode::Down);
+    assert!(task(&repo, "0008-first-urgent-task.md").contains("priority: p1"));
+    assert_eq!(tui.selected_task_id(), Some("0009"));
+
+    tui.press_char('X').unwrap();
+    let screen = tui.render_text().unwrap();
+    assert!(screen.contains("Type the stint ID number to confirm."));
+    tui.type_text("0009").unwrap();
+    enter(&mut tui);
+    assert!(!repo.tasks_dir().join("0009-second-urgent-task.md").exists());
+    assert_eq!(tui.selected_task_id(), Some("0008"));
+
+    tui.press_char('u').unwrap();
+    assert!(repo.tasks_dir().join("0009-second-urgent-task.md").exists());
+}
+
+#[test]
 fn conflicted_ready_task_shows_holder_and_lane_goes_idle_when_freed() {
     let (_tmp, repo) = setup();
     write_task_extra(&repo, "0008", "Cli follow-up", "todo", "area:\n  - \"cli\"");
@@ -197,7 +233,12 @@ fn conflicted_ready_task_shows_holder_and_lane_goes_idle_when_freed() {
     assert!(screen.contains("~0008 wait:0004"));
     assert_eq!(screen.matches("idle").count(), 1);
 
-    replace_task_status(&repo, "0004-cli-args.md", "status: in-progress", "status: done");
+    replace_task_status(
+        &repo,
+        "0004-cli-args.md",
+        "status: in-progress",
+        "status: done",
+    );
     tui.reload();
     let screen = tui.render_text().unwrap();
     assert!(screen.contains("[0008 Cli follow-up"));

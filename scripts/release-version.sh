@@ -45,7 +45,7 @@ touch "$TREE/CHANGELOG.md"
 
 git -C "$TREE" add Cargo.toml Cargo.lock CHANGELOG.md
 git -C "$TREE" commit -m "chore: release v$new"
-git -C "$TREE" tag "v$new"
+git -C "$TREE" tag -a "v$new" -m "v$new"
 
 echo ""
 echo "v$new committed."

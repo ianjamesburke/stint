@@ -46,8 +46,8 @@ just publish-check # crates.io dry run
 git push origin main --follow-tags
 ```
 
-Pushes to `main` publish the new `Cargo.toml` version to crates.io when that
-version does not already exist.
+There is no publish workflow; crates.io is updated by hand with `cargo publish`
+after `just publish-check`. The tag is annotated so `--follow-tags` pushes it.
 
 ## Usage
 

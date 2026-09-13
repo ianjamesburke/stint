@@ -213,12 +213,30 @@ fn add_creates_file() {
         None,
         &cmds::TaskFieldEdits::default(),
         false,
+        false,
     )
     .unwrap();
     assert!(path.exists());
     let content = fs::read_to_string(&path).unwrap();
     assert!(content.contains("id: \"0001\""));
     assert!(content.contains("My first task"));
+    assert!(content.contains("status: todo"));
+}
+
+#[test]
+fn add_backlog_flag_files_into_the_icebox() {
+    let (_tmp, repo) = setup();
+    let path = cmds::cmd_add(
+        &repo,
+        "Someday task",
+        None,
+        None,
+        &cmds::TaskFieldEdits::default(),
+        false,
+        true,
+    )
+    .unwrap();
+    let content = fs::read_to_string(&path).unwrap();
     assert!(content.contains("status: backlog"));
 }
 
@@ -236,6 +254,7 @@ fn add_increments_id() {
         None,
         None,
         &cmds::TaskFieldEdits::default(),
+        false,
         false,
     )
     .unwrap();
@@ -308,6 +327,7 @@ fn add_filename_includes_slug() {
         None,
         &cmds::TaskFieldEdits::default(),
         false,
+        false,
     )
     .unwrap();
     let filename = path.file_name().unwrap().to_string_lossy();
@@ -323,6 +343,7 @@ fn add_writes_size_field() {
         Some("p2"),
         Some("m"),
         &cmds::TaskFieldEdits::default(),
+        false,
         false,
     )
     .unwrap();
@@ -341,6 +362,7 @@ fn add_rejects_invalid_size() {
         Some("huge"),
         &cmds::TaskFieldEdits::default(),
         false,
+        false,
     )
     .unwrap_err();
     assert!(err.to_string().contains("unknown size"));
@@ -356,7 +378,7 @@ fn add_writes_metadata_fields() {
         gh_issue: Some(vec!["42".to_owned()]),
         body_source: None,
     };
-    let path = cmds::cmd_add(&repo, "Agent-driven task", None, None, &edits, false).unwrap();
+    let path = cmds::cmd_add(&repo, "Agent-driven task", None, None, &edits, false, false).unwrap();
     let content = fs::read_to_string(&path).unwrap();
     assert!(content.contains("area:\n  - \"cli\""));
     assert!(content.contains("tags:\n  - \"ergonomics\""));
@@ -373,7 +395,7 @@ fn add_writes_body_from_file() {
         body_source: Some(body_path.to_string_lossy().into_owned()),
         ..Default::default()
     };
-    let path = cmds::cmd_add(&repo, "Task with body", None, None, &edits, false).unwrap();
+    let path = cmds::cmd_add(&repo, "Task with body", None, None, &edits, false, false).unwrap();
     let content = fs::read_to_string(&path).unwrap();
     assert!(content.contains("custom body content"));
     assert!(!content.contains("## Why"));
@@ -391,6 +413,7 @@ fn add_no_edit_skips_editor() {
         None,
         &cmds::TaskFieldEdits::default(),
         true,
+        false,
     )
     .unwrap();
     assert!(path.exists());
@@ -405,6 +428,7 @@ fn list_row_includes_size() {
         None,
         Some("l"),
         &cmds::TaskFieldEdits::default(),
+        false,
         false,
     )
     .unwrap();
@@ -426,6 +450,7 @@ fn set_replaces_area_and_tags() {
         None,
         None,
         &cmds::TaskFieldEdits::default(),
+        false,
         false,
     )
     .unwrap();
@@ -456,7 +481,7 @@ fn set_empty_blocked_by_clears_list() {
         blocked_by: Some(vec!["other/repo:0001".to_owned()]),
         ..Default::default()
     };
-    let path = cmds::cmd_add(&repo, "Blocked task", None, None, &add_edits, false).unwrap();
+    let path = cmds::cmd_add(&repo, "Blocked task", None, None, &add_edits, false, false).unwrap();
     let id = id_from_path(&path);
 
     // `--blocked-by ""` arrives as Some([""]) — must clear, not store "".
@@ -476,7 +501,7 @@ fn set_omitted_lists_left_unchanged() {
         blocked_by: Some(vec!["other/repo:0001".to_owned()]),
         ..Default::default()
     };
-    let path = cmds::cmd_add(&repo, "Blocked task", None, None, &add_edits, false).unwrap();
+    let path = cmds::cmd_add(&repo, "Blocked task", None, None, &add_edits, false, false).unwrap();
     let id = id_from_path(&path);
 
     let edits = cmds::TaskFieldEdits {
@@ -497,6 +522,7 @@ fn set_replaces_body_from_file() {
         None,
         None,
         &cmds::TaskFieldEdits::default(),
+        false,
         false,
     )
     .unwrap();
@@ -530,6 +556,7 @@ fn set_rejects_empty_edits() {
         None,
         None,
         &cmds::TaskFieldEdits::default(),
+        false,
         false,
     )
     .unwrap();

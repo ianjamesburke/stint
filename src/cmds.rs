@@ -285,6 +285,7 @@ pub fn cmd_add(
     size: Option<&str>,
     edits: &TaskFieldEdits,
     no_edit: bool,
+    backlog: bool,
 ) -> anyhow::Result<PathBuf> {
     // Validate priority early.
     let parsed_priority = priority
@@ -322,6 +323,11 @@ pub fn cmd_add(
         let path = repo.tasks_dir().join(&filename);
 
         let mut frontmatter = minimal_frontmatter(&id, title);
+        frontmatter.status = if backlog {
+            TaskStatus::Backlog
+        } else {
+            TaskStatus::Todo
+        };
         frontmatter.priority = parsed_priority;
         frontmatter.size = parsed_size;
         frontmatter.created_at = Some(created_at);

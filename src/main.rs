@@ -72,6 +72,10 @@ enum Commands {
         /// Skip opening $EDITOR after creation.
         #[arg(long)]
         no_edit: bool,
+        /// File the task into the backlog (icebox) instead of the todo pool
+        /// that `stint next` schedules from.
+        #[arg(long)]
+        backlog: bool,
     },
 
     /// List tasks, optionally filtered.
@@ -358,6 +362,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             gh_issue,
             body_file,
             no_edit,
+            backlog,
         }) => {
             let repo = find_repo()?;
             let edits = cmds::TaskFieldEdits {
@@ -374,6 +379,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 size.as_deref(),
                 &edits,
                 no_edit,
+                backlog,
             )?;
             println!("{}", path.display());
         }

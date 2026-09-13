@@ -1,6 +1,10 @@
 # Changelog
 
 Newest releases appear first.
+## [0.3.17] - 2026-09-13
+
+### Changes
+- feat(add): default new tasks to todo, add --backlog (#15)
 ## [0.3.16] - 2026-08-01
 
 ### Changes

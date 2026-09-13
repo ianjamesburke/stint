@@ -53,7 +53,8 @@ version does not already exist.
 
 ```bash
 # Tasks
-stint add "Implement auth middleware"
+stint add "Implement auth middleware"            # lands in todo, schedulable by `stint next`
+stint add "Someday: dark mode" --backlog         # icebox instead; promote later with `stint ready`
 stint list
 stint list --status in-progress
 stint list --priority p0

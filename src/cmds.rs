@@ -340,7 +340,7 @@ pub fn cmd_add(
         frontmatter.gh_issue = clean_list(edits.gh_issue.as_deref().unwrap_or_default());
         frontmatter.blocked_by = clean_list(edits.blocked_by.as_deref().unwrap_or_default())
             .iter()
-            .map(|s| BlockedByRef::from_str(s))
+            .map(|s| BlockedByRef::parse(s))
             .collect();
 
         let task = stint::schema::Task {
@@ -370,6 +370,7 @@ where
         .read(true)
         .write(true)
         .create(true)
+        .truncate(false)
         .open(&lock_path)
         .with_context(|| format!("open {}", lock_path.display()))?;
     lock_file
@@ -413,7 +414,7 @@ pub fn cmd_set(
     if let Some(blocked_by) = &edits.blocked_by {
         task.frontmatter.blocked_by = clean_list(blocked_by)
             .iter()
-            .map(|s| BlockedByRef::from_str(s))
+            .map(|s| BlockedByRef::parse(s))
             .collect();
     }
     if let Some(source) = &edits.body_source {
@@ -426,6 +427,7 @@ pub fn cmd_set(
 }
 
 /// List tasks, optionally filtered.
+#[allow(clippy::too_many_arguments)]
 pub fn cmd_list(
     repo: &StintRepo,
     status_filter: Option<&str>,
@@ -553,7 +555,11 @@ fn format_areas(areas: &[String]) -> String {
 
 fn render_progress_bar(done: usize, total: usize, width: usize, on: bool) -> String {
     if total == 0 {
-        let bar = if on { "░".repeat(width) } else { "-".repeat(width) };
+        let bar = if on {
+            "░".repeat(width)
+        } else {
+            "-".repeat(width)
+        };
         return format!("[{}] 0%", if on { bar.dimmed().to_string() } else { bar });
     }
     let fraction = (done as f64 / total as f64).clamp(0.0, 1.0);
@@ -1385,7 +1391,7 @@ pub fn cmd_sprint_list(repo: &StintRepo) -> anyhow::Result<()> {
         println!("(no sprints)");
         return Ok(());
     }
-    println!("{:<6} {:<20} {}", "ID", "DATE RANGE", "TASKS");
+    println!("{:<6} {:<20} TASKS", "ID", "DATE RANGE");
     println!("{}", "-".repeat(50));
     for s in &sprints {
         println!(
@@ -1416,7 +1422,7 @@ pub fn cmd_sprint_show(repo: &StintRepo, id_input: &str) -> anyhow::Result<()> {
         println!("(no tasks)");
         return Ok(());
     }
-    println!("{:<6} {:<11} {:<8} {}", "ID", "STATUS", "ESTIMATE", "TITLE");
+    println!("{:<6} {:<11} {:<8} TITLE", "ID", "STATUS", "ESTIMATE");
     println!("{}", "-".repeat(78));
     for entry in &sprint.task_ids {
         let prefix = numeric_prefix(entry);
@@ -1653,7 +1659,11 @@ pub fn cmd_status(repo: &StintRepo) -> anyhow::Result<()> {
             bold(&format!("In Progress ({})", in_progress_tasks.len()), on)
         );
         for t in &in_progress_tasks {
-            let bullet = if on { "⚡".yellow().to_string() } else { "*".to_owned() };
+            let bullet = if on {
+                "⚡".yellow().to_string()
+            } else {
+                "*".to_owned()
+            };
             let id = paint_id(&t.frontmatter.id, on);
             let meta = format_meta(t.frontmatter.priority, t.frontmatter.size);
             let meta_str = if meta.is_empty() {
@@ -1699,7 +1709,11 @@ pub fn cmd_status(repo: &StintRepo) -> anyhow::Result<()> {
         );
         let max_display = 4;
         for task in next_report.ready.iter().take(max_display) {
-            let bullet = if on { "▶".green().to_string() } else { ">".to_owned() };
+            let bullet = if on {
+                "▶".green().to_string()
+            } else {
+                ">".to_owned()
+            };
             let id = paint_id(&task.id, on);
             let meta = format_meta(task.priority, task.size);
             let meta_str = if meta.is_empty() {
@@ -1728,7 +1742,10 @@ pub fn cmd_status(repo: &StintRepo) -> anyhow::Result<()> {
             println!(
                 "  {}",
                 dim(
-                    &format!("... and {} more ready (run 'stint next' to view all)", remaining),
+                    &format!(
+                        "... and {} more ready (run 'stint next' to view all)",
+                        remaining
+                    ),
                     on
                 )
             );
@@ -1742,7 +1759,11 @@ pub fn cmd_status(repo: &StintRepo) -> anyhow::Result<()> {
             bold(&format!("Gates ({} open)", report.open_gates.len()), on)
         );
         for gate in &report.open_gates {
-            let bullet = if on { "◆".magenta().to_string() } else { "?".to_owned() };
+            let bullet = if on {
+                "◆".magenta().to_string()
+            } else {
+                "?".to_owned()
+            };
             let id = paint_id(&gate.id, on);
             let blocks = if gate.blocks.is_empty() {
                 String::new()
@@ -1778,7 +1799,11 @@ pub fn cmd_status(repo: &StintRepo) -> anyhow::Result<()> {
             bold(&format!("Blocked ({})", report.blocked_tasks.len()), on)
         );
         for bt in &report.blocked_tasks {
-            let bullet = if on { "✗".red().to_string() } else { "x".to_owned() };
+            let bullet = if on {
+                "✗".red().to_string()
+            } else {
+                "x".to_owned()
+            };
             let id = paint_id(&bt.id, on);
             let reason = format_blockers_inline(&bt.blocked_by);
             println!(
@@ -1797,7 +1822,11 @@ pub fn cmd_status(repo: &StintRepo) -> anyhow::Result<()> {
         && report.blocked_tasks.is_empty()
     {
         println!();
-        let mark = if on { "✔".green().to_string() } else { "*".to_owned() };
+        let mark = if on {
+            "✔".green().to_string()
+        } else {
+            "*".to_owned()
+        };
         println!("{} {}", mark, bold("All active tasks complete!", on));
     }
 
@@ -1808,7 +1837,10 @@ pub fn cmd_status(repo: &StintRepo) -> anyhow::Result<()> {
             parts.push(format!("Backlog: {} (icebox)", report.backlog_count));
         }
         if report.proposed_count > 0 {
-            parts.push(format!("Proposed: {} (awaiting approval)", report.proposed_count));
+            parts.push(format!(
+                "Proposed: {} (awaiting approval)",
+                report.proposed_count
+            ));
         }
         println!("{}", dim(&parts.join(" · "), on));
     }
@@ -1838,10 +1870,7 @@ pub struct AddTaskOptions<'a> {
 pub fn cmd_add_ext(repo: &StintRepo, opts: &AddTaskOptions<'_>) -> anyhow::Result<PathBuf> {
     let parsed_priority = opts
         .priority
-        .map(|p| {
-            p.parse::<Priority>()
-                .map_err(|e| anyhow::anyhow!("{}", e))
-        })
+        .map(|p| p.parse::<Priority>().map_err(|e| anyhow::anyhow!("{}", e)))
         .transpose()?;
 
     let parsed_size = opts
@@ -1882,7 +1911,7 @@ pub fn cmd_add_ext(repo: &StintRepo, opts: &AddTaskOptions<'_>) -> anyhow::Resul
         frontmatter.gh_issue = clean_list(opts.edits.gh_issue.as_deref().unwrap_or_default());
         frontmatter.blocked_by = clean_list(opts.edits.blocked_by.as_deref().unwrap_or_default())
             .iter()
-            .map(|s| BlockedByRef::from_str(s))
+            .map(|s| BlockedByRef::parse(s))
             .collect();
 
         let task = stint::schema::Task {
@@ -1917,10 +1946,7 @@ pub fn cmd_approve(
     }
 
     let parsed_priority = priority
-        .map(|p| {
-            p.parse::<Priority>()
-                .map_err(|e| anyhow::anyhow!("{}", e))
-        })
+        .map(|p| p.parse::<Priority>().map_err(|e| anyhow::anyhow!("{}", e)))
         .transpose()?;
     let parsed_size = size
         .map(|s| s.parse::<Size>().map_err(|e| anyhow::anyhow!("{}", e)))
@@ -2083,8 +2109,7 @@ pub fn cmd_set_ext(
         if s.trim().is_empty() {
             task.frontmatter.size = None;
         } else {
-            task.frontmatter.size =
-                Some(s.parse::<Size>().map_err(|e| anyhow::anyhow!("{}", e))?);
+            task.frontmatter.size = Some(s.parse::<Size>().map_err(|e| anyhow::anyhow!("{}", e))?);
         }
     }
     if let Some(area) = &opts.edits.area {
@@ -2099,20 +2124,20 @@ pub fn cmd_set_ext(
     if let Some(blocked_by) = &opts.edits.blocked_by {
         task.frontmatter.blocked_by = clean_list(blocked_by)
             .iter()
-            .map(|s| BlockedByRef::from_str(s))
+            .map(|s| BlockedByRef::parse(s))
             .collect();
     }
     if !opts.add_blocked_by.is_empty() {
         let refs: Vec<BlockedByRef> = clean_list(&opts.add_blocked_by)
             .iter()
-            .map(|s| BlockedByRef::from_str(s))
+            .map(|s| BlockedByRef::parse(s))
             .collect();
         append_blockers(&mut task, refs);
     }
     if !opts.remove_blocked_by.is_empty() {
         let refs: Vec<BlockedByRef> = clean_list(&opts.remove_blocked_by)
             .iter()
-            .map(|s| BlockedByRef::from_str(s))
+            .map(|s| BlockedByRef::parse(s))
             .collect();
         remove_blockers(&mut task, &refs);
     }
@@ -2236,7 +2261,7 @@ pub fn cmd_gate_file(
         let evidence = opts
             .evidence
             .ok_or_else(|| anyhow::anyhow!("missing --evidence"))?;
-        let links_fallback = vec![format!("task {}", blocked_task_id)];
+        let links_fallback = [format!("task {}", blocked_task_id)];
         let links = if opts.links.is_empty() {
             &links_fallback[..]
         } else {

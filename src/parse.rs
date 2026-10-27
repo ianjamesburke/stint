@@ -219,7 +219,7 @@ fn parse_blocked_by_value(v: serde_yaml::Value) -> Result<Vec<BlockedByRef>, Par
             })?;
             Ok(vec![BlockedByRef::from_int(n)])
         }
-        serde_yaml::Value::String(s) => Ok(vec![BlockedByRef::from_str(&s)]),
+        serde_yaml::Value::String(s) => Ok(vec![BlockedByRef::parse(&s)]),
         serde_yaml::Value::Sequence(items) => items
             .into_iter()
             .map(|item| match item {
@@ -230,7 +230,7 @@ fn parse_blocked_by_value(v: serde_yaml::Value) -> Result<Vec<BlockedByRef>, Par
                     })?;
                     Ok(BlockedByRef::from_int(n))
                 }
-                serde_yaml::Value::String(s) => Ok(BlockedByRef::from_str(&s)),
+                serde_yaml::Value::String(s) => Ok(BlockedByRef::parse(&s)),
                 other => Err(ParseError::InvalidField {
                     field: "blocked_by",
                     reason: format!("expected integer or string, got {:?}", other),

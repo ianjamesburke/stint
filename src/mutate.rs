@@ -125,11 +125,7 @@ pub const DEFAULT_GATE_BODY: &str = "\
 ## Decision\n\n";
 
 /// Build a structured task body from CLI flags (`--why`, `--done-when`, `--references`).
-pub fn build_task_body(
-    why: Option<&str>,
-    done_when: &[String],
-    references: &[String],
-) -> String {
+pub fn build_task_body(why: Option<&str>, done_when: &[String], references: &[String]) -> String {
     let why_text = why.map(str::trim).unwrap_or("");
     let done_items = format_bullet_list(done_when);
     let ref_items = format_bullet_list(references);
@@ -164,7 +160,10 @@ pub fn build_gate_body(
 ) -> String {
     let options_block = format_bullet_list(options);
     let links_block = format_bullet_list(links);
-    let test_text = test.map(str::trim).filter(|s| !s.is_empty()).unwrap_or("none");
+    let test_text = test
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("none");
 
     format!(
         "## Ask\n\n{}\n\n## Options\n\n{}\n\n## Good answer\n\n{}\n\n## Test\n\n{}\n\n## Evidence\n\n{}\n\n## Links\n\n{}\n\n## Decision\n\n",

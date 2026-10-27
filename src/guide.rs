@@ -10,18 +10,42 @@ use crate::mutate::REQUIRED_GATE_SECTIONS;
 
 /// Available guide topics.
 pub const GUIDE_TOPICS: &[(&str, &str)] = &[
-    ("overview", "Workflow map, status lifecycle, and core invariants"),
-    ("add", "Authoring actionable tasks with priority, size, and pass criteria"),
-    ("propose", "Filing throwaway PRDs or candidate ideas in the proposed state"),
-    ("implement", "Picking, claiming, implementing, batching, and closing out stints"),
-    ("gate", "Filing and resolving human decision gates when blocked"),
-    ("check", "Validating the task graph and enforcing pass criteria"),
+    (
+        "overview",
+        "Workflow map, status lifecycle, and core invariants",
+    ),
+    (
+        "add",
+        "Authoring actionable tasks with priority, size, and pass criteria",
+    ),
+    (
+        "propose",
+        "Filing throwaway PRDs or candidate ideas in the proposed state",
+    ),
+    (
+        "implement",
+        "Picking, claiming, implementing, batching, and closing out stints",
+    ),
+    (
+        "gate",
+        "Filing and resolving human decision gates when blocked",
+    ),
+    (
+        "check",
+        "Validating the task graph and enforcing pass criteria",
+    ),
 ];
 
 /// Available schema kinds.
 pub const SCHEMA_KINDS: &[(&str, &str)] = &[
-    ("task", "Task frontmatter fields, blocker syntax, and markdown body contract"),
-    ("gate", "Decision gate frontmatter and 7-section markdown contract"),
+    (
+        "task",
+        "Task frontmatter fields, blocker syntax, and markdown body contract",
+    ),
+    (
+        "gate",
+        "Decision gate frontmatter and 7-section markdown contract",
+    ),
     ("sprint", "Sprint index file format"),
     ("cli", "Command overview and JSON automation contract"),
 ];

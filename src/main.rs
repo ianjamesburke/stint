@@ -1044,7 +1044,11 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                     );
                 } else {
                     println!("[GATED] Stint {}", report.blocked_task_id);
-                    println!("Gate:   {} ({})", report.gate_id, report.gate_path.display());
+                    println!(
+                        "Gate:   {} ({})",
+                        report.gate_id,
+                        report.gate_path.display()
+                    );
                     println!("Ask:    {}", report.ask);
                     println!(
                         "Blocks: {} now blocked_by {}{}",
@@ -1150,7 +1154,11 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                         .unwrap()
                     );
                 } else {
-                    println!("resolved gate {}: {}", report.gate_id, report.gate_path.display());
+                    println!(
+                        "resolved gate {}: {}",
+                        report.gate_id,
+                        report.gate_path.display()
+                    );
                     if !report.unblocked.is_empty() {
                         println!("unblocked:");
                         for task in report.unblocked {

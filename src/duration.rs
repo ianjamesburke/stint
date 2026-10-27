@@ -26,11 +26,6 @@ impl Duration {
     pub fn minutes(self) -> u32 {
         self.0
     }
-
-    /// Add two durations, returning the sum.
-    pub fn add(self, other: Duration) -> Duration {
-        Duration(self.0 + other.0)
-    }
 }
 
 impl FromStr for Duration {
@@ -79,7 +74,7 @@ impl fmt::Display for Duration {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.0 == 0 {
             write!(f, "0m")
-        } else if self.0 % 60 == 0 {
+        } else if self.0.is_multiple_of(60) {
             write!(f, "{}h", self.0 / 60)
         } else {
             write!(f, "{}m", self.0)
@@ -139,7 +134,7 @@ mod tests {
 
     #[test]
     fn add_durations() {
-        assert_eq!(Duration(60).add(Duration(30)), Duration(90));
+        assert_eq!(Duration(60) + Duration(30), Duration(90));
     }
 
     #[test]

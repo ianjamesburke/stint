@@ -50,9 +50,7 @@ pub fn parse_sprint(content: &str) -> Result<Sprint, SprintParseError> {
 
     let header = parse_sprint_header(header_line)?;
 
-    let task_ids: Vec<String> = lines
-        .filter_map(|line| parse_task_list_entry(line))
-        .collect();
+    let task_ids: Vec<String> = lines.filter_map(parse_task_list_entry).collect();
 
     Ok(Sprint { header, task_ids })
 }
@@ -68,7 +66,7 @@ pub fn sprint_add_task(content: &str, entry: &str) -> Result<String, SprintAddEr
     let new_id = numeric_prefix(entry);
     let already_present = content
         .lines()
-        .filter_map(|line| parse_task_list_entry(line))
+        .filter_map(parse_task_list_entry)
         .any(|existing| numeric_prefix(&existing) == new_id);
     if already_present {
         return Err(SprintAddError::AlreadyPresent(new_id.to_owned()));

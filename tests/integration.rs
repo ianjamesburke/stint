@@ -13,6 +13,8 @@ use tempfile::TempDir;
 
 // Bring the CLI modules into scope.  They live in `src/` so we use a path
 // attribute to include them here.
+// Only a subset of the binary's commands is exercised here.
+#[allow(dead_code)]
 #[path = "../src/cmds.rs"]
 mod cmds;
 
@@ -491,7 +493,10 @@ fn set_empty_blocked_by_clears_list() {
     };
     cmds::cmd_set(&repo, &id, &edits).unwrap();
     let content = fs::read_to_string(&path).unwrap();
-    assert!(content.contains("blocked_by: []"), "list not cleared:\n{content}");
+    assert!(
+        content.contains("blocked_by: []"),
+        "list not cleared:\n{content}"
+    );
 }
 
 #[test]
@@ -510,7 +515,10 @@ fn set_omitted_lists_left_unchanged() {
     };
     cmds::cmd_set(&repo, &id, &edits).unwrap();
     let content = fs::read_to_string(&path).unwrap();
-    assert!(content.contains("other/repo:0001"), "blocker dropped:\n{content}");
+    assert!(
+        content.contains("other/repo:0001"),
+        "blocker dropped:\n{content}"
+    );
 }
 
 #[test]
@@ -1810,19 +1818,14 @@ fn propose_approve_and_reject_lifecycle() {
     // Proposed task must not appear in `stint next`.
     let task = repo.read_task(&path).unwrap();
     assert_eq!(task.frontmatter.status, stint::schema::TaskStatus::Proposed);
-    assert!(cmds::cmd_next(&repo, None, false, false).unwrap().ready.is_empty());
+    assert!(cmds::cmd_next(&repo, None, false, false)
+        .unwrap()
+        .ready
+        .is_empty());
 
     // Approving without priority, size, and ## Done When must fail.
-    let err = cmds::cmd_approve(
-        &repo,
-        &["1".to_string()],
-        None,
-        None,
-        None,
-        &[],
-        false,
-    )
-    .unwrap_err();
+    let err =
+        cmds::cmd_approve(&repo, &["1".to_string()], None, None, None, &[], false).unwrap_err();
     assert!(err.to_string().contains("cannot enter the todo pipeline"));
 
     // Supply the remaining pass criteria inline during approve.
@@ -1885,7 +1888,10 @@ fn gate_file_blocks_and_unclaims_stalled_task_then_resolve_unblocks() {
     cmds::cmd_claim(&repo, Some("0001"), None, false, None, false).unwrap();
 
     let task1 = repo.read_task(&task1_path).unwrap();
-    assert_eq!(task1.frontmatter.status, stint::schema::TaskStatus::InProgress);
+    assert_eq!(
+        task1.frontmatter.status,
+        stint::schema::TaskStatus::InProgress
+    );
 
     // File a gate blocking 0001.
     let gate_options = vec![
@@ -1949,7 +1955,11 @@ fn gate_file_blocks_and_unclaims_stalled_task_then_resolve_unblocks() {
     assert!(task1_after.frontmatter.blocked_by.is_empty());
 
     let (errors, _) = cmds::cmd_check_ext(&repo, false, None, true).unwrap();
-    assert!(errors.is_empty(), "strict check errors after resolve: {:?}", errors);
+    assert!(
+        errors.is_empty(),
+        "strict check errors after resolve: {:?}",
+        errors
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1958,11 +1968,15 @@ fn gate_file_blocks_and_unclaims_stalled_task_then_resolve_unblocks() {
 
 #[test]
 fn guide_and_schema_topics_work() {
-    assert!(stint::guide::format_guide(None).unwrap().contains("# stint guide: overview"));
-    assert!(stint::guide::format_guide(Some("gate")).unwrap().contains("stint gate file"));
-    assert!(stint::guide::format_schema(None).unwrap().contains("frontmatter"));
+    assert!(stint::guide::format_guide(None)
+        .unwrap()
+        .contains("# stint guide: overview"));
+    assert!(stint::guide::format_guide(Some("gate"))
+        .unwrap()
+        .contains("stint gate file"));
+    assert!(stint::guide::format_schema(None)
+        .unwrap()
+        .contains("frontmatter"));
     let json = stint::guide::schema_json(Some("cli")).unwrap();
     assert!(json.get("commands").is_some());
 }
-
-

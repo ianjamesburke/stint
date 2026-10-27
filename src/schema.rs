@@ -251,7 +251,7 @@ pub enum BlockedByRef {
 
 impl BlockedByRef {
     /// Parse from a YAML string value.
-    pub fn from_str(s: &str) -> Self {
+    pub fn parse(s: &str) -> Self {
         // All-digits: local task
         if !s.is_empty() && s.chars().all(|c| c.is_ascii_digit()) {
             let n: u64 = s.parse().unwrap_or(0);
@@ -690,38 +690,35 @@ mod tests {
     #[test]
     fn blocked_by_ref_local_task_from_str() {
         assert_eq!(
-            BlockedByRef::from_str("0146"),
+            BlockedByRef::parse("0146"),
             BlockedByRef::LocalTask("0146".to_owned())
         );
         assert_eq!(
-            BlockedByRef::from_str("146"),
+            BlockedByRef::parse("146"),
             BlockedByRef::LocalTask("0146".to_owned())
         );
         assert_eq!(
-            BlockedByRef::from_str("8"),
+            BlockedByRef::parse("8"),
             BlockedByRef::LocalTask("0008".to_owned())
         );
     }
 
     #[test]
     fn blocked_by_ref_local_issue() {
-        assert_eq!(
-            BlockedByRef::from_str("@123"),
-            BlockedByRef::LocalIssue(123)
-        );
+        assert_eq!(BlockedByRef::parse("@123"), BlockedByRef::LocalIssue(123));
     }
 
     #[test]
     fn blocked_by_ref_local_dir_task() {
         assert_eq!(
-            BlockedByRef::from_str("../plexi:0146"),
+            BlockedByRef::parse("../plexi:0146"),
             BlockedByRef::LocalDirTask {
                 path: "../plexi".to_owned(),
                 task_id: "0146".to_owned()
             }
         );
         assert_eq!(
-            BlockedByRef::from_str("../plexi:146"),
+            BlockedByRef::parse("../plexi:146"),
             BlockedByRef::LocalDirTask {
                 path: "../plexi".to_owned(),
                 task_id: "0146".to_owned()
@@ -732,7 +729,7 @@ mod tests {
     #[test]
     fn blocked_by_ref_direct_task_path() {
         assert_eq!(
-            BlockedByRef::from_str("../plexi/.stint/tasks/0337-pane-new-tab-from-anchor.md"),
+            BlockedByRef::parse("../plexi/.stint/tasks/0337-pane-new-tab-from-anchor.md"),
             BlockedByRef::DirectTaskPath {
                 path: "../plexi/.stint/tasks/0337-pane-new-tab-from-anchor.md".to_owned(),
                 task_id: "0337".to_owned()
@@ -743,7 +740,7 @@ mod tests {
     #[test]
     fn blocked_by_ref_local_dir_issue() {
         assert_eq!(
-            BlockedByRef::from_str("../plexi@99"),
+            BlockedByRef::parse("../plexi@99"),
             BlockedByRef::LocalDirIssue {
                 path: "../plexi".to_owned(),
                 number: 99
@@ -754,7 +751,7 @@ mod tests {
     #[test]
     fn blocked_by_ref_external_task() {
         assert_eq!(
-            BlockedByRef::from_str("ianjamesburke/PLEXI:0146"),
+            BlockedByRef::parse("ianjamesburke/PLEXI:0146"),
             BlockedByRef::ExternalTask {
                 repo: "ianjamesburke/PLEXI".to_owned(),
                 task_id: "0146".to_owned()
@@ -765,7 +762,7 @@ mod tests {
     #[test]
     fn blocked_by_ref_external_issue() {
         assert_eq!(
-            BlockedByRef::from_str("acme/api@7"),
+            BlockedByRef::parse("acme/api@7"),
             BlockedByRef::ExternalIssue {
                 repo: "acme/api".to_owned(),
                 number: 7
@@ -776,11 +773,11 @@ mod tests {
     #[test]
     fn blocked_by_ref_note() {
         assert_eq!(
-            BlockedByRef::from_str("waiting for upstream fix"),
+            BlockedByRef::parse("waiting for upstream fix"),
             BlockedByRef::Note("waiting for upstream fix".to_owned())
         );
         assert_eq!(
-            BlockedByRef::from_str("blocked on design review"),
+            BlockedByRef::parse("blocked on design review"),
             BlockedByRef::Note("blocked on design review".to_owned())
         );
     }
@@ -815,7 +812,7 @@ mod tests {
         for r in &cases {
             // Display → from_str should round-trip (except LocalTask int form)
             if !matches!(r, BlockedByRef::LocalTask(_)) {
-                assert_eq!(BlockedByRef::from_str(&r.to_string()), *r);
+                assert_eq!(BlockedByRef::parse(&r.to_string()), *r);
             }
         }
     }

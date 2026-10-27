@@ -1,6 +1,11 @@
 # Changelog
 
 Newest releases appear first.
+## [0.4.0] - 2026-10-27
+
+### Changes
+- docs: shorten and simplify project description in README
+- refactor: remove sprint tracking features across the crate
 ## [0.3.18] - 2026-10-27
 
 ### Changes

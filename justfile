@@ -14,6 +14,11 @@ publish-check:
 publish:
     cargo publish
 
+# Check formatting and run clippy on all targets with warnings denied.
+lint:
+    cargo fmt --check
+    cargo clippy --all-targets -- -D warnings
+
 # Install the local checkout for manual testing.
 install:
     cargo install --path .

@@ -1,6 +1,16 @@
 # Changelog
 
 Newest releases appear first.
+## [0.3.18] - 2026-10-27
+
+### Changes
+- feat: show sprint date range and goal in status, parse goal-only sprint headers
+- ci: validate example task graphs in GitHub Actions
+- docs(examples): modernize demo workspace, add api-service example, and playground recipe
+- ci: add GitHub Actions workflow for test, strict check, and publish verification
+- feat(pi): add pi-stint extension with task dashboard, modals, and interactive workflows
+- feat: add proposals, decision gates, pass criteria, guide/schema; retire embedded TUI
+- fix(release): annotate the release tag so --follow-tags actually pushes it (#16)
 ## [0.3.17] - 2026-09-13
 
 ### Changes

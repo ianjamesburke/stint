@@ -1,0 +1,47 @@
+{
+  "name": "pi-stint",
+  "version": "0.1.0",
+  "description": "Pi extension for Stint — visual task board, task viewer, proposal triage, decision gate resolution, and live status bar",
+  "type": "module",
+  "main": "./index.js",
+  "files": [
+    "index.js",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ianjamesburke/stint.git",
+    "directory": "packages/pi-stint"
+  },
+  "homepage": "https://github.com/ianjamesburke/stint/tree/main/packages/pi-stint#readme",
+  "bugs": {
+    "url": "https://github.com/ianjamesburke/stint/issues"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "pi": {
+    "extensions": [
+      "./index.js"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
+  },
+  "keywords": [
+    "pi",
+    "pi-package",
+    "pi-extension",
+    "pi-coding-agent",
+    "stint",
+    "tasks",
+    "gates",
+    "agent-workflow"
+  ],
+  "license": "MIT"
+}

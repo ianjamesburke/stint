@@ -17,3 +17,14 @@ publish:
 # Install the local checkout for manual testing.
 install:
     cargo install --path .
+
+# Verify that the pi-stint npm package tests pass and packs cleanly.
+pi-publish-check:
+    node --test packages/pi-stint/test/*.test.js
+    npm pack --dry-run ./packages/pi-stint
+
+# Publish pi-stint to npm so `pi install npm:pi-stint` works everywhere.
+pi-publish:
+    node --test packages/pi-stint/test/*.test.js
+    npm publish ./packages/pi-stint --access public
+

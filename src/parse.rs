@@ -70,8 +70,7 @@ struct RawFrontmatter {
     created_at: Option<String>,
     started_at: Option<String>,
     completed_at: Option<String>,
-    /// Silently ignored if present in old task files (sprint membership is now
-    /// determined exclusively by the sprint index files).
+    /// Silently ignored if present in legacy task files.
     #[allow(dead_code)]
     sprint: Option<String>,
     /// Unified blocker field: integers, strings, or mixed lists.
@@ -202,6 +201,31 @@ pub fn parse_task(content: &str, filename: &str) -> Result<Task, ParseError> {
         body: body.to_owned(),
         filename: filename.to_owned(),
     })
+}
+
+/// Extract the task ID from an entry, tolerant of accepted forms.
+///
+/// Markdown link `"[0001](../tasks/0001-auth.md)"` → `"0001"`, plain path
+/// `"../tasks/0001-auth.md"` → `"0001"`, `"0001-auth"` → `"0001"`,
+/// `"0001"` → `"0001"`.
+pub fn numeric_prefix(entry: &str) -> &str {
+    // For a markdown link `[label](target)`, read the ID from the target.
+    let core = match entry.find("](") {
+        Some(open) => {
+            let target = &entry[open + 2..];
+            target.strip_suffix(')').unwrap_or(target)
+        }
+        None => entry,
+    };
+    // Drop any directory portion ("../tasks/0001-x.md" → "0001-x.md").
+    let base = core.rsplit('/').next().unwrap_or(core);
+    // Drop the ".md" extension if present.
+    let base = base.strip_suffix(".md").unwrap_or(base);
+    // The ID is everything before the first '-'.
+    match base.find('-') {
+        Some(pos) => &base[..pos],
+        None => base,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -375,8 +399,7 @@ So users can authenticate.
         assert_eq!(fm.created_at.as_deref(), Some("2026-06-10T11:00:00Z"));
         assert_eq!(fm.started_at.as_deref(), Some("2026-06-10T12:00:00Z"));
         assert_eq!(fm.completed_at.as_deref(), Some("2026-06-10T12:30:00Z"));
-        // sprint: "s12" is present in the YAML but silently ignored — sprint membership
-        // is now determined exclusively by the sprint index files.
+        // sprint: "s12" is present in the YAML but silently ignored for legacy compatibility.
         assert_eq!(
             fm.blocked_by,
             vec![

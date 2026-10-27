@@ -1,12 +1,10 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
-use crate::schema::{cmp_priority, BlockedByRef, Priority, Size, Sprint, Task, TaskStatus};
-use crate::sprint::numeric_prefix;
+use crate::schema::{cmp_priority, BlockedByRef, Priority, Size, Task, TaskStatus};
 use crate::state::{active_blockers_with_resolution, done_ids, BlockerResolution};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NextOptions<'a> {
-    pub sprint: Option<&'a str>,
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct NextOptions {
     pub include_area_conflicts: bool,
     /// When true, backlog tasks are evaluated alongside todo tasks (appear in ready/blocked per
     /// their blockers). Default false: backlog tasks are completely excluded (icebox).
@@ -20,7 +18,6 @@ pub struct NextTask {
     pub status: TaskStatus,
     pub priority: Option<Priority>,
     pub size: Option<Size>,
-    pub sprint: Option<String>,
     pub area: Vec<String>,
     pub gh_issue: Vec<String>,
     pub filename: String,
@@ -38,31 +35,19 @@ pub struct NextReport {
     pub blocked: Vec<NextTask>,
 }
 
-pub fn compute_next(tasks: &[Task], sprints: &[Sprint], options: NextOptions<'_>) -> NextReport {
-    compute_next_with_resolution(tasks, sprints, options, &BlockerResolution::empty())
+pub fn compute_next(tasks: &[Task], options: NextOptions) -> NextReport {
+    compute_next_with_resolution(tasks, options, &BlockerResolution::empty())
 }
 
 pub fn compute_next_with_resolution(
     tasks: &[Task],
-    sprints: &[Sprint],
-    options: NextOptions<'_>,
+    options: NextOptions,
     resolution: &BlockerResolution,
 ) -> NextReport {
     let done = done_ids(tasks);
     let active_area_tasks = active_area_tasks(tasks);
-    let sprint_task_ids = sprint_task_ids(sprints, options.sprint);
-    let mut ordered = ordered_tasks(tasks, sprints, options.sprint);
+    let mut ordered: Vec<&Task> = tasks.iter().collect();
     ordered.sort_by(|a, b| compare_next_order(a, b));
-
-    // Build task_id -> sprint_id lookup from sprint index files.
-    let task_sprint: HashMap<&str, &str> = sprints
-        .iter()
-        .flat_map(|s| {
-            s.task_ids
-                .iter()
-                .map(move |e| (numeric_prefix(e), s.header.id.as_str()))
-        })
-        .collect();
 
     let mut ready = Vec::new();
     let mut blocked = Vec::new();
@@ -70,7 +55,7 @@ pub fn compute_next_with_resolution(
     let mut claimed_areas: HashMap<String, String> = HashMap::new();
 
     for task in ordered {
-        if !is_candidate(task, sprint_task_ids.as_ref(), options.include_backlog) {
+        if !is_candidate(task, options.include_backlog) {
             continue;
         }
 
@@ -94,9 +79,6 @@ pub fn compute_next_with_resolution(
             status: task.frontmatter.status.clone(),
             priority: task.frontmatter.priority,
             size: task.frontmatter.size,
-            sprint: task_sprint
-                .get(task.frontmatter.id.as_str())
-                .map(|s| s.to_string()),
             area: task.frontmatter.area.clone(),
             gh_issue: task.frontmatter.gh_issue.clone(),
             filename: task.filename.clone(),
@@ -150,26 +132,15 @@ fn parse_timestamp(value: Option<&str>) -> Option<chrono::DateTime<chrono::Fixed
     value.and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
 }
 
-fn is_candidate(
-    task: &Task,
-    sprint_task_ids: Option<&HashSet<String>>,
-    include_backlog: bool,
-) -> bool {
-    let status_ok = if include_backlog {
+fn is_candidate(task: &Task, include_backlog: bool) -> bool {
+    if include_backlog {
         matches!(
             task.frontmatter.status,
             TaskStatus::Backlog | TaskStatus::Todo
         )
     } else {
         matches!(task.frontmatter.status, TaskStatus::Todo)
-    };
-    if !status_ok {
-        return false;
     }
-    if let Some(sprint_task_ids) = sprint_task_ids {
-        return sprint_task_ids.contains(&task.frontmatter.id);
-    }
-    true
 }
 
 fn active_area_tasks(tasks: &[Task]) -> HashMap<String, Vec<String>> {
@@ -198,60 +169,10 @@ fn area_conflicts(task: &Task, active_area_tasks: &HashMap<String, Vec<String>>)
         .collect()
 }
 
-fn ordered_tasks<'a>(tasks: &'a [Task], sprints: &[Sprint], sprint: Option<&str>) -> Vec<&'a Task> {
-    let task_by_id: HashMap<&str, &Task> = tasks
-        .iter()
-        .map(|task| (task.frontmatter.id.as_str(), task))
-        .collect();
-    let selected_sprint = sprint
-        .and_then(|id| sprints.iter().find(|s| s.header.id == id))
-        .or_else(|| latest_sprint(sprints));
-
-    let mut ordered = Vec::new();
-    let mut seen = HashSet::new();
-    if let Some(sprint) = selected_sprint {
-        for entry in &sprint.task_ids {
-            let id = numeric_prefix(entry);
-            if let Some(task) = task_by_id.get(id) {
-                ordered.push(*task);
-                seen.insert(task.frontmatter.id.as_str());
-            }
-        }
-    }
-    for task in tasks {
-        if seen.insert(task.frontmatter.id.as_str()) {
-            ordered.push(task);
-        }
-    }
-    ordered
-}
-
-fn sprint_task_ids(sprints: &[Sprint], sprint: Option<&str>) -> Option<HashSet<String>> {
-    let sprint = sprint.and_then(|id| sprints.iter().find(|s| s.header.id == id))?;
-    Some(
-        sprint
-            .task_ids
-            .iter()
-            .map(|entry| numeric_prefix(entry).to_owned())
-            .collect(),
-    )
-}
-
-fn latest_sprint(sprints: &[Sprint]) -> Option<&Sprint> {
-    sprints
-        .iter()
-        .max_by_key(|sprint| sprint_number(&sprint.header.id))
-}
-
-fn sprint_number(id: &str) -> u64 {
-    id.trim_start_matches('s').parse().unwrap_or(0)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::parse::parse_task;
-    use crate::sprint::parse_sprint;
 
     fn task(id: &str, title: &str, status: &str, extra: &str) -> Task {
         let content =
@@ -267,9 +188,7 @@ mod tests {
         ];
         let report = compute_next(
             &tasks,
-            &[],
             NextOptions {
-                sprint: None,
                 include_area_conflicts: false,
                 include_backlog: false,
             },
@@ -293,9 +212,7 @@ mod tests {
         ];
         let report = compute_next(
             &tasks,
-            &[],
             NextOptions {
-                sprint: None,
                 include_area_conflicts: false,
                 include_backlog: false,
             },
@@ -312,9 +229,7 @@ mod tests {
         ];
         let report = compute_next(
             &tasks,
-            &[],
             NextOptions {
-                sprint: None,
                 include_area_conflicts: false,
                 include_backlog: false,
             },
@@ -340,9 +255,7 @@ mod tests {
         ];
         let report = compute_next(
             &tasks,
-            &[],
             NextOptions {
-                sprint: None,
                 include_area_conflicts: false,
                 include_backlog: false,
             },
@@ -354,33 +267,6 @@ mod tests {
     }
 
     #[test]
-    fn sprint_selection_filters_without_overriding_priority() {
-        let tasks = vec![
-            task("0001", "A", "todo", "priority: p0"),
-            task("0002", "B", "todo", "priority: p3"),
-            task("0003", "C", "todo", "priority: p0"),
-        ];
-        let sprint = parse_sprint("# Sprint 1 · Jun 1-14\n\n- 0002\n- 0001\n").unwrap();
-        let report = compute_next(
-            &tasks,
-            &[sprint],
-            NextOptions {
-                sprint: Some("s1"),
-                include_area_conflicts: false,
-                include_backlog: false,
-            },
-        );
-        assert_eq!(
-            report
-                .ready
-                .iter()
-                .map(|t| t.id.as_str())
-                .collect::<Vec<_>>(),
-            vec!["0001", "0002"]
-        );
-    }
-
-    #[test]
     fn priority_sorts_ready_tasks() {
         let tasks = vec![
             task("0001", "Low", "todo", "priority: p3"),
@@ -389,9 +275,7 @@ mod tests {
         ];
         let report = compute_next(
             &tasks,
-            &[],
             NextOptions {
-                sprint: None,
                 include_area_conflicts: false,
                 include_backlog: false,
             },
@@ -419,9 +303,7 @@ mod tests {
         ];
         let report = compute_next(
             &tasks,
-            &[],
             NextOptions {
-                sprint: None,
                 include_area_conflicts: false,
                 include_backlog: false,
             },
@@ -438,9 +320,7 @@ mod tests {
         ];
         let report = compute_next(
             &tasks,
-            &[],
             NextOptions {
-                sprint: None,
                 include_area_conflicts: false,
                 include_backlog: false,
             },
@@ -459,9 +339,7 @@ mod tests {
         ];
         let report = compute_next(
             &tasks,
-            &[],
             NextOptions {
-                sprint: None,
                 include_area_conflicts: false,
                 include_backlog: false,
             },
@@ -485,9 +363,7 @@ mod tests {
         ];
         let report = compute_next(
             &tasks,
-            &[],
             NextOptions {
-                sprint: None,
                 include_area_conflicts: false,
                 include_backlog: false,
             },
@@ -504,9 +380,7 @@ mod tests {
         ];
         let report = compute_next(
             &tasks,
-            &[],
             NextOptions {
-                sprint: None,
                 include_area_conflicts: false,
                 include_backlog: true,
             },

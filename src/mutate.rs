@@ -1,4 +1,4 @@
-/// Pure mutation helpers for `Task` and sprint content.
+/// Pure mutation helpers for `Task` content.
 ///
 /// All functions are side-effect-free — callers are responsible for writing
 /// results back to disk.
@@ -220,18 +220,6 @@ pub fn new_task_content(id: &str, title: &str, created_at: Option<&str>) -> Stri
     format!("---\nid: \"{id}\"\ntitle: \"{title}\"\nstatus: backlog\n{created_at}---\n\n{DEFAULT_TASK_BODY}")
 }
 
-/// Build the initial content for a new sprint file.
-pub fn new_sprint_content(id: &str, date_range: &str, goal: Option<&str>) -> String {
-    // id is like "s12" — extract the number for the header.
-    let number = id.trim_start_matches('s');
-    let mut header = format!("# Sprint {number} \u{00B7} {date_range}");
-    if let Some(g) = goal {
-        header.push_str(&format!(" \u{00B7} goal: {g}"));
-    }
-    header.push('\n');
-    header
-}
-
 /// Build a minimal `TaskFrontmatter` for a new task (no optional fields set).
 pub fn minimal_frontmatter(id: &str, title: &str) -> TaskFrontmatter {
     TaskFrontmatter {
@@ -328,19 +316,5 @@ mod tests {
     #[test]
     fn title_to_slug_collapses_dashes() {
         assert_eq!(title_to_slug("foo  bar"), "foo-bar");
-    }
-
-    #[test]
-    fn new_sprint_content_with_goal() {
-        let content = new_sprint_content("s12", "Jun 9-20", Some("ship TUI"));
-        assert!(content.starts_with("# Sprint 12"));
-        assert!(content.contains("goal: ship TUI"));
-    }
-
-    #[test]
-    fn new_sprint_content_no_goal() {
-        let content = new_sprint_content("s1", "Jan 1-15", None);
-        assert!(content.starts_with("# Sprint 1"));
-        assert!(!content.contains("goal"));
     }
 }

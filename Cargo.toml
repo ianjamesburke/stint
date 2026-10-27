@@ -5,9 +5,9 @@ edition = "2021"
 authors = ["Ian Burke <ianjamesburke@gmail.com>"]
 license = "MIT"
 repository = "https://github.com/ianjamesburke/stint"
-description = "Task and sprint tracking as markdown files in your repo"
+description = "Task management, dependency DAGs, and decision gating as markdown files in your repo"
 readme = "README.md"
-keywords = ["cli", "sprint", "tasks", "planning", "markdown"]
+keywords = ["cli", "tasks", "planning", "agent", "markdown"]
 categories = ["command-line-utilities", "development-tools"]
 exclude = [".stint", ".wtp.yml", ".github", "CLAUDE.md", "install.sh", "apps", "packages", "worktrees", ".plexi-beta"]
 

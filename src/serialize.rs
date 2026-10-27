@@ -1,5 +1,5 @@
-/// Serialize `Task` and `Sprint` values back to their on-disk string formats.
-use crate::schema::{BlockedByRef, Sprint, Task};
+/// Serialize `Task` values back to their on-disk string formats.
+use crate::schema::{BlockedByRef, Task};
 
 /// Render a `Task` back to a markdown file string (frontmatter + body).
 ///
@@ -48,30 +48,6 @@ pub fn serialize_task(task: &Task) -> String {
         out.push_str(&task.body);
         if !task.body.ends_with('\n') {
             out.push('\n');
-        }
-    }
-
-    out
-}
-
-/// Render a `Sprint` back to its markdown file string.
-pub fn serialize_sprint(sprint: &Sprint) -> String {
-    let number = sprint.header.id.trim_start_matches('s');
-    let mut header = format!("# Sprint {}", number);
-    if !sprint.header.date_range.is_empty() {
-        header.push_str(&format!(" \u{00B7} {}", sprint.header.date_range));
-    }
-    if let Some(goal) = &sprint.header.goal {
-        header.push_str(&format!(" \u{00B7} goal: {}", goal));
-    }
-
-    let mut out = header;
-    out.push('\n');
-
-    if !sprint.task_ids.is_empty() {
-        out.push('\n');
-        for id in &sprint.task_ids {
-            out.push_str(&format!("- {}\n", id));
         }
     }
 
@@ -133,7 +109,6 @@ mod tests {
     use super::*;
     use crate::parse::parse_task;
     use crate::schema::BlockedByRef;
-    use crate::sprint::parse_sprint;
 
     const FULL_TASK: &str = r#"---
 id: "0001"
@@ -270,16 +245,5 @@ So users can authenticate.
         assert_eq!(reparsed.frontmatter.title, "Minimal");
         assert!(reparsed.frontmatter.estimate.is_none());
         assert!(reparsed.frontmatter.blocked_by.is_empty());
-    }
-
-    #[test]
-    fn sprint_round_trip() {
-        let content =
-            "# Sprint 12 \u{00B7} Jun 9\u{2013}20 \u{00B7} goal: ship TUI\n\n- 0001\n- 0002\n";
-        let sprint = parse_sprint(content).unwrap();
-        let serialized = serialize_sprint(&sprint);
-        let reparsed = parse_sprint(&serialized).unwrap();
-        assert_eq!(reparsed.header.id, "s12");
-        assert_eq!(reparsed.task_ids, vec!["0001", "0002"]);
     }
 }

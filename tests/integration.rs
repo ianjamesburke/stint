@@ -41,14 +41,13 @@ fn suppress_editor() {
     });
 }
 
-/// Create a `TempDir` with `.stint/tasks/` and `.stint/sprints/` pre-created.
+/// Create a `TempDir` with `.stint/tasks/` pre-created.
 fn setup() -> (TempDir, StintRepo) {
     suppress_editor();
 
     let tmp = TempDir::new().unwrap();
     let stint_dir = tmp.path().join(".stint");
     fs::create_dir_all(stint_dir.join("tasks")).unwrap();
-    fs::create_dir_all(stint_dir.join("sprints")).unwrap();
     let repo = StintRepo { stint_dir };
     (tmp, repo)
 }
@@ -80,11 +79,6 @@ fn write_task_file_at(root: &std::path::Path, relative: &str, content: &str) {
     fs::write(path, content).unwrap();
 }
 
-/// Write a raw sprint file into the repo's sprints dir.
-fn write_sprint_file(repo: &StintRepo, filename: &str, content: &str) {
-    fs::write(repo.sprints_dir().join(filename), content).unwrap();
-}
-
 /// Minimal valid task content.
 fn task_content(id: &str, title: &str, status: &str) -> String {
     format!("---\nid: \"{id}\"\ntitle: \"{title}\"\nstatus: {status}\n---\n")
@@ -101,7 +95,6 @@ fn init_creates_workspace_layout() {
 
     assert_eq!(report.repo, tmp.path().join(".stint"));
     assert!(tmp.path().join(".stint/tasks").is_dir());
-    assert!(tmp.path().join(".stint/sprints").is_dir());
     assert!(tmp.path().join(".stint/config.toml").is_file());
 }
 
@@ -434,7 +427,7 @@ fn list_row_includes_size() {
         false,
     )
     .unwrap();
-    let rows = cmds::cmd_list(&repo, None, false, None, None, None, None, None).unwrap();
+    let rows = cmds::cmd_list(&repo, None, false, None, None, None, None).unwrap();
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].size.as_deref(), Some("l"));
 }
@@ -599,7 +592,7 @@ fn list_defaults_to_active_tasks() {
         "0003-c.md",
         &task_content("0003", "Task C", "archived"),
     );
-    let rows = cmds::cmd_list(&repo, None, false, None, None, None, None, None).unwrap();
+    let rows = cmds::cmd_list(&repo, None, false, None, None, None, None).unwrap();
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].id, "0001");
 }
@@ -618,7 +611,7 @@ fn list_all_includes_done_and_archived_tasks() {
         "0003-c.md",
         &task_content("0003", "Task C", "archived"),
     );
-    let rows = cmds::cmd_list(&repo, None, true, None, None, None, None, None).unwrap();
+    let rows = cmds::cmd_list(&repo, None, true, None, None, None, None).unwrap();
     assert_eq!(rows.len(), 3);
 }
 
@@ -631,7 +624,7 @@ fn list_filters_by_status() {
         &task_content("0001", "Task A", "backlog"),
     );
     write_task_file(&repo, "0002-b.md", &task_content("0002", "Task B", "done"));
-    let rows = cmds::cmd_list(&repo, Some("backlog"), false, None, None, None, None, None).unwrap();
+    let rows = cmds::cmd_list(&repo, Some("backlog"), false, None, None, None, None).unwrap();
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].id, "0001");
 }
@@ -645,7 +638,7 @@ fn list_explicit_status_can_show_done_tasks() {
         &task_content("0001", "Task A", "backlog"),
     );
     write_task_file(&repo, "0002-b.md", &task_content("0002", "Task B", "done"));
-    let rows = cmds::cmd_list(&repo, Some("done"), false, None, None, None, None, None).unwrap();
+    let rows = cmds::cmd_list(&repo, Some("done"), false, None, None, None, None).unwrap();
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].id, "0002");
 }
@@ -660,7 +653,7 @@ fn list_marks_currently_blocked_tasks() {
         "---\nid: \"0002\"\ntitle: \"Task B\"\nstatus: todo\nblocked_by: [\"0001\"]\n---\n",
     );
 
-    let rows = cmds::cmd_list(&repo, None, false, None, None, None, None, None).unwrap();
+    let rows = cmds::cmd_list(&repo, None, false, None, None, None, None).unwrap();
     assert_eq!(rows.len(), 2);
     assert!(!rows.iter().find(|r| r.id == "0001").unwrap().blocked);
     assert!(rows.iter().find(|r| r.id == "0002").unwrap().blocked);
@@ -676,7 +669,7 @@ fn list_does_not_mark_task_blocked_by_done_local_task() {
         "---\nid: \"0002\"\ntitle: \"Task B\"\nstatus: todo\nblocked_by: [\"0001\"]\n---\n",
     );
 
-    let rows = cmds::cmd_list(&repo, None, false, None, None, None, None, None).unwrap();
+    let rows = cmds::cmd_list(&repo, None, false, None, None, None, None).unwrap();
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].id, "0002");
     assert!(!rows[0].blocked);
@@ -692,12 +685,12 @@ fn list_filters_blocked_tasks() {
         "---\nid: \"0002\"\ntitle: \"Task B\"\nstatus: todo\nblocked_by: [\"0001\"]\n---\n",
     );
 
-    let blocked = cmds::cmd_list(&repo, None, false, Some(true), None, None, None, None).unwrap();
+    let blocked = cmds::cmd_list(&repo, None, false, Some(true), None, None, None).unwrap();
     assert_eq!(blocked.len(), 1);
     assert_eq!(blocked[0].id, "0002");
 
     let unblocked =
-        cmds::cmd_list(&repo, None, false, Some(false), None, None, None, None).unwrap();
+        cmds::cmd_list(&repo, None, false, Some(false), None, None, None).unwrap();
     assert_eq!(unblocked.len(), 1);
     assert_eq!(unblocked[0].id, "0001");
 }
@@ -716,24 +709,9 @@ fn list_treats_direct_blocker_as_blocked() {
         "---\nid: \"0002\"\ntitle: \"Dep\"\nstatus: todo\nblocked_by:\n  - 0001\n---\n",
     );
 
-    let blocked = cmds::cmd_list(&repo, None, false, Some(true), None, None, None, None).unwrap();
+    let blocked = cmds::cmd_list(&repo, None, false, Some(true), None, None, None).unwrap();
     assert_eq!(blocked.len(), 1);
     assert_eq!(blocked[0].id, "0002");
-}
-
-#[test]
-fn list_filters_by_sprint() {
-    let (_tmp, repo) = setup();
-    let t1 = "---\nid: \"0001\"\ntitle: \"A\"\nstatus: todo\n---\n";
-    let t2 = "---\nid: \"0002\"\ntitle: \"B\"\nstatus: todo\n---\n";
-    write_task_file(&repo, "0001-a.md", t1);
-    write_task_file(&repo, "0002-b.md", t2);
-    // Sprint membership is determined by the sprint index, not task frontmatter.
-    write_sprint_file(&repo, "s1.md", "# Sprint 1 · Jan 1–15\n\n- 0001\n");
-    write_sprint_file(&repo, "s2.md", "# Sprint 2 · Jan 16–31\n\n- 0002\n");
-    let rows = cmds::cmd_list(&repo, None, false, None, Some("s1"), None, None, None).unwrap();
-    assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].id, "0001");
 }
 
 #[test]
@@ -743,7 +721,7 @@ fn list_filters_by_area() {
     let t2 = "---\nid: \"0002\"\ntitle: \"B\"\nstatus: backlog\narea:\n  - frontend\n---\n";
     write_task_file(&repo, "0001-a.md", t1);
     write_task_file(&repo, "0002-b.md", t2);
-    let rows = cmds::cmd_list(&repo, None, false, None, None, Some("backend"), None, None).unwrap();
+    let rows = cmds::cmd_list(&repo, None, false, None, Some("backend"), None, None).unwrap();
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].id, "0001");
 }
@@ -756,7 +734,7 @@ fn list_filters_by_tag() {
     write_task_file(&repo, "0001-a.md", t1);
     write_task_file(&repo, "0002-b.md", t2);
     let rows =
-        cmds::cmd_list(&repo, None, false, None, None, None, Some("security"), None).unwrap();
+        cmds::cmd_list(&repo, None, false, None, None, Some("security"), None).unwrap();
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].id, "0001");
 }
@@ -764,7 +742,7 @@ fn list_filters_by_tag() {
 #[test]
 fn list_empty_returns_empty_vec() {
     let (_tmp, repo) = setup();
-    let rows = cmds::cmd_list(&repo, None, false, None, None, None, None, None).unwrap();
+    let rows = cmds::cmd_list(&repo, None, false, None, None, None, None).unwrap();
     assert!(rows.is_empty());
 }
 
@@ -953,7 +931,6 @@ fn claim_sets_status_and_started_at() {
     cmds::cmd_claim(
         &repo,
         Some("0001"),
-        None,
         false,
         Some("2026-06-10T12:00:00Z"),
         false,
@@ -976,7 +953,6 @@ fn claim_refuses_to_overwrite_started_at_without_restart() {
     let err = cmds::cmd_claim(
         &repo,
         Some("0001"),
-        None,
         false,
         Some("2026-06-10T13:00:00Z"),
         false,
@@ -996,7 +972,6 @@ fn claim_restart_replaces_started_at_and_clears_completion() {
     cmds::cmd_claim(
         &repo,
         Some("0001"),
-        None,
         true,
         Some("2026-06-10T14:00:00Z"),
         false,
@@ -1188,7 +1163,7 @@ fn next_returns_ready_tasks_without_area_conflicts() {
         "---\nid: \"0003\"\ntitle: \"Ready\"\nstatus: todo\narea: [docs]\n---\n",
     );
 
-    let report = cmds::cmd_next(&repo, None, false, false).unwrap();
+    let report = cmds::cmd_next(&repo, false, false).unwrap();
     assert_eq!(report.ready.len(), 1);
     assert_eq!(report.ready[0].id, "0003");
 }
@@ -1207,7 +1182,7 @@ fn next_blocks_on_unfinished_direct_task_path() {
         "---\nid: \"0001\"\ntitle: \"Dependent\"\nstatus: todo\nblocked_by:\n  - \"./upstream/.stint/tasks/0030-target.md\"\n---\n",
     );
 
-    let report = cmds::cmd_next(&repo, None, false, false).unwrap();
+    let report = cmds::cmd_next(&repo, false, false).unwrap();
     assert_eq!(report.blocked[0].id, "0001");
 }
 
@@ -1225,7 +1200,7 @@ fn next_unblocks_done_direct_task_path() {
         "---\nid: \"0001\"\ntitle: \"Dependent\"\nstatus: todo\nblocked_by:\n  - \"./upstream/.stint/tasks/0030-target.md\"\n---\n",
     );
 
-    let report = cmds::cmd_next(&repo, None, false, false).unwrap();
+    let report = cmds::cmd_next(&repo, false, false).unwrap();
     assert_eq!(report.ready[0].id, "0001");
 }
 
@@ -1287,7 +1262,7 @@ fn free_text_blocker_still_blocks_next() {
         "---\nid: \"0001\"\ntitle: \"Dependent\"\nstatus: todo\nblocked_by:\n  - \"waiting for review\"\n---\n",
     );
 
-    let report = cmds::cmd_next(&repo, None, false, false).unwrap();
+    let report = cmds::cmd_next(&repo, false, false).unwrap();
     assert_eq!(
         report.blocked[0].blockers[0].to_string(),
         "waiting for review"
@@ -1297,23 +1272,18 @@ fn free_text_blocker_still_blocks_next() {
 #[test]
 fn claim_auto_sets_top_ready_task_in_progress() {
     let (_tmp, repo) = setup();
-    write_sprint_file(
-        &repo,
-        "s1.md",
-        "# Sprint 1 \u{00B7} Jun 1-14\n\n- 0002\n- 0001\n",
-    );
     write_task_file(
         &repo,
         "0001-later.md",
-        "---\nid: \"0001\"\ntitle: \"Later\"\nstatus: todo\nsprint: \"s1\"\narea: [docs]\n---\n",
+        "---\nid: \"0001\"\ntitle: \"Later\"\nstatus: todo\narea: [docs]\n---\n",
     );
     write_task_file(
         &repo,
         "0002-first.md",
-        "---\nid: \"0002\"\ntitle: \"First\"\nstatus: todo\nsprint: \"s1\"\narea: [cli]\n---\n",
+        "---\nid: \"0002\"\ntitle: \"First\"\nstatus: todo\narea: [cli]\n---\n",
     );
 
-    cmds::cmd_claim(&repo, None, Some("s1"), false, None, false).unwrap();
+    cmds::cmd_claim(&repo, None, false, None, false).unwrap();
 
     let claimed = repo
         .read_task(&repo.resolve_task_path("0001").unwrap())
@@ -1346,7 +1316,7 @@ fn claim_explicit_id_sets_task_in_progress() {
         "---\nid: \"0002\"\ntitle: \"Other\"\nstatus: todo\n---\n",
     );
 
-    cmds::cmd_claim(&repo, Some("0002"), None, false, None, false).unwrap();
+    cmds::cmd_claim(&repo, Some("0002"), false, None, false).unwrap();
 
     let claimed = repo
         .read_task(&repo.resolve_task_path("0002").unwrap())
@@ -1374,74 +1344,11 @@ fn next_json_output_is_valid() {
         "---\nid: \"0001\"\ntitle: \"A task\"\nstatus: todo\narea: [cli]\ngh_issue: [42]\n---\n",
     );
 
-    let report = cmds::cmd_next(&repo, None, false, false).unwrap();
+    let report = cmds::cmd_next(&repo, false, false).unwrap();
     // Capture JSON output via a simple structural check on the report fields.
     assert_eq!(report.ready[0].id, "0001");
     assert_eq!(report.ready[0].gh_issue, vec!["42"]);
     assert_eq!(report.ready[0].filename, "0001-task.md");
-}
-
-// ---------------------------------------------------------------------------
-// Sprint commands
-// ---------------------------------------------------------------------------
-
-#[test]
-fn sprint_new_creates_file() {
-    let (_tmp, repo) = setup();
-    let path = cmds::cmd_sprint_new(&repo, "s1", "Jun 9-20", Some("Ship it")).unwrap();
-    assert!(path.exists());
-    let content = fs::read_to_string(&path).unwrap();
-    assert!(content.contains("# Sprint 1"));
-    assert!(content.contains("goal: Ship it"));
-}
-
-#[test]
-fn sprint_new_normalises_id() {
-    let (_tmp, repo) = setup();
-    // Passing "12" instead of "s12" should work.
-    let path = cmds::cmd_sprint_new(&repo, "12", "Jul 1-14", None).unwrap();
-    let filename = path.file_name().unwrap().to_string_lossy();
-    assert_eq!(filename.as_ref(), "s12.md");
-}
-
-#[test]
-fn sprint_new_errors_on_duplicate() {
-    let (_tmp, repo) = setup();
-    cmds::cmd_sprint_new(&repo, "s1", "Jun 1-14", None).unwrap();
-    assert!(cmds::cmd_sprint_new(&repo, "s1", "Jun 1-14", None).is_err());
-}
-
-#[test]
-fn sprint_add_appends_task() {
-    let (_tmp, repo) = setup();
-    write_sprint_file(&repo, "s1.md", "# Sprint 1 \u{00B7} Jun 1-14\n\n- 0001\n");
-    cmds::cmd_sprint_add(&repo, "s1", "0002").unwrap();
-    let content = fs::read_to_string(repo.sprints_dir().join("s1.md")).unwrap();
-    assert!(content.contains("- 0002"));
-}
-
-#[test]
-fn sprint_add_writes_markdown_link_when_task_exists() {
-    let (_tmp, repo) = setup();
-    write_task_file(&repo, "0002-dep.md", &task_content("0002", "Dep", "todo"));
-    write_sprint_file(&repo, "s1.md", "# Sprint 1 \u{00B7} Jun 1-14\n\n- 0001\n");
-    cmds::cmd_sprint_add(&repo, "s1", "0002").unwrap();
-    let content = fs::read_to_string(repo.sprints_dir().join("s1.md")).unwrap();
-    assert!(content.contains("- [0002](../tasks/0002-dep.md)"));
-}
-
-#[test]
-fn sprint_remove_deletes_task() {
-    let (_tmp, repo) = setup();
-    write_sprint_file(
-        &repo,
-        "s1.md",
-        "# Sprint 1 \u{00B7} Jun 1-14\n\n- 0001\n- 0002\n",
-    );
-    cmds::cmd_sprint_remove(&repo, "s1", "0001").unwrap();
-    let content = fs::read_to_string(repo.sprints_dir().join("s1.md")).unwrap();
-    assert!(!content.contains("- 0001"));
-    assert!(content.contains("- 0002"));
 }
 
 // ---------------------------------------------------------------------------
@@ -1690,10 +1597,8 @@ fn status_runs_with_tasks() {
 }
 
 #[test]
-fn status_dashboard_with_sprint_and_pipeline() {
+fn status_dashboard_with_pipeline() {
     let (_tmp, repo) = setup();
-    let sprint_content = "# Sprint 1 · Jun 1–14 · goal: test dashboard\n\n- 0001\n- 0002\n";
-    write_sprint_file(&repo, "s1.md", sprint_content);
 
     let t1 = "---\nid: \"0001\"\ntitle: \"Active Task\"\nstatus: in-progress\npriority: p0\nsize: m\nestimate: 4h\nactual: 1.5h\narea:\n  - core\n---\n";
     write_task_file(&repo, "0001-active.md", t1);
@@ -1705,89 +1610,6 @@ fn status_dashboard_with_sprint_and_pipeline() {
     write_task_file(&repo, "0003-gate.md", gate);
 
     cmds::cmd_status(&repo).unwrap();
-}
-
-// ---------------------------------------------------------------------------
-// cmd_sprint_show
-// ---------------------------------------------------------------------------
-
-#[test]
-fn sprint_show_prints_header_and_tasks() {
-    let (_tmp, repo) = setup();
-    let sprint_content = "# Sprint 1 \u{00B7} Jun 1-14\n\n- 0001\n- 0002\n";
-    write_sprint_file(&repo, "s1.md", sprint_content);
-    write_task_file(
-        &repo,
-        "0001-task.md",
-        &task_content("0001", "Task A", "backlog"),
-    );
-    write_task_file(
-        &repo,
-        "0002-task.md",
-        &task_content("0002", "Task B", "done"),
-    );
-    // Verify it completes without error; output goes to stdout.
-    cmds::cmd_sprint_show(&repo, "s1").unwrap();
-}
-
-#[test]
-fn sprint_show_errors_on_missing_sprint() {
-    let (_tmp, repo) = setup();
-    assert!(cmds::cmd_sprint_show(&repo, "s99").is_err());
-}
-
-// ---------------------------------------------------------------------------
-// cmd_sprint_list
-// ---------------------------------------------------------------------------
-
-#[test]
-fn sprint_list_empty() {
-    let (_tmp, repo) = setup();
-    cmds::cmd_sprint_list(&repo).unwrap();
-}
-
-#[test]
-fn sprint_list_shows_all_sprints() {
-    let (_tmp, repo) = setup();
-    write_sprint_file(&repo, "s1.md", "# Sprint 1 \u{00B7} Jun 1-14\n");
-    write_sprint_file(&repo, "s2.md", "# Sprint 2 \u{00B7} Jun 15-28\n");
-    cmds::cmd_sprint_list(&repo).unwrap();
-}
-
-// ---------------------------------------------------------------------------
-// cmd_sprint_reorder
-// ---------------------------------------------------------------------------
-
-#[test]
-fn sprint_reorder_no_crash_with_test_editor() {
-    let (_tmp, repo) = setup();
-    // STINT_TEST_EDITOR=none is already set by setup(); open_editor is a no-op.
-    write_sprint_file(&repo, "s1.md", "# Sprint 1 \u{00B7} Jun 1-14\n\n- 0001\n");
-    cmds::cmd_sprint_reorder(&repo, "s1").unwrap();
-}
-
-// ---------------------------------------------------------------------------
-// sprint_remove error path
-// ---------------------------------------------------------------------------
-
-#[test]
-fn sprint_remove_errors_when_task_not_present() {
-    let (_tmp, repo) = setup();
-    write_sprint_file(&repo, "s1.md", "# Sprint 1 \u{00B7} Jun 1-14\n\n- 0001\n");
-    let err = cmds::cmd_sprint_remove(&repo, "s1", "9999").unwrap_err();
-    assert!(err.to_string().contains("not in the sprint"));
-}
-
-// ---------------------------------------------------------------------------
-// sprint_add error path
-// ---------------------------------------------------------------------------
-
-#[test]
-fn sprint_add_errors_when_task_already_present() {
-    let (_tmp, repo) = setup();
-    write_sprint_file(&repo, "s1.md", "# Sprint 1 \u{00B7} Jun 1-14\n\n- 0001\n");
-    let err = cmds::cmd_sprint_add(&repo, "s1", "0001").unwrap_err();
-    assert!(err.to_string().contains("already in the sprint"));
 }
 
 // ---------------------------------------------------------------------------
@@ -1818,7 +1640,7 @@ fn propose_approve_and_reject_lifecycle() {
     // Proposed task must not appear in `stint next`.
     let task = repo.read_task(&path).unwrap();
     assert_eq!(task.frontmatter.status, stint::schema::TaskStatus::Proposed);
-    assert!(cmds::cmd_next(&repo, None, false, false)
+    assert!(cmds::cmd_next(&repo, false, false)
         .unwrap()
         .ready
         .is_empty());
@@ -1885,7 +1707,7 @@ fn gate_file_blocks_and_unclaims_stalled_task_then_resolve_unblocks() {
         },
     )
     .unwrap();
-    cmds::cmd_claim(&repo, Some("0001"), None, false, None, false).unwrap();
+    cmds::cmd_claim(&repo, Some("0001"), false, None, false).unwrap();
 
     let task1 = repo.read_task(&task1_path).unwrap();
     assert_eq!(

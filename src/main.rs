@@ -20,7 +20,7 @@ use stint::schema::TaskStatus;
 #[command(
     name = "stint",
     version,
-    about = "Git-tracked sprint planning, agent task management, and decision gating"
+    about = "Git-tracked task management, dependency DAGs, and decision gating"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -189,9 +189,6 @@ enum Commands {
         /// Hide tasks that are currently blocked.
         #[arg(long)]
         hide_blocked: bool,
-        /// Filter by sprint ID (e.g. s12).
-        #[arg(long)]
-        sprint: Option<String>,
         /// Filter by area label.
         #[arg(long)]
         area: Option<String>,
@@ -281,9 +278,6 @@ enum Commands {
     Claim {
         /// Task ID. Omit to auto-claim the top ready task.
         id: Option<String>,
-        /// Sprint filter for auto-claim (e.g. s12).
-        #[arg(long)]
-        sprint: Option<String>,
         /// Replace an existing started_at and clear completion fields.
         #[arg(long)]
         restart: bool,
@@ -336,11 +330,8 @@ enum Commands {
         id: String,
     },
 
-    /// Show the next claimable tasks, derived from blockers, sprint order, and area conflicts.
+    /// Show the next claimable tasks, derived from blockers, priority, and area conflicts.
     Next {
-        /// Restrict to a sprint ID (e.g. s12).
-        #[arg(long)]
-        sprint: Option<String>,
         /// Include tasks whose area conflicts with in-progress work.
         #[arg(long)]
         include_area_conflicts: bool,
@@ -354,11 +345,8 @@ enum Commands {
 
     /// Promote backlog tasks to todo (move out of icebox into the ready pool).
     Ready {
-        /// Task ID(s) to promote. Omit to use --sprint or --tag selectors.
+        /// Task ID(s) to promote. Omit to use --tag selector.
         ids: Vec<String>,
-        /// Promote all backlog tasks in this sprint.
-        #[arg(long)]
-        sprint: Option<String>,
         /// Promote all backlog tasks with this tag.
         #[arg(long)]
         tag: Option<String>,
@@ -366,11 +354,8 @@ enum Commands {
 
     /// Send todo tasks back to backlog (move into icebox).
     Defer {
-        /// Task ID(s) to defer. Omit to use --sprint or --tag selectors.
+        /// Task ID(s) to defer. Omit to use --tag selector.
         ids: Vec<String>,
-        /// Defer all todo tasks in this sprint.
-        #[arg(long)]
-        sprint: Option<String>,
         /// Defer all todo tasks with this tag.
         #[arg(long)]
         tag: Option<String>,
@@ -380,12 +365,6 @@ enum Commands {
     Gate {
         #[command(subcommand)]
         command: GateCommands,
-    },
-
-    /// Sprint management sub-commands.
-    Sprint {
-        #[command(subcommand)]
-        command: SprintCommands,
     },
 
     /// Validate the task graph, or one task by ID; exit 1 if errors are found.
@@ -403,7 +382,7 @@ enum Commands {
         json: bool,
     },
 
-    /// Show a summary: active tasks, proposed tasks, open gates, blocked tasks, and sprint progress.
+    /// Show a summary: active tasks, proposed tasks, open gates, and blocked tasks.
     Status {
         /// Output as JSON.
         #[arg(long)]
@@ -419,9 +398,9 @@ enum Commands {
         json: bool,
     },
 
-    /// Print the machine-readable schema for tasks, gates, sprints, or the CLI.
+    /// Print the machine-readable schema for tasks, gates, or the CLI.
     Schema {
-        /// Schema kind: task, gate, sprint, cli.
+        /// Schema kind: task, gate, cli.
         kind: Option<String>,
         /// Output as JSON (default is pretty JSON).
         #[arg(long)]
@@ -502,51 +481,6 @@ enum GateCommands {
         /// Output as JSON.
         #[arg(long)]
         json: bool,
-    },
-}
-
-#[derive(Subcommand)]
-enum SprintCommands {
-    /// Create a new sprint file.
-    New {
-        /// Sprint ID (e.g. s12 or 12).
-        id: String,
-        /// Date range string (e.g. "Jun 9-20").
-        date_range: String,
-        /// Sprint goal text.
-        #[arg(long)]
-        goal: Option<String>,
-    },
-
-    /// List all sprints.
-    List,
-
-    /// Show a sprint with task summaries.
-    Show {
-        /// Sprint ID.
-        id: String,
-    },
-
-    /// Append a task to a sprint file.
-    Add {
-        /// Sprint ID.
-        sprint_id: String,
-        /// Task ID.
-        task_id: String,
-    },
-
-    /// Remove a task from a sprint file.
-    Remove {
-        /// Sprint ID.
-        sprint_id: String,
-        /// Task ID.
-        task_id: String,
-    },
-
-    /// Open a sprint file in $EDITOR for manual reordering.
-    Reorder {
-        /// Sprint ID.
-        id: String,
     },
 }
 
@@ -770,7 +704,6 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             all,
             blocked,
             hide_blocked,
-            sprint,
             area,
             tag,
             priority,
@@ -792,7 +725,6 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 status.as_deref(),
                 all,
                 blocked_filter,
-                sprint.as_deref(),
                 area.as_deref(),
                 tag.as_deref(),
                 priority.as_deref(),
@@ -878,7 +810,6 @@ fn run(cli: Cli) -> anyhow::Result<()> {
 
         Some(Commands::Claim {
             id,
-            sprint,
             restart,
             started_at,
             json,
@@ -887,7 +818,6 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             cmds::cmd_claim(
                 &repo,
                 id.as_deref(),
-                sprint.as_deref(),
                 restart,
                 started_at.as_deref(),
                 json,
@@ -969,7 +899,6 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         }
 
         Some(Commands::Next {
-            sprint,
             include_area_conflicts,
             include_backlog,
             json,
@@ -977,7 +906,6 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             let repo = find_repo()?;
             let report = cmds::cmd_next(
                 &repo,
-                sprint.as_deref(),
                 include_area_conflicts,
                 include_backlog,
             )?;
@@ -988,17 +916,17 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             }
         }
 
-        Some(Commands::Ready { ids, sprint, tag }) => {
+        Some(Commands::Ready { ids, tag }) => {
             let repo = find_repo()?;
-            let paths = cmds::cmd_ready(&repo, &ids, sprint.as_deref(), tag.as_deref())?;
+            let paths = cmds::cmd_ready(&repo, &ids, tag.as_deref())?;
             for path in paths {
                 println!("ready: {}", path.display());
             }
         }
 
-        Some(Commands::Defer { ids, sprint, tag }) => {
+        Some(Commands::Defer { ids, tag }) => {
             let repo = find_repo()?;
-            let paths = cmds::cmd_defer(&repo, &ids, sprint.as_deref(), tag.as_deref())?;
+            let paths = cmds::cmd_defer(&repo, &ids, tag.as_deref())?;
             for path in paths {
                 println!("deferred: {}", path.display());
             }
@@ -1169,40 +1097,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             }
         },
 
-        Some(Commands::Sprint { command }) => match command {
-            SprintCommands::New {
-                id,
-                date_range,
-                goal,
-            } => {
-                let repo = find_repo()?;
-                let path = cmds::cmd_sprint_new(&repo, &id, &date_range, goal.as_deref())?;
-                println!("{}", path.display());
-            }
-            SprintCommands::List => {
-                let repo = find_repo()?;
-                cmds::cmd_sprint_list(&repo)?;
-            }
-            SprintCommands::Show { id } => {
-                let repo = find_repo()?;
-                cmds::cmd_sprint_show(&repo, &id)?;
-            }
-            SprintCommands::Add { sprint_id, task_id } => {
-                let repo = find_repo()?;
-                let path = cmds::cmd_sprint_add(&repo, &sprint_id, &task_id)?;
-                println!("added to {}", path.display());
-            }
-            SprintCommands::Remove { sprint_id, task_id } => {
-                let repo = find_repo()?;
-                let path = cmds::cmd_sprint_remove(&repo, &sprint_id, &task_id)?;
-                println!("removed from {}", path.display());
-            }
-            SprintCommands::Reorder { id } => {
-                let repo = find_repo()?;
-                let path = cmds::cmd_sprint_reorder(&repo, &id)?;
-                println!("reordered {}", path.display());
-            }
-        },
+
 
         Some(Commands::Check {
             id,

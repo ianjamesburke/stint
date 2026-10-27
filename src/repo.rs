@@ -1,12 +1,11 @@
-/// Locate the `.stint/` directory, load tasks and sprints, resolve task IDs.
+/// Locate the `.stint/` directory, load tasks, resolve task IDs.
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context};
-use stint::parse::{parse_task, ParseError};
-use stint::schema::{BlockedByRef, Sprint, Task, TaskStatus};
-use stint::sprint::parse_sprint;
-use stint::{sprint::numeric_prefix, state::BlockerResolution};
+use stint::parse::{numeric_prefix, parse_task, ParseError};
+use stint::schema::{BlockedByRef, Task, TaskStatus};
+use stint::state::BlockerResolution;
 
 /// A handle to an initialised `.stint/` workspace.
 pub struct StintRepo {
@@ -37,7 +36,7 @@ impl StintRepo {
         if !config_path.exists() {
             fs::write(
                 &config_path,
-                "[project]\nname = \"\"\ndefault_sprint = \"\"\n\n[gh]\nrepo = \"\"\n",
+                "[project]\nname = \"\"\n\n[gh]\nrepo = \"\"\n",
             )
             .with_context(|| format!("write {}", config_path.display()))?;
         }
@@ -70,15 +69,9 @@ impl StintRepo {
         self.stint_dir.join("tasks")
     }
 
-    /// Path to the sprints directory.
-    pub fn sprints_dir(&self) -> PathBuf {
-        self.stint_dir.join("sprints")
-    }
-
-    /// Ensure the `tasks/` and `sprints/` sub-directories exist.
+    /// Ensure the `tasks/` sub-directory exists.
     pub fn ensure_dirs(&self) -> anyhow::Result<()> {
         fs::create_dir_all(self.tasks_dir()).context("create .stint/tasks/")?;
-        fs::create_dir_all(self.sprints_dir()).context("create .stint/sprints/")?;
         Ok(())
     }
 
@@ -123,29 +116,6 @@ impl StintRepo {
         Ok((tasks, errors))
     }
 
-    /// Load and parse every sprint file in `.stint/sprints/`.
-    pub fn load_sprints(&self) -> anyhow::Result<Vec<Sprint>> {
-        let dir = self.sprints_dir();
-        if !dir.exists() {
-            return Ok(vec![]);
-        }
-        let mut sprints = Vec::new();
-        for entry in fs::read_dir(&dir).context("read .stint/sprints/")? {
-            let entry = entry.context("read dir entry")?;
-            let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) != Some("md") {
-                continue;
-            }
-            let content =
-                fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
-            match parse_sprint(&content) {
-                Ok(sprint) => sprints.push(sprint),
-                Err(e) => eprintln!("warning: skip {}: {}", path.display(), e),
-            }
-        }
-        sprints.sort_by(|a, b| a.header.id.cmp(&b.header.id));
-        Ok(sprints)
-    }
 
     pub fn resolve_direct_task_path_blockers(
         &self,
@@ -216,18 +186,6 @@ impl StintRepo {
         }
     }
 
-    /// Resolve a sprint ID to a file path.
-    ///
-    /// The sprint ID may omit the leading `s` (e.g. `"12"` → `"s12"`).
-    pub fn resolve_sprint_path(&self, id_input: &str) -> anyhow::Result<PathBuf> {
-        let id = stint::sprint::normalize_sprint_id(id_input);
-        let path = self.sprints_dir().join(format!("{}.md", id));
-        if path.exists() {
-            Ok(path)
-        } else {
-            bail!("no sprint found for id {:?}", id_input)
-        }
-    }
 
     /// Read a task file by path and parse it.
     pub fn read_task(&self, path: &Path) -> anyhow::Result<Task> {
@@ -243,16 +201,6 @@ impl StintRepo {
 
     /// Write a serialized task back to its file.
     pub fn write_task(&self, path: &Path, content: &str) -> anyhow::Result<()> {
-        fs::write(path, content).with_context(|| format!("write {}", path.display()))
-    }
-
-    /// Read the raw string content of a sprint file.
-    pub fn read_sprint_raw(&self, path: &Path) -> anyhow::Result<String> {
-        fs::read_to_string(path).with_context(|| format!("read {}", path.display()))
-    }
-
-    /// Write a sprint file.
-    pub fn write_sprint(&self, path: &Path, content: &str) -> anyhow::Result<()> {
         fs::write(path, content).with_context(|| format!("write {}", path.display()))
     }
 }

@@ -46,7 +46,6 @@ pub const SCHEMA_KINDS: &[(&str, &str)] = &[
         "gate",
         "Decision gate frontmatter and 7-section markdown contract",
     ),
-    ("sprint", "Sprint index file format"),
     ("cli", "Command overview and JSON automation contract"),
 ];
 
@@ -55,7 +54,7 @@ pub fn guide_json(topic: Option<&str>) -> Result<Value, String> {
     match topic.map(|s| s.trim().to_ascii_lowercase()).as_deref() {
         None | Some("") | Some("overview") => Ok(json!({
             "topic": "overview",
-            "summary": "Stint tracks tasks, proposals, sprints, and decision gates as markdown files inside .stint/.",
+            "summary": "Stint tracks tasks, proposals, and decision gates as markdown files inside .stint/.",
             "lifecycle": {
                 "proposed": "Candidate idea or throwaway PRD outside the active pipeline. Ignored by `stint next` and `stint claim`. Promoted via `stint approve <id>` (which enforces pass criteria) or discarded via `stint reject <id>`.",
                 "backlog": "Iceboxed work or open human decision gates (`tags: [gate]`). Excluded from `stint next` by default.",
@@ -80,9 +79,9 @@ pub fn guide_json(topic: Option<&str>) -> Result<Value, String> {
             "rules": [
                 "North Star alignment: verify the task serves the repository's goals and state why in `## Why`.",
                 "Always set `--priority p0..p4` (`p0` highest, `p4` lowest) and `--size s|m|l`.",
-                "Do not set hour estimates unless the repo explicitly uses sprint hour tracking; prefer `--size s|m|l`.",
+                "Do not set hour estimates unless the repo explicitly uses hour tracking; prefer `--size s|m|l`.",
                 "Every actionable task must have a concrete `## Why` and checkable pass criteria in `## Done When`.",
-                "Model real sequencing dependencies with `--blocked-by <id>`, not sprints.",
+                "Model real sequencing dependencies with `--blocked-by <id>`.",
                 "When `--why`, `--done-when`, `--body-file`, `--no-edit`, or `--json` is passed (or stdout is not a TTY), `stint add` never opens `$EDITOR`."
             ],
             "examples": [
@@ -145,7 +144,7 @@ pub fn guide_json(topic: Option<&str>) -> Result<Value, String> {
             "rules": [
                 "Required frontmatter fields (`id`, `title`, `status`), valid enums, and RFC3339 timestamps.",
                 "`id` matches the 4-digit filename prefix and is unique across `.stint/tasks/`.",
-                "All local `blocked_by` task IDs and sprint index entries resolve to existing tasks with no dependency cycles.",
+                "All local `blocked_by` task IDs resolve to existing tasks with no dependency cycles.",
                 "No `in-progress` or `done` task may carry unresolved local-task blockers.",
                 "Every task tagged `gate` must contain all 7 required gate sections (`Ask`, `Options`, `Good answer`, `Test`, `Evidence`, `Links`, `Decision`), and `Decision` must be non-empty when the gate is `done`.",
                 "`stint check --strict` additionally verifies that every `todo` and `in-progress` task has `priority`, `size`, `## Why`, and `## Done When`."
@@ -268,21 +267,15 @@ pub fn schema_json(kind: Option<&str>) -> Result<Value, String> {
         ]
     });
 
-    let sprint_schema = json!({
-        "filename": "s<N>.md in .stint/sprints/",
-        "header": "# Sprint <N> · <date range> · goal: <goal>",
-        "entries": "Ordered markdown list `- [<id>](../tasks/<id>-<slug>.md)`"
-    });
-
     let cli_schema = json!({
         "commands": [
-            {"cmd": "stint status [--json]", "description": "Summary of active, proposed, backlog, open gates, blocked tasks, and sprint progress"},
-            {"cmd": "stint next [--sprint sN] [--include-backlog] [--json]", "description": "Next claimable tasks ordered by priority and age, excluding area conflicts"},
+            {"cmd": "stint status [--json]", "description": "Summary of active, proposed, backlog, open gates, and blocked tasks"},
+            {"cmd": "stint next [--include-backlog] [--json]", "description": "Next claimable tasks ordered by priority and age, excluding area conflicts"},
             {"cmd": "stint add <title> [--priority p0..p4] [--size s|m|l] [--why ...] [--done-when ...] [--proposed] [--json]", "description": "Create a new task or proposal"},
             {"cmd": "stint propose <title> [--why ...] [--done-when ...] [--json]", "description": "Create a candidate task in `proposed` status"},
             {"cmd": "stint approve <id>... [--priority p0..p4] [--size s|m|l] [--done-when ...] [--json]", "description": "Validate pass criteria and promote proposed/backlog task(s) to todo"},
             {"cmd": "stint reject <id>... [--reason ...] [--json]", "description": "Reject and archive a proposed task"},
-            {"cmd": "stint claim [id] [--sprint sN] [--restart] [--json]", "description": "Claim a specific task or auto-claim the top ready task under an advisory lock"},
+            {"cmd": "stint claim [id] [--restart] [--json]", "description": "Claim a specific task or auto-claim the top ready task under an advisory lock"},
             {"cmd": "stint unclaim <id> [--json]", "description": "Revert an in-progress task to todo and clear started_at"},
             {"cmd": "stint done <id> [--actual <duration>] [--json]", "description": "Mark task done, prune it from dependent tasks' blocked_by, and report unblocked tasks"},
             {"cmd": "stint set <id> [--priority ...] [--size ...] [--add-blocked-by ...] [--remove-blocked-by ...] [--why ...] [--done-when ...]", "description": "Headlessly update task frontmatter or body sections"},
@@ -299,15 +292,13 @@ pub fn schema_json(kind: Option<&str>) -> Result<Value, String> {
             "kinds": SCHEMA_KINDS.iter().map(|(k, d)| json!({"kind": k, "description": d})).collect::<Vec<_>>(),
             "task": task_schema,
             "gate": gate_schema,
-            "sprint": sprint_schema,
             "cli": cli_schema,
         })),
         Some("task") => Ok(task_schema),
         Some("gate") => Ok(gate_schema),
-        Some("sprint") => Ok(sprint_schema),
         Some("cli") => Ok(cli_schema),
         Some(other) => Err(format!(
-            "unknown schema kind {:?}; expected one of: task, gate, sprint, cli",
+            "unknown schema kind {:?}; expected one of: task, gate, cli",
             other
         )),
     }

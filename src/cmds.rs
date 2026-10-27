@@ -1,7 +1,7 @@
 /// All command implementations.  Each function takes a `&StintRepo` and
 /// whatever arguments the command needs.  No `std::process::exit` here —
 /// callers handle exit codes.
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::fs::{self, OpenOptions};
 use std::io::{self, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
@@ -16,18 +16,15 @@ use stint::check::{check, check_pass_criteria, validate_gate_body};
 use stint::duration::Duration;
 use stint::mutate::{
     add_actual, append_blockers, build_gate_body, build_task_body, clear_started_at,
-    minimal_frontmatter, new_sprint_content, new_task_content, next_task_id, remove_blockers,
-    resolve_id, restart_task, set_actual, set_completed_at, set_started_at_if_absent, set_status,
+    minimal_frontmatter, new_task_content, next_task_id, remove_blockers,
+    restart_task, set_actual, set_completed_at, set_started_at_if_absent, set_status,
     title_to_slug, DEFAULT_TASK_BODY,
 };
 use stint::next::{compute_next, compute_next_with_resolution, NextOptions, NextReport, NextTask};
 use stint::schema::{
-    extract_section, set_section, BlockedByRef, Priority, Size, Sprint, Task, TaskStatus,
+    extract_section, set_section, BlockedByRef, Priority, Size, Task, TaskStatus,
 };
 use stint::serialize::serialize_task;
-use stint::sprint::{
-    normalize_sprint_id, numeric_prefix, sprint_add_task, sprint_remove_task, task_link,
-};
 use stint::state::{
     active_blockers, active_blockers_with_resolution, classify_with_resolution, done_ids,
     is_blocked_with_resolution,
@@ -427,31 +424,23 @@ pub fn cmd_set(
 }
 
 /// List tasks, optionally filtered.
-#[allow(clippy::too_many_arguments)]
 pub fn cmd_list(
     repo: &StintRepo,
     status_filter: Option<&str>,
     include_all: bool,
     blocked_filter: Option<bool>,
-    sprint_filter: Option<&str>,
     area_filter: Option<&str>,
     tag_filter: Option<&str>,
     priority_filter: Option<&str>,
 ) -> anyhow::Result<Vec<TaskRow>> {
     let tasks = repo.load_tasks()?;
-    let sprints = repo.load_sprints()?;
     let done = done_ids(&tasks);
     let direct_resolution = repo.resolve_direct_task_path_blockers(&tasks)?;
     let blocker_resolution = &direct_resolution.blocker_resolution;
 
-    // Build a task_id -> sprint_id lookup from the sprint index files.
-    let task_sprint_map = task_to_sprint_map(&sprints);
-
     let rows = stint::filter::filter_tasks(
         &tasks,
-        &sprints,
         status_filter,
-        sprint_filter,
         area_filter,
         tag_filter,
         priority_filter,
@@ -478,7 +467,6 @@ pub fn cmd_list(
         blocked: is_blocked_with_resolution(t, &done, blocker_resolution),
         blockers: active_blockers_with_resolution(t, &done, blocker_resolution),
         estimate: t.frontmatter.estimate.map(|d| d.to_string()),
-        sprint: task_sprint_map.get(t.frontmatter.id.as_str()).cloned(),
         priority: t.frontmatter.priority.map(|p| p.to_string()),
         size: t.frontmatter.size.map(|s| s.to_string()),
     })
@@ -553,29 +541,7 @@ fn format_areas(areas: &[String]) -> String {
     }
 }
 
-fn render_progress_bar(done: usize, total: usize, width: usize, on: bool) -> String {
-    if total == 0 {
-        let bar = if on {
-            "░".repeat(width)
-        } else {
-            "-".repeat(width)
-        };
-        return format!("[{}] 0%", if on { bar.dimmed().to_string() } else { bar });
-    }
-    let fraction = (done as f64 / total as f64).clamp(0.0, 1.0);
-    let filled_len = (fraction * width as f64).round() as usize;
-    let empty_len = width.saturating_sub(filled_len);
 
-    if on {
-        let filled = "█".repeat(filled_len).cyan().to_string();
-        let empty = "░".repeat(empty_len).dimmed().to_string();
-        format!("[{}{}] {:.0}%", filled, empty, fraction * 100.0)
-    } else {
-        let filled = "=".repeat(filled_len);
-        let empty = "-".repeat(empty_len);
-        format!("[{}{}] {:.0}%", filled, empty, fraction * 100.0)
-    }
-}
 
 /// Print a `cmd_list` result to stdout at 80 columns.
 pub fn print_list(rows: &[TaskRow]) {
@@ -585,20 +551,19 @@ pub fn print_list(rows: &[TaskRow]) {
     }
     let on = color_on();
     let header = format!(
-        "{:<6} {:<9} {:<4} {:<4} {:<8} {:<6} {}",
-        "ID", "STATE", "PRI", "SIZE", "ESTIMATE", "SPRINT", "TITLE"
+        "{:<6} {:<9} {:<4} {:<4} {:<8} {}",
+        "ID", "STATE", "PRI", "SIZE", "ESTIMATE", "TITLE"
     );
     println!("{}", dim(&header, on));
     for row in rows {
         println!(
-            "{} {} {:<4} {:<4} {:<8} {:<6} {}",
+            "{} {} {:<4} {:<4} {:<8} {}",
             paint_id(&format!("{:<6}", row.id), on),
             paint_state(&row.state, 9, on),
             row.priority.as_deref().unwrap_or("-"),
             row.size.as_deref().unwrap_or("-"),
             row.estimate.as_deref().unwrap_or("-"),
-            row.sprint.as_deref().unwrap_or("-"),
-            truncate(&row.title, 38),
+            truncate(&row.title, 44),
         );
         if row.blocked && !row.blockers.is_empty() {
             println!(
@@ -620,7 +585,6 @@ pub struct TaskRow {
     pub blocked: bool,
     pub blockers: Vec<BlockedByRef>,
     pub estimate: Option<String>,
-    pub sprint: Option<String>,
     pub priority: Option<String>,
     pub size: Option<String>,
 }
@@ -630,16 +594,12 @@ pub fn cmd_show(repo: &StintRepo, id_input: &str) -> anyhow::Result<()> {
     let path = repo.resolve_task_path(id_input)?;
     let task = repo.read_task(&path)?;
     let tasks = repo.load_tasks()?;
-    let sprints = repo.load_sprints()?;
     let done = done_ids(&tasks);
     let direct_resolution = repo.resolve_direct_task_path_blockers(&tasks)?;
     let active =
         active_blockers_with_resolution(&task, &done, &direct_resolution.blocker_resolution);
     let state = classify_with_resolution(&task, &done, &direct_resolution.blocker_resolution);
     let fm = &task.frontmatter;
-
-    // Look up sprint membership from the index files.
-    let sprint_id = task_to_sprint_map(&sprints).get(fm.id.as_str()).cloned();
 
     println!("ID:           {}", fm.id);
     println!("Title:        {}", fm.title);
@@ -664,9 +624,6 @@ pub fn cmd_show(repo: &StintRepo, id_input: &str) -> anyhow::Result<()> {
     }
     if let Some(completed_at) = &fm.completed_at {
         println!("Completed at: {}", completed_at);
-    }
-    if let Some(s) = &sprint_id {
-        println!("Sprint:       {}", s);
     }
     if !active.is_empty() {
         println!("Blocked by:   {}", format_blockers_inline(&active));
@@ -1001,14 +958,13 @@ pub fn cmd_archive(repo: &StintRepo, id_input: &str) -> anyhow::Result<PathBuf> 
     Ok(path)
 }
 
-/// Promote backlog tasks to todo (out of icebox). Accepts explicit IDs, or a sprint/tag selector.
+/// Promote backlog tasks to todo (out of icebox). Accepts explicit IDs, or a tag selector.
 pub fn cmd_ready(
     repo: &StintRepo,
     ids: &[String],
-    sprint: Option<&str>,
     tag: Option<&str>,
 ) -> anyhow::Result<Vec<PathBuf>> {
-    let candidates = resolve_status_transition_targets(repo, ids, sprint, tag)?;
+    let candidates = resolve_status_transition_targets(repo, ids, tag)?;
     let mut promoted = Vec::new();
     for (path, mut task) in candidates {
         match task.frontmatter.status {
@@ -1019,7 +975,7 @@ pub fn cmd_ready(
                 promoted.push(path);
             }
             TaskStatus::Todo => {
-                // Already in the ready pool — skip silently if selected by sprint/tag,
+                // Already in the ready pool — skip silently if selected by tag,
                 // or error if the caller targeted this task explicitly by ID.
                 if !ids.is_empty() {
                     anyhow::bail!("task {} is already todo", task.id());
@@ -1039,14 +995,13 @@ pub fn cmd_ready(
     Ok(promoted)
 }
 
-/// Send todo tasks back to backlog (icebox). Accepts explicit IDs, or a sprint/tag selector.
+/// Send todo tasks back to backlog (icebox). Accepts explicit IDs, or a tag selector.
 pub fn cmd_defer(
     repo: &StintRepo,
     ids: &[String],
-    sprint: Option<&str>,
     tag: Option<&str>,
 ) -> anyhow::Result<Vec<PathBuf>> {
-    let candidates = resolve_status_transition_targets(repo, ids, sprint, tag)?;
+    let candidates = resolve_status_transition_targets(repo, ids, tag)?;
     let mut deferred = Vec::new();
     for (path, mut task) in candidates {
         match task.frontmatter.status {
@@ -1078,11 +1033,10 @@ pub fn cmd_defer(
 
 /// Resolve the set of tasks targeted by a ready/defer call.
 ///
-/// If explicit `ids` are given they take precedence and the sprint/tag selectors are ignored.
+/// If explicit `ids` are given they take precedence and the tag selector is ignored.
 fn resolve_status_transition_targets(
     repo: &StintRepo,
     ids: &[String],
-    sprint: Option<&str>,
     tag: Option<&str>,
 ) -> anyhow::Result<Vec<(PathBuf, stint::schema::Task)>> {
     if !ids.is_empty() {
@@ -1096,28 +1050,8 @@ fn resolve_status_transition_targets(
     }
 
     let tasks = repo.load_tasks()?;
-    let sprints = repo.load_sprints()?;
-
-    // Build sprint task ID set if a sprint filter was requested.
-    let sprint_task_ids: Option<std::collections::HashSet<String>> = sprint.and_then(|sp| {
-        sprints.iter().find(|s| s.header.id == sp).map(|s| {
-            s.task_ids
-                .iter()
-                .map(|e| numeric_prefix(e).to_owned())
-                .collect()
-        })
-    });
-
     let mut out = Vec::new();
     for task in tasks {
-        if let Some(ref ids_set) = sprint_task_ids {
-            if !ids_set.contains(task.frontmatter.id.as_str()) {
-                continue;
-            }
-        } else if sprint.is_some() {
-            // Sprint was requested but not found — no tasks match.
-            continue;
-        }
         if let Some(t) = tag {
             if !task.frontmatter.tags.iter().any(|tg| tg == t) {
                 continue;
@@ -1132,18 +1066,14 @@ fn resolve_status_transition_targets(
 /// Show the next ready task(s). Pure read -- no mutation.
 pub fn cmd_next(
     repo: &StintRepo,
-    sprint: Option<&str>,
     include_area_conflicts: bool,
     include_backlog: bool,
 ) -> anyhow::Result<NextReport> {
     let tasks = repo.load_tasks()?;
-    let sprints = repo.load_sprints()?;
     let direct_resolution = repo.resolve_direct_task_path_blockers(&tasks)?;
     Ok(compute_next_with_resolution(
         &tasks,
-        &sprints,
         NextOptions {
-            sprint,
             include_area_conflicts,
             include_backlog,
         },
@@ -1159,7 +1089,6 @@ pub fn cmd_next(
 pub fn cmd_claim(
     repo: &StintRepo,
     id: Option<&str>,
-    sprint: Option<&str>,
     restart: bool,
     started_at_override: Option<&str>,
     json: bool,
@@ -1181,12 +1110,9 @@ pub fn cmd_claim(
     } else {
         with_claim_lock(repo, || {
             let tasks = repo.load_tasks()?;
-            let sprints = repo.load_sprints()?;
             let report = compute_next(
                 &tasks,
-                &sprints,
                 NextOptions {
-                    sprint,
                     include_area_conflicts: false,
                     include_backlog: false,
                 },
@@ -1310,7 +1236,6 @@ pub fn print_next_json(repo: &StintRepo, report: &NextReport) {
             "status": t.status.as_str(),
             "priority": t.priority.as_ref().map(|p| p.as_str()),
             "size": t.size.as_ref().map(|s| s.as_str()),
-            "sprint": t.sprint,
             "area": t.area,
             "gh_issue": t.gh_issue,
             "blockers": t.blockers.iter().map(blocker_to_json).collect::<Vec<_>>(),
@@ -1363,142 +1288,6 @@ fn print_next_task(task: &NextTask, on: bool) {
 }
 
 // ---------------------------------------------------------------------------
-// Sprint commands
-// ---------------------------------------------------------------------------
-
-/// Create a new sprint file.
-pub fn cmd_sprint_new(
-    repo: &StintRepo,
-    id_input: &str,
-    date_range: &str,
-    goal: Option<&str>,
-) -> anyhow::Result<PathBuf> {
-    repo.ensure_dirs()?;
-    let id = normalize_sprint_id(id_input);
-    let path = repo.sprints_dir().join(format!("{}.md", id));
-    if path.exists() {
-        bail!("sprint {:?} already exists at {}", id, path.display());
-    }
-    let content = new_sprint_content(&id, date_range, goal);
-    repo.write_sprint(&path, &content)?;
-    Ok(path)
-}
-
-/// List all sprints.
-pub fn cmd_sprint_list(repo: &StintRepo) -> anyhow::Result<()> {
-    let sprints = repo.load_sprints()?;
-    if sprints.is_empty() {
-        println!("(no sprints)");
-        return Ok(());
-    }
-    println!("{:<6} {:<20} TASKS", "ID", "DATE RANGE");
-    println!("{}", "-".repeat(50));
-    for s in &sprints {
-        println!(
-            "{:<6} {:<20} {}",
-            s.header.id,
-            s.header.date_range,
-            s.task_ids.len()
-        );
-    }
-    Ok(())
-}
-
-/// Show a sprint with task summaries.
-pub fn cmd_sprint_show(repo: &StintRepo, id_input: &str) -> anyhow::Result<()> {
-    let path = repo.resolve_sprint_path(id_input)?;
-    let tasks = repo.load_tasks()?;
-    let content = repo.read_sprint_raw(&path)?;
-    let sprint = stint::sprint::parse_sprint(&content)
-        .with_context(|| format!("parse {}", path.display()))?;
-
-    println!("Sprint: {}", sprint.header.id);
-    println!("Range:  {}", sprint.header.date_range);
-    if let Some(g) = &sprint.header.goal {
-        println!("Goal:   {}", g);
-    }
-    println!();
-    if sprint.task_ids.is_empty() {
-        println!("(no tasks)");
-        return Ok(());
-    }
-    println!("{:<6} {:<11} {:<8} TITLE", "ID", "STATUS", "ESTIMATE");
-    println!("{}", "-".repeat(78));
-    for entry in &sprint.task_ids {
-        let prefix = numeric_prefix(entry);
-        match tasks.iter().find(|t| t.frontmatter.id == prefix) {
-            Some(t) => println!(
-                "{:<6} {:<11} {:<8} {}",
-                t.frontmatter.id,
-                t.frontmatter.status,
-                t.frontmatter
-                    .estimate
-                    .map(|d| d.to_string())
-                    .as_deref()
-                    .unwrap_or("-"),
-                truncate(&t.frontmatter.title, 50),
-            ),
-            None => println!("{:<6} (not found)", entry),
-        }
-    }
-    Ok(())
-}
-
-/// Append a task to a sprint file. Sprint membership is recorded only in the
-/// sprint index — no `sprint` field is written to the task frontmatter.
-pub fn cmd_sprint_add(repo: &StintRepo, sprint_id: &str, task_id: &str) -> anyhow::Result<PathBuf> {
-    let task_id = resolve_id(task_id);
-    let path = repo.resolve_sprint_path(sprint_id)?;
-    let content = repo.read_sprint_raw(&path)?;
-
-    // Write the entry as a `../tasks/<filename>` link so editors can `gf` to it.
-    // Fall back to the bare ID if the task file does not exist yet.
-    let entry = match repo.resolve_task_path(&task_id) {
-        Ok(task_path) => task_link(&filename_of(&task_path)),
-        Err(_) => task_id.clone(),
-    };
-    let updated = sprint_add_task(&content, &entry).map_err(|e| anyhow::anyhow!("{}", e))?;
-    repo.write_sprint(&path, &updated)?;
-
-    Ok(path)
-}
-
-/// Open a sprint file in `$EDITOR` for manual reordering.
-///
-/// The sprint file is an ordered list of task IDs — the user moves lines to
-/// change priority order.  After the editor exits, the file is re-parsed to
-/// ensure it is still valid.
-pub fn cmd_sprint_reorder(repo: &StintRepo, id_input: &str) -> anyhow::Result<PathBuf> {
-    let path = repo.resolve_sprint_path(id_input)?;
-    open_editor(&path)?;
-    // Validate the file is still parseable after manual edits.
-    let content = repo.read_sprint_raw(&path)?;
-    stint::sprint::parse_sprint(&content).with_context(|| {
-        format!(
-            "sprint file is no longer valid after reorder: {}",
-            path.display()
-        )
-    })?;
-    Ok(path)
-}
-
-/// Remove a task from a sprint file. Sprint membership is recorded only in the
-/// sprint index — no task frontmatter is modified.
-pub fn cmd_sprint_remove(
-    repo: &StintRepo,
-    sprint_id: &str,
-    task_id: &str,
-) -> anyhow::Result<PathBuf> {
-    let task_id = resolve_id(task_id);
-    let path = repo.resolve_sprint_path(sprint_id)?;
-    let content = repo.read_sprint_raw(&path)?;
-    let updated = sprint_remove_task(&content, &task_id).map_err(|e| anyhow::anyhow!("{}", e))?;
-    repo.write_sprint(&path, &updated)?;
-
-    Ok(path)
-}
-
-// ---------------------------------------------------------------------------
 // Validation & status
 // ---------------------------------------------------------------------------
 
@@ -1523,7 +1312,6 @@ pub fn cmd_check(
             return Ok(vec![format!("task {task_id}: not found")]);
         }
 
-        let sprints = repo.load_sprints()?;
         let direct_resolution = repo.resolve_direct_task_path_blockers(&tasks)?;
         let task_prefix = format!("task {task_id}:");
         let mut errors: Vec<String> = direct_resolution
@@ -1532,7 +1320,7 @@ pub fn cmd_check(
             .filter(|error| error.starts_with(&task_prefix))
             .collect();
         errors.extend(
-            check(&tasks, &sprints)
+            check(&tasks)
                 .into_iter()
                 .filter(|error| error.task_id() == Some(task_id))
                 .map(|error| error.to_string()),
@@ -1540,33 +1328,27 @@ pub fn cmd_check(
         return Ok(errors);
     }
 
-    let sprints = repo.load_sprints()?;
     let direct_resolution = repo.resolve_direct_task_path_blockers(&tasks)?;
     let mut errors: Vec<String> = parse_errors
         .iter()
         .map(|e| format!("{}: {}", e.path.display(), e.error))
         .collect();
     errors.extend(direct_resolution.errors);
-    errors.extend(check(&tasks, &sprints).iter().map(|e| e.to_string()));
+    errors.extend(check(&tasks).iter().map(|e| e.to_string()));
     Ok(errors)
 }
 
 /// Print the `stint status` actionable dashboard.
 pub fn cmd_status(repo: &StintRepo) -> anyhow::Result<()> {
     let tasks = repo.load_tasks()?;
-    let sprints = repo.load_sprints()?;
     let direct_resolution = repo.resolve_direct_task_path_blockers(&tasks)?;
     let report = compute_status_with_resolution(
         &tasks,
-        &sprints,
-        None,
         &direct_resolution.blocker_resolution,
     );
     let next_report = compute_next_with_resolution(
         &tasks,
-        &sprints,
         NextOptions {
-            sprint: None,
             include_area_conflicts: false,
             include_backlog: false,
         },
@@ -1588,64 +1370,35 @@ pub fn cmd_status(repo: &StintRepo) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    if let Some(p) = &report.sprint_progress {
-        let sprint_label = if let Some(num) = p.sprint_id.strip_prefix('s') {
-            format!("Sprint {}", num)
-        } else {
-            format!("Sprint {}", p.sprint_id)
-        };
-        let mut header_parts = vec![bold(&sprint_label, on)];
-        if let Some(ref range) = p.date_range {
-            if !range.is_empty() {
-                header_parts.push(dim(range, on));
-            }
-        }
-        if let Some(ref goal) = p.goal {
-            if !goal.is_empty() {
-                header_parts.push(dim(&format!("goal: {}", goal), on));
-            }
-        }
-        println!("{}", header_parts.join(" · "));
+    let total = tasks.len();
+    let done = tasks
+        .iter()
+        .filter(|t| t.frontmatter.status == TaskStatus::Done)
+        .count();
+    let in_prog = report.in_progress_count;
+    let ready = next_report.ready.len();
+    let blocked = report.blocked_tasks.len();
 
-        let bar = render_progress_bar(p.done_count, p.task_count, 16, on);
-        let mut progress_meta = vec![format!("{}/{} done", p.done_count, p.task_count)];
-        if p.committed_minutes > 0 {
-            let logged = minutes_to_hours_str(p.logged_minutes);
-            let committed = minutes_to_hours_str(p.committed_minutes);
-            progress_meta.push(format!("{}h / {}h", logged, committed));
-        }
-        println!("{} · {}", bar, dim(&progress_meta.join(" · "), on));
-    } else {
-        let total = tasks.len();
-        let done = tasks
-            .iter()
-            .filter(|t| t.frontmatter.status == TaskStatus::Done)
-            .count();
-        let in_prog = report.in_progress_count;
-        let ready = next_report.ready.len();
-        let blocked = report.blocked_tasks.len();
-
-        let mut summary_parts = Vec::new();
-        if in_prog > 0 {
-            summary_parts.push(format!("{} active", in_prog));
-        }
-        if ready > 0 {
-            summary_parts.push(format!("{} ready", ready));
-        }
-        if blocked > 0 {
-            summary_parts.push(format!("{} blocked", blocked));
-        }
-        if done > 0 {
-            summary_parts.push(format!("{} done", done));
-        }
-
-        let summary_text = if summary_parts.is_empty() {
-            format!("{} total tasks", total)
-        } else {
-            format!("{} total · {}", total, summary_parts.join(", "))
-        };
-        println!("{} {}", bold("Tasks:", on), dim(&summary_text, on));
+    let mut summary_parts = Vec::new();
+    if in_prog > 0 {
+        summary_parts.push(format!("{} active", in_prog));
     }
+    if ready > 0 {
+        summary_parts.push(format!("{} ready", ready));
+    }
+    if blocked > 0 {
+        summary_parts.push(format!("{} blocked", blocked));
+    }
+    if done > 0 {
+        summary_parts.push(format!("{} done", done));
+    }
+
+    let summary_text = if summary_parts.is_empty() {
+        format!("{} total tasks", total)
+    } else {
+        format!("{} total · {}", total, summary_parts.join(", "))
+    };
+    println!("{} {}", bold("Tasks:", on), dim(&summary_text, on));
 
     let in_progress_tasks: Vec<&Task> = tasks
         .iter()
@@ -2505,7 +2258,6 @@ pub fn print_list_json(rows: &[TaskRow]) {
                 "blocked": r.blocked,
                 "blockers": r.blockers.iter().map(|b| b.to_string()).collect::<Vec<_>>(),
                 "estimate": r.estimate,
-                "sprint": r.sprint,
                 "priority": r.priority,
                 "size": r.size,
             })
@@ -2519,15 +2271,11 @@ pub fn print_show_json(repo: &StintRepo, id_input: &str) -> anyhow::Result<()> {
     let path = repo.resolve_task_path(id_input)?;
     let task = repo.read_task(&path)?;
     let tasks = repo.load_tasks()?;
-    let sprints = repo.load_sprints()?;
     let done = done_ids(&tasks);
     let direct_resolution = repo.resolve_direct_task_path_blockers(&tasks)?;
     let active =
         active_blockers_with_resolution(&task, &done, &direct_resolution.blocker_resolution);
     let state = classify_with_resolution(&task, &done, &direct_resolution.blocker_resolution);
-    let sprint_id = task_to_sprint_map(&sprints)
-        .get(task.frontmatter.id.as_str())
-        .cloned();
     let fm = &task.frontmatter;
 
     let payload = json!({
@@ -2543,7 +2291,6 @@ pub fn print_show_json(repo: &StintRepo, id_input: &str) -> anyhow::Result<()> {
         "created_at": fm.created_at,
         "started_at": fm.started_at,
         "completed_at": fm.completed_at,
-        "sprint": sprint_id,
         "blocked_by": fm.blocked_by.iter().map(|b| b.to_string()).collect::<Vec<_>>(),
         "active_blockers": active.iter().map(|b| b.to_string()).collect::<Vec<_>>(),
         "gh_issue": fm.gh_issue,
@@ -2567,19 +2314,14 @@ pub fn print_show_json(repo: &StintRepo, id_input: &str) -> anyhow::Result<()> {
 pub fn print_status_json(repo: &StintRepo) -> anyhow::Result<()> {
     use serde_json::json;
     let tasks = repo.load_tasks()?;
-    let sprints = repo.load_sprints()?;
     let direct_resolution = repo.resolve_direct_task_path_blockers(&tasks)?;
     let report = compute_status_with_resolution(
         &tasks,
-        &sprints,
-        None,
         &direct_resolution.blocker_resolution,
     );
     let next_report = compute_next_with_resolution(
         &tasks,
-        &sprints,
         NextOptions {
-            sprint: None,
             include_area_conflicts: false,
             include_backlog: false,
         },
@@ -2635,16 +2377,6 @@ pub fn print_status_json(repo: &StintRepo) -> anyhow::Result<()> {
             "title": bt.title,
             "blocked_by": bt.blocked_by.iter().map(|b| b.to_string()).collect::<Vec<_>>(),
         })).collect::<Vec<_>>(),
-        "sprint": report.sprint_progress.as_ref().map(|p| json!({
-            "sprint_id": p.sprint_id,
-            "date_range": p.date_range,
-            "goal": p.goal,
-            "task_count": p.task_count,
-            "done_count": p.done_count,
-            "committed_minutes": p.committed_minutes,
-            "logged_minutes": p.logged_minutes,
-            "remaining_minutes": p.remaining_minutes,
-        })),
     });
     println!("{}", serde_json::to_string_pretty(&payload).unwrap());
     Ok(())
@@ -2653,21 +2385,6 @@ pub fn print_status_json(repo: &StintRepo) -> anyhow::Result<()> {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-/// Build a map from task ID → sprint ID by scanning all sprint index files.
-///
-/// If a task appears in multiple sprint indexes (which would be a data error),
-/// the last sprint listed wins.
-fn task_to_sprint_map(sprints: &[Sprint]) -> HashMap<String, String> {
-    let mut map: HashMap<String, String> = HashMap::new();
-    for sprint in sprints {
-        for entry in &sprint.task_ids {
-            let task_id = numeric_prefix(entry).to_owned();
-            map.insert(task_id, sprint.header.id.clone());
-        }
-    }
-    map
-}
 
 /// Open `path` in `$EDITOR`.  If `$EDITOR` is not set, falls back to `vi`.
 ///
@@ -2691,12 +2408,7 @@ pub fn open_editor(path: &std::path::Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// The bare filename (no directory) of a task path, e.g. `0001-slug.md`.
-fn filename_of(path: &Path) -> String {
-    path.file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_default()
-}
+
 
 fn truncate(s: &str, max: usize) -> &str {
     if s.len() <= max {
@@ -2716,12 +2428,4 @@ fn format_blockers_inline(blockers: &[BlockedByRef]) -> String {
         .join(", ")
 }
 
-fn minutes_to_hours_str(minutes: u32) -> String {
-    let h = minutes / 60;
-    let m = minutes % 60;
-    if m == 0 {
-        format!("{}", h)
-    } else {
-        format!("{}.{}", h, (m * 10 / 60))
-    }
-}
+

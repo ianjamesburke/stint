@@ -1,8 +1,8 @@
 # stint
 
-Task and sprint tracking as markdown files in your repo. An alternative to GitHub Issues for teams who want their plan versioned with their code.
+Git-tracked task management, dependency DAGs, and decision gating as markdown files in your repo. An alternative to issue trackers for teams and autonomous agents who want their task pipeline versioned with their code.
 
-Tasks live in `.stint/tasks/`. Sprints are ordered lists. Includes a CLI and TUI.
+Tasks live in `.stint/tasks/`.
 
 `.stint/` commits alongside your code, or gitignore it to keep tasks private, or initialize it as a separate git repo inside the same directory for clean separation.
 
@@ -11,8 +11,8 @@ Tasks live in `.stint/tasks/`. Sprints are ordered lists. Includes a CLI and TUI
   tasks/
     0001-auth-middleware.md
     0002-tui-skeleton.md
-  sprints/
-    s01.md
+    0003-gate-retry-policy.md
+  config.toml
 ```
 
 ## Install
@@ -53,45 +53,55 @@ after `just publish-check`. The tag is annotated so `--follow-tags` pushes it.
 
 ```bash
 # Tasks
-stint add "Implement auth middleware"            # lands in todo, schedulable by `stint next`
-stint add "Someday: dark mode" --backlog         # icebox instead; promote later with `stint ready`
+stint add "Implement auth middleware" --priority p1 --size m  # lands in todo, schedulable by `stint next`
+stint add "Someday: dark mode" --backlog                       # icebox instead; promote later with `stint ready`
+stint propose "Explore WebSocket sync" --why "Polling is slow" # candidate PRD outside active queue
+stint approve 0003 --priority p2 --size s --done-when "Bench <50ms" # promote proposal to todo
+stint reject 0003 --reason "Out of scope for v1"             # archive proposal
+
+# Querying & Scheduling
 stint list
 stint list --status in-progress
 stint list --priority p0
 stint list --blocked
 stint list --hide-blocked
-stint list --sprint s1
 stint show 1
 stint next
-stint next --claim
+stint claim                                                  # auto-claim top ready task under an advisory lock
+stint claim 1                                                # claim specific task
+stint unclaim 1                                              # revert in-progress task to todo
 stint log 1 2h
 stint done 1 --actual 3h
 stint archive 1
 
-# Sprints
-stint sprint new s1 "Jun 9-20" --goal "ship v1"
-stint sprint add s1 0001
-stint sprint show s1
-stint sprint reorder s1
-stint sprint remove s1 0001
+# Human Decision Gates
+stint gate file 1 "Choose retry strategy" --ask "Should we retry 5xx synchronously or enqueue to DLQ?" \
+    --options "(recommended) Option A: DLQ" --options "Option B: Sync retry" \
+    --good-answer "Pick A or B and max retry count" --test "keep latency < 200ms" \
+    --evidence "Stripe times out after 10s" --links "src/webhook.rs"
+stint gate list
+stint gate show 2
+stint gate resolve 2 --decision "Option A (DLQ) with 3 retries"
 
-# Validation
+# Graph Validation & Status
 stint check
+stint check --strict                                         # enforce pass criteria on active tasks
 stint status
+stint guide                                                  # built-in operator guide
+stint schema                                                 # machine-readable JSON schema
 ```
 
 ## Next work
 
-`stint next` derives claimable work from the task graph. It does not maintain a
-separate parallel-work list.
+`stint next` derives claimable work from the task dependency graph.
 
-- tasks must be `backlog` or `todo`
+- tasks must be `todo` (or `backlog` with `--include-backlog`)
 - local task blockers must be `done`
 - all other blocker types (issues, external tasks, notes) make a task blocked
-- sprint order is the primary sort; `priority` (P0 highest, P4 lowest) breaks ties
+- `priority` (P0 highest, P4 lowest) sorts candidates; creation timestamp and ID break ties
 - tasks without a priority sort after all prioritized tasks
 - tasks whose `area` overlaps with `in-progress` work are hidden by default
-- `stint next --claim` marks the top ready task `in-progress`
+- `stint claim` claims the top unblocked, non-conflicting task under a lock
 
 Use `stint next --include-area-conflicts` to see ready tasks even if they touch
 an area already in progress.
@@ -104,9 +114,9 @@ id: "0001"
 title: Auth middleware
 status: in-progress
 priority: p1
+size: m
 estimate: 4h
 actual: 2h
-sprint: s1
 blocked_by:
   - 2                          # local task 0002
   - @847                       # local GitHub issue #847
@@ -123,9 +133,14 @@ tags: []
 
 Why this task exists and what problem it solves.
 
-## Gotchas
+## Done When
 
-Non-obvious constraints, prior attempts, things that will bite you.
+- [ ] Every request validates JWT Bearer tokens
+- [ ] Integration tests pass in CI
+
+## References
+
+- src/auth.rs
 ```
 
 `blocked_by` is a unified field — type is inferred by syntax. `gh_issue`, `area`, and `tags` all accept a single value or a list.
@@ -140,51 +155,33 @@ Non-obvious constraints, prior attempts, things that will bite you.
 | `../path@N` | issue in a sibling local directory |
 | quoted string | free-text blocker note |
 
-## Sprint format
-
-```markdown
-# Sprint 1 · Jun 9–20 · goal: ship v1
-
-- [0001](../tasks/0001-auth-middleware.md)
-- [0002](../tasks/0002-tui-skeleton.md)
-```
-
-Line order is priority order. Entries are markdown links to the task file, so
-they are real clickable links: cmd-click in VS Code, `gf` or link-follow in
-Vim, both jump straight to the task. `stint sprint add` writes this form
-automatically.
-
-Bare IDs (`- 0001`) and plain paths are still parsed — the task ID is read from
-the entry regardless of form. Edit directly or use `stint sprint reorder`.
-
 ## Validation
 
 `stint check` validates the entire task graph:
 
-- Required fields present
-- Status is a valid enum value (`backlog`, `todo`, `in-progress`, `done`, `archived`)
+- Required fields present (`id`, `title`, `status`)
+- Status is a valid enum value (`proposed`, `backlog`, `todo`, `in-progress`, `done`, `archived`)
 - Priority is a valid enum value if present (`p0`, `p1`, `p2`, `p3`, `p4`)
+- Size is a valid enum value if present (`s`, `m`, `l`)
 - Duration strings are valid (`4h`, `30m`, `1.5h`)
+- RFC3339 timestamps for lifecycle fields
 - `blocked_by` local task refs resolve to real tasks
 - `blocked_by` external refs are format-validated
-- `sprint` field references an existing sprint
-- Sprint index entries resolve to real tasks
+- No unresolved blockers on `in-progress` or `done` tasks
 - No circular blocker dependencies
-- Task ID matches filename prefix
+- Gate tasks contain all 7 required sections
+- Task ID matches 4-digit filename prefix
 - No duplicate IDs
+
+`stint check --strict` additionally enforces pass criteria (`priority`, `size`, `## Why`, and `## Done When`) on all active pipeline tasks.
 
 Returns exit 0 on a clean graph, exit 1 with all errors listed.
 
-## Agent skill
+## Agent guide & schema
 
-`skills/stint/SKILL.md` ships with the repo. Symlink it so Claude Code picks it up in any project that uses stint:
+Stint includes built-in reference guides and machine-readable schemas:
 
 ```bash
-ln -s /path/to/stint/skills/stint ~/.agents/skills/stint
+stint guide [overview|add|propose|implement|gate|check]
+stint schema [task|gate|cli] --json
 ```
-
-## Roadmap
-
-- [ ] `stint gh import` — pull GitHub issues as tasks
-- [ ] `stint gh sync` — push task status back to GitHub
-- [ ] `stint check --cross-repo` — resolve cross-repo blockers

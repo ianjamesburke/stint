@@ -1,4 +1,4 @@
-/// Core domain types for tasks, sprints, and blockers.
+/// Core domain types for tasks and blockers.
 use std::cmp::Ordering;
 use std::str::FromStr;
 
@@ -542,33 +542,6 @@ pub fn set_section(body: &str, heading: &str, new_content: &str) -> String {
         result.push('\n');
     }
     result
-}
-
-/// Parsed sprint file header.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SprintHeader {
-    /// Sprint identifier, e.g. `"s12"`.
-    pub id: String,
-    /// Human-readable date range string, e.g. `"Jun 9–20"`.
-    pub date_range: String,
-    /// Optional sprint goal text.
-    pub goal: Option<String>,
-}
-
-/// A fully parsed sprint: header plus ordered task ID list.
-#[derive(Debug, Clone)]
-pub struct Sprint {
-    /// Parsed header.
-    pub header: SprintHeader,
-    /// Task IDs in priority order (may include slug suffix or numeric-only).
-    pub task_ids: Vec<String>,
-}
-
-impl Sprint {
-    /// Convenience accessor for the sprint ID.
-    pub fn id(&self) -> &str {
-        &self.header.id
-    }
 }
 
 #[cfg(test)]

@@ -2,7 +2,7 @@
 
 ## What This Is
 
-Stint is a Rust CLI for task and sprint tracking as markdown files in your repo. Read `NORTH_STAR.md` for vision, `docs/PRD.md` for full spec.
+Stint is a Rust CLI for task management, dependency DAGs, and decision gating as markdown files in your repo. Read `NORTH_STAR.md` for vision, `docs/PRD.md` for full spec.
 
 Single crate with `[lib]` and `[[bin]]` targets. Library modules handle schema, parsing, validation, mutation. `src/main.rs` is a thin Clap shell with no business logic.
 

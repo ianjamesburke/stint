@@ -10,6 +10,5 @@ pub mod parse;
 pub mod repo;
 pub mod schema;
 pub mod serialize;
-pub mod sprint;
 pub mod state;
 pub mod status;

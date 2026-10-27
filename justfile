@@ -28,3 +28,21 @@ pi-publish:
     node --test packages/pi-stint/test/*.test.js
     npm publish ./packages/pi-stint --access public
 
+# Initialize an interactive scratch playground from an example project (defaults to 'demo').
+# Usage:
+#   just playground             # sets up examples/playground from examples/demo
+#   just playground api-service # sets up examples/playground from examples/api-service
+playground example="demo":
+    @rm -rf examples/playground
+    @mkdir -p examples/playground
+    @cp -r examples/{{example}}/. examples/playground/
+    @echo "Playground initialized in examples/playground (from examples/{{example}})"
+    @echo ""
+    @echo "Try running:"
+    @echo "  cd examples/playground"
+    @echo "  stint status"
+    @echo "  stint next"
+    @echo "  stint gate list"
+    @echo "  stint check --strict"
+    @echo ""
+    @echo "Mess around freely! Run 'just playground' again anytime to reset."

@@ -1,6 +1,6 @@
 # stint
 
-Git-tracked task management, dependency DAGs, and decision gating as markdown files in your repo. An alternative to issue trackers for teams and autonomous agents who want their task pipeline versioned with their code.
+Git-tracked task management, dependency DAGs, and decision gating as markdown files.
 
 Tasks live in `.stint/tasks/`.
 

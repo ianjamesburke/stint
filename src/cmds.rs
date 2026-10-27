@@ -22,7 +22,7 @@ use stint::mutate::{
 };
 use stint::next::{compute_next, compute_next_with_resolution, NextOptions, NextReport, NextTask};
 use stint::schema::{
-    extract_section, set_section, BlockedByRef, Priority, Size, Sprint, TaskStatus,
+    extract_section, set_section, BlockedByRef, Priority, Size, Sprint, Task, TaskStatus,
 };
 use stint::serialize::serialize_task;
 use stint::sprint::{
@@ -531,6 +531,43 @@ fn paint_id(s: &str, on: bool) -> String {
         s.cyan().bold().to_string()
     } else {
         s.to_owned()
+    }
+}
+
+fn format_meta(priority: Option<Priority>, size: Option<Size>) -> String {
+    match (priority, size) {
+        (Some(p), Some(s)) => format!("[{}·{}]", p.as_str(), s.as_str()),
+        (Some(p), None) => format!("[{}]", p.as_str()),
+        (None, Some(s)) => format!("[{}]", s.as_str()),
+        (None, None) => String::new(),
+    }
+}
+
+fn format_areas(areas: &[String]) -> String {
+    if areas.is_empty() {
+        String::new()
+    } else {
+        format!("({})", areas.join(", "))
+    }
+}
+
+fn render_progress_bar(done: usize, total: usize, width: usize, on: bool) -> String {
+    if total == 0 {
+        let bar = if on { "░".repeat(width) } else { "-".repeat(width) };
+        return format!("[{}] 0%", if on { bar.dimmed().to_string() } else { bar });
+    }
+    let fraction = (done as f64 / total as f64).clamp(0.0, 1.0);
+    let filled_len = (fraction * width as f64).round() as usize;
+    let empty_len = width.saturating_sub(filled_len);
+
+    if on {
+        let filled = "█".repeat(filled_len).cyan().to_string();
+        let empty = "░".repeat(empty_len).dimmed().to_string();
+        format!("[{}{}] {:.0}%", filled, empty, fraction * 100.0)
+    } else {
+        let filled = "=".repeat(filled_len);
+        let empty = "-".repeat(empty_len);
+        format!("[{}{}] {:.0}%", filled, empty, fraction * 100.0)
     }
 }
 
@@ -1508,7 +1545,7 @@ pub fn cmd_check(
     Ok(errors)
 }
 
-/// Print the `stint status` summary.
+/// Print the `stint status` actionable dashboard.
 pub fn cmd_status(repo: &StintRepo) -> anyhow::Result<()> {
     let tasks = repo.load_tasks()?;
     let sprints = repo.load_sprints()?;
@@ -1519,58 +1556,261 @@ pub fn cmd_status(repo: &StintRepo) -> anyhow::Result<()> {
         None,
         &direct_resolution.blocker_resolution,
     );
+    let next_report = compute_next_with_resolution(
+        &tasks,
+        &sprints,
+        NextOptions {
+            sprint: None,
+            include_area_conflicts: false,
+            include_backlog: false,
+        },
+        &direct_resolution.blocker_resolution,
+    );
 
-    let active_count = report.open_count.saturating_sub(report.backlog_count);
-    println!("Active:   {} (todo/in-progress)", active_count);
-    println!("Backlog:  {} (icebox)", report.backlog_count);
-    if report.proposed_count > 0 {
-        println!("Proposed: {} (awaiting approval)", report.proposed_count);
+    let on = color_on();
+
+    if tasks.is_empty() {
+        println!("{}", bold("Stint Workspace", on));
+        println!("No tasks found.");
+        println!(
+            "{}",
+            dim(
+                "Run `stint add \"<title>\"` to create a task, or `stint propose \"<title>\"` to file an idea.",
+                on
+            )
+        );
+        return Ok(());
+    }
+
+    if let Some(p) = &report.sprint_progress {
+        let sprint_label = if let Some(num) = p.sprint_id.strip_prefix('s') {
+            format!("Sprint {}", num)
+        } else {
+            format!("Sprint {}", p.sprint_id)
+        };
+        let mut header_parts = vec![bold(&sprint_label, on)];
+        if let Some(ref range) = p.date_range {
+            if !range.is_empty() {
+                header_parts.push(dim(range, on));
+            }
+        }
+        if let Some(ref goal) = p.goal {
+            if !goal.is_empty() {
+                header_parts.push(dim(&format!("goal: {}", goal), on));
+            }
+        }
+        println!("{}", header_parts.join(" · "));
+
+        let bar = render_progress_bar(p.done_count, p.task_count, 16, on);
+        let mut progress_meta = vec![format!("{}/{} done", p.done_count, p.task_count)];
+        if p.committed_minutes > 0 {
+            let logged = minutes_to_hours_str(p.logged_minutes);
+            let committed = minutes_to_hours_str(p.committed_minutes);
+            progress_meta.push(format!("{}h / {}h", logged, committed));
+        }
+        println!("{} · {}", bar, dim(&progress_meta.join(" · "), on));
+    } else {
+        let total = tasks.len();
+        let done = tasks
+            .iter()
+            .filter(|t| t.frontmatter.status == TaskStatus::Done)
+            .count();
+        let in_prog = report.in_progress_count;
+        let ready = next_report.ready.len();
+        let blocked = report.blocked_tasks.len();
+
+        let mut summary_parts = Vec::new();
+        if in_prog > 0 {
+            summary_parts.push(format!("{} active", in_prog));
+        }
+        if ready > 0 {
+            summary_parts.push(format!("{} ready", ready));
+        }
+        if blocked > 0 {
+            summary_parts.push(format!("{} blocked", blocked));
+        }
+        if done > 0 {
+            summary_parts.push(format!("{} done", done));
+        }
+
+        let summary_text = if summary_parts.is_empty() {
+            format!("{} total tasks", total)
+        } else {
+            format!("{} total · {}", total, summary_parts.join(", "))
+        };
+        println!("{} {}", bold("Tasks:", on), dim(&summary_text, on));
+    }
+
+    let in_progress_tasks: Vec<&Task> = tasks
+        .iter()
+        .filter(|t| t.frontmatter.status == TaskStatus::InProgress)
+        .collect();
+
+    if !in_progress_tasks.is_empty() {
+        println!();
+        println!(
+            "{}",
+            bold(&format!("In Progress ({})", in_progress_tasks.len()), on)
+        );
+        for t in &in_progress_tasks {
+            let bullet = if on { "⚡".yellow().to_string() } else { "*".to_owned() };
+            let id = paint_id(&t.frontmatter.id, on);
+            let meta = format_meta(t.frontmatter.priority, t.frontmatter.size);
+            let meta_str = if meta.is_empty() {
+                String::new()
+            } else {
+                format!(" {} ", dim(&meta, on))
+            };
+            let areas = format_areas(&t.frontmatter.area);
+            let areas_str = if areas.is_empty() {
+                String::new()
+            } else {
+                format!(" {}", dim(&areas, on))
+            };
+            let time_info = match (t.frontmatter.actual, t.frontmatter.estimate) {
+                (Some(act), Some(est)) => format!(" ({} / {} est)", act, est),
+                (Some(act), None) => format!(" ({} logged)", act),
+                (None, Some(est)) => format!(" (est {})", est),
+                (None, None) => String::new(),
+            };
+            let time_str = if time_info.is_empty() {
+                String::new()
+            } else {
+                dim(&time_info, on)
+            };
+
+            println!(
+                "  {} {}{}{}{}{}",
+                bullet,
+                id,
+                meta_str,
+                truncate(&t.frontmatter.title, 80),
+                areas_str,
+                time_str
+            );
+        }
+    }
+
+    if !next_report.ready.is_empty() {
+        println!();
+        println!(
+            "{}",
+            bold(&format!("Ready Next ({})", next_report.ready.len()), on)
+        );
+        let max_display = 4;
+        for task in next_report.ready.iter().take(max_display) {
+            let bullet = if on { "▶".green().to_string() } else { ">".to_owned() };
+            let id = paint_id(&task.id, on);
+            let meta = format_meta(task.priority, task.size);
+            let meta_str = if meta.is_empty() {
+                String::new()
+            } else {
+                format!(" {} ", dim(&meta, on))
+            };
+            let areas = format_areas(&task.area);
+            let areas_str = if areas.is_empty() {
+                String::new()
+            } else {
+                format!(" {}", dim(&areas, on))
+            };
+
+            println!(
+                "  {} {}{}{}{}",
+                bullet,
+                id,
+                meta_str,
+                truncate(&task.title, 80),
+                areas_str
+            );
+        }
+        if next_report.ready.len() > max_display {
+            let remaining = next_report.ready.len() - max_display;
+            println!(
+                "  {}",
+                dim(
+                    &format!("... and {} more ready (run 'stint next' to view all)", remaining),
+                    on
+                )
+            );
+        }
     }
 
     if !report.open_gates.is_empty() {
-        println!("Gates ({}):", report.open_gates.len());
+        println!();
+        println!(
+            "{}",
+            bold(&format!("Gates ({} open)", report.open_gates.len()), on)
+        );
         for gate in &report.open_gates {
+            let bullet = if on { "◆".magenta().to_string() } else { "?".to_owned() };
+            let id = paint_id(&gate.id, on);
             let blocks = if gate.blocks.is_empty() {
                 String::new()
             } else {
                 format!(" (blocks {})", gate.blocks.join(", "))
             };
-            println!("  {} {}{}", gate.id, gate.title, blocks);
+            println!(
+                "  {} {} {}{}",
+                bullet,
+                id,
+                truncate(&gate.title, 80),
+                if blocks.is_empty() {
+                    String::new()
+                } else {
+                    dim(&blocks, on)
+                }
+            );
             if let Some(ask) = &gate.ask {
                 if let Some(first_line) = ask.lines().next() {
-                    println!("       Ask: {}", truncate(first_line.trim(), 64));
+                    println!(
+                        "     {}",
+                        dim(&format!("Ask: {}", truncate(first_line.trim(), 72)), on)
+                    );
                 }
             }
         }
     }
 
-    if report.blocked_tasks.is_empty() {
-        println!("Blocked:  none");
-    } else {
-        println!("Blocked ({}):", report.blocked_tasks.len());
+    if !report.blocked_tasks.is_empty() {
+        println!();
+        println!(
+            "{}",
+            bold(&format!("Blocked ({})", report.blocked_tasks.len()), on)
+        );
         for bt in &report.blocked_tasks {
+            let bullet = if on { "✗".red().to_string() } else { "x".to_owned() };
+            let id = paint_id(&bt.id, on);
+            let reason = format_blockers_inline(&bt.blocked_by);
             println!(
-                "  {} {} — {}",
-                bt.id,
-                bt.title,
-                format_blockers_inline(&bt.blocked_by)
+                "  {} {} {} — {}",
+                bullet,
+                id,
+                truncate(&bt.title, 70),
+                dim(&format!("blocked by {}", reason), on)
             );
         }
     }
 
-    if let Some(p) = &report.sprint_progress {
+    if in_progress_tasks.is_empty()
+        && next_report.ready.is_empty()
+        && report.open_gates.is_empty()
+        && report.blocked_tasks.is_empty()
+    {
         println!();
-        println!("Sprint {}:", p.sprint_id);
-        println!("  Tasks:     {}/{} done", p.done_count, p.task_count);
-        println!(
-            "  Committed: {}h",
-            minutes_to_hours_str(p.committed_minutes)
-        );
-        println!("  Logged:    {}h", minutes_to_hours_str(p.logged_minutes));
-        println!(
-            "  Remaining: {}h",
-            minutes_to_hours_str(p.remaining_minutes)
-        );
+        let mark = if on { "✔".green().to_string() } else { "*".to_owned() };
+        println!("{} {}", mark, bold("All active tasks complete!", on));
+    }
+
+    if report.backlog_count > 0 || report.proposed_count > 0 {
+        println!();
+        let mut parts = Vec::new();
+        if report.backlog_count > 0 {
+            parts.push(format!("Backlog: {} (icebox)", report.backlog_count));
+        }
+        if report.proposed_count > 0 {
+            parts.push(format!("Proposed: {} (awaiting approval)", report.proposed_count));
+        }
+        println!("{}", dim(&parts.join(" · "), on));
     }
 
     Ok(())
@@ -2372,6 +2612,8 @@ pub fn print_status_json(repo: &StintRepo) -> anyhow::Result<()> {
         })).collect::<Vec<_>>(),
         "sprint": report.sprint_progress.as_ref().map(|p| json!({
             "sprint_id": p.sprint_id,
+            "date_range": p.date_range,
+            "goal": p.goal,
             "task_count": p.task_count,
             "done_count": p.done_count,
             "committed_minutes": p.committed_minutes,

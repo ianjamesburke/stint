@@ -1681,6 +1681,24 @@ fn status_runs_with_tasks() {
     cmds::cmd_status(&repo).unwrap();
 }
 
+#[test]
+fn status_dashboard_with_sprint_and_pipeline() {
+    let (_tmp, repo) = setup();
+    let sprint_content = "# Sprint 1 · Jun 1–14 · goal: test dashboard\n\n- 0001\n- 0002\n";
+    write_sprint_file(&repo, "s1.md", sprint_content);
+
+    let t1 = "---\nid: \"0001\"\ntitle: \"Active Task\"\nstatus: in-progress\npriority: p0\nsize: m\nestimate: 4h\nactual: 1.5h\narea:\n  - core\n---\n";
+    write_task_file(&repo, "0001-active.md", t1);
+
+    let t2 = "---\nid: \"0002\"\ntitle: \"Ready Task\"\nstatus: todo\npriority: p1\nsize: s\narea:\n  - cli\n---\n";
+    write_task_file(&repo, "0002-ready.md", t2);
+
+    let gate = "---\nid: \"0003\"\ntitle: \"Decision Gate\"\nstatus: todo\ntags:\n  - gate\n---\n## Ask\nWhich db?\n";
+    write_task_file(&repo, "0003-gate.md", gate);
+
+    cmds::cmd_status(&repo).unwrap();
+}
+
 // ---------------------------------------------------------------------------
 // cmd_sprint_show
 // ---------------------------------------------------------------------------

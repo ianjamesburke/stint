@@ -145,16 +145,28 @@ fn parse_sprint_header(line: &str) -> Result<SprintHeader, SprintParseError> {
 
     let id = format!("s{}", number);
 
-    let date_range = parts
-        .get(1)
-        .map(|s| s.trim().to_owned())
-        .unwrap_or_default();
-
-    let goal = parts
-        .get(2)
-        .and_then(|s| s.trim().strip_prefix("goal:"))
-        .map(|s| s.trim().to_owned())
-        .filter(|s| !s.is_empty());
+    let (date_range, goal) = match (parts.get(1), parts.get(2)) {
+        (Some(p1), Some(p2)) => {
+            let r = p1.trim().to_owned();
+            let g = p2
+                .trim()
+                .strip_prefix("goal:")
+                .map(|s| s.trim().to_owned())
+                .filter(|s| !s.is_empty());
+            (r, g)
+        }
+        (Some(p1), None) => {
+            if let Some(g) = p1.trim().strip_prefix("goal:") {
+                (
+                    String::new(),
+                    Some(g.trim().to_owned()).filter(|s| !s.is_empty()),
+                )
+            } else {
+                (p1.trim().to_owned(), None)
+            }
+        }
+        _ => (String::new(), None),
+    };
 
     Ok(SprintHeader {
         id,
@@ -248,6 +260,16 @@ mod tests {
         assert_eq!(sprint.header.id, "s3");
         assert_eq!(sprint.header.date_range, "Jul 1–14");
         assert!(sprint.header.goal.is_none());
+        assert_eq!(sprint.task_ids, vec!["0001"]);
+    }
+
+    #[test]
+    fn parse_sprint_goal_only() {
+        let content = "# Sprint 4 · goal: ship v1\n\n- 0001\n";
+        let sprint = parse_sprint(content).unwrap();
+        assert_eq!(sprint.header.id, "s4");
+        assert_eq!(sprint.header.date_range, "");
+        assert_eq!(sprint.header.goal.as_deref(), Some("ship v1"));
         assert_eq!(sprint.task_ids, vec!["0001"]);
     }
 

@@ -30,10 +30,14 @@ pub struct GateSummary {
 }
 
 /// Sprint-level time progress.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SprintProgress {
     /// Sprint identifier.
     pub sprint_id: String,
+    /// Human-readable date range string, e.g. "Jun 9–20".
+    pub date_range: Option<String>,
+    /// Optional sprint goal text.
+    pub goal: Option<String>,
     /// Total estimated minutes across all tasks in this sprint.
     pub committed_minutes: u32,
     /// Total logged minutes across all tasks in this sprint.
@@ -206,6 +210,8 @@ pub fn compute_status_with_resolution(
 
         Some(SprintProgress {
             sprint_id: sid.to_owned(),
+            date_range: Some(sprint.header.date_range.clone()),
+            goal: sprint.header.goal.clone(),
             committed_minutes,
             logged_minutes,
             remaining_minutes,
@@ -344,6 +350,8 @@ mod tests {
         assert_eq!(progress.remaining_minutes, 240);
         assert_eq!(progress.done_count, 1);
         assert_eq!(progress.task_count, 2);
+        assert_eq!(progress.date_range.as_deref(), Some("Jan 1–15"));
+        assert_eq!(progress.goal.as_deref(), Some("test"));
     }
 
     #[test]

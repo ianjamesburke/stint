@@ -135,6 +135,16 @@ pub enum CheckError {
         /// The unresolved local-task blocker IDs.
         blockers: Vec<String>,
     },
+
+    // Rule 15 — decision gate structure
+    /// A task tagged `gate` is missing one or more required decision sections.
+    #[error("task {task_id}: gate artifact missing or empty section(s): {missing:?}")]
+    IncompleteGate {
+        /// Task ID.
+        task_id: String,
+        /// Missing or empty section names.
+        missing: Vec<String>,
+    },
 }
 
 impl CheckError {
@@ -149,7 +159,8 @@ impl CheckError {
             | Self::InvalidBlockedByRef { task_id, .. }
             | Self::CircularBlockedBy { task_id, .. }
             | Self::IdFilenameMismatch { task_id, .. }
-            | Self::BlockedTaskNotPending { task_id, .. } => Some(task_id),
+            | Self::BlockedTaskNotPending { task_id, .. }
+            | Self::IncompleteGate { task_id, .. } => Some(task_id),
             Self::DuplicateId { id, .. } => Some(id),
             Self::SprintUnresolvedTask { .. } => None,
         }
@@ -239,6 +250,18 @@ pub fn check(tasks: &[Task], sprints: &[Sprint]) -> Vec<CheckError> {
                 });
             }
         }
+
+        // Rule 15 — decision gate tasks (`tags` contains `gate`) must contain all 7 sections.
+        if task.is_gate() && task.frontmatter.status != TaskStatus::Archived {
+            let require_decision = task.frontmatter.status == TaskStatus::Done;
+            let missing = validate_gate_body(&task.body, require_decision);
+            if !missing.is_empty() {
+                errors.push(CheckError::IncompleteGate {
+                    task_id: id.to_owned(),
+                    missing,
+                });
+            }
+        }
     }
 
     // Rule 7 — sprint task references
@@ -258,6 +281,65 @@ pub fn check(tasks: &[Task], sprints: &[Sprint]) -> Vec<CheckError> {
     check_cycles(tasks, &mut errors);
 
     errors
+}
+
+/// Validate that a gate task body contains all 7 required sections (`Ask`, `Options`,
+/// `Good answer`, `Test`, `Evidence`, `Links`, `Decision`).
+/// Returns the names of any missing or empty sections (`Decision` may be empty unless
+/// `require_decision` is true).
+pub fn validate_gate_body(body: &str, require_decision: bool) -> Vec<String> {
+    use crate::mutate::REQUIRED_GATE_SECTIONS;
+    use crate::schema::{extract_section, has_non_empty_section};
+
+    let mut missing = Vec::new();
+    for &section in REQUIRED_GATE_SECTIONS {
+        if section.eq_ignore_ascii_case("Decision") {
+            if require_decision {
+                if !has_non_empty_section(body, section) {
+                    missing.push(section.to_owned());
+                }
+            } else if extract_section(body, section).is_none() {
+                missing.push(section.to_owned());
+            }
+        } else if !has_non_empty_section(body, section) {
+            missing.push(section.to_owned());
+        }
+    }
+    missing
+}
+
+/// Validate that an actionable stint task meets the pipeline pass-criteria contract:
+/// - `priority` is set (`p0`..`p4`)
+/// - `size` is set (`s` | `m` | `l`)
+/// - `## Why` section is present and non-empty
+/// - `## Done When` section is present and non-empty
+///
+/// Used when promoting `proposed` tasks into the stint pipeline (`stint approve`) and
+/// by `stint check --strict`.
+pub fn check_pass_criteria(task: &Task) -> Vec<String> {
+    use crate::schema::has_non_empty_section;
+
+    if task.is_gate() {
+        return validate_gate_body(&task.body, task.frontmatter.status == TaskStatus::Done)
+            .into_iter()
+            .map(|s| format!("gate section '## {s}' is missing or empty"))
+            .collect();
+    }
+
+    let mut issues = Vec::new();
+    if task.frontmatter.priority.is_none() {
+        issues.push("missing required 'priority' (p0..p4)".to_owned());
+    }
+    if task.frontmatter.size.is_none() {
+        issues.push("missing required 'size' (s|m|l)".to_owned());
+    }
+    if !has_non_empty_section(&task.body, "Why") {
+        issues.push("missing or empty '## Why' section".to_owned());
+    }
+    if !has_non_empty_section(&task.body, "Done When") {
+        issues.push("missing or empty '## Done When' pass criteria section".to_owned());
+    }
+    issues
 }
 
 fn check_timestamp(

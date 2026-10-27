@@ -8,17 +8,21 @@ Single crate with `[lib]` and `[[bin]]` targets. Library modules handle schema, 
 
 ## Key Invariants
 
-- Library modules must have zero I/O. All file operations are `main.rs`'s job.
+- Library modules must have zero I/O. All file operations are `main.rs` / `cmds.rs` / `repo.rs`'s job.
 - `blocked_by`, `blocked_by_gh`, `gh_issue`, `area`, `tags` are all polymorphic: accept string or list in YAML, always stored as `Vec<T>` internally.
-- `priority` is optional: `p0` (highest) through `p4` (lowest). Omitted = unprioritized (sorts after all prioritized tasks in `stint next`).
-- `stint check` is the source of truth for schema validity. Add a new field = add a new check rule.
+- `status` lifecycle: `proposed` (draft idea / throwaway PRD outside pipeline), `backlog` (icebox), `todo` (committed pipeline), `in-progress` (claimed), `done`, `archived`.
+- `stint approve <id>` gates promotion from `proposed`/`backlog` to `todo` on pass criteria: `priority`, `size`, `## Why`, and `## Done When`.
+- Decision gates (`tags: [gate]`) require all 7 sections (`Ask`, `Options`, `Good answer`, `Test`, `Evidence`, `Links`, `Decision`), validated by `stint check`.
+- `stint guide` and `stint schema` are the built-in operational and schema references for agents and humans.
+- `stint check` (`--strict`) is the source of truth for schema and pass-criteria validity. Add a new field = add a new check rule.
 - Duration strings: `h` for hours, `m` for minutes, decimals allowed ("1.5h", "30m"). Parse at the core level.
 
-## Build
+## Build & Test
 
 ```bash
 cargo build
 cargo test
+node --test packages/pi-stint/test/*.test.js
 just publish-check
 ```
 
@@ -26,7 +30,7 @@ Use `just --list` for release/install helper commands.
 
 ## After Every Code Change
 
-Run `just install` immediately after any Rust change so the local binary is updated and can be tested by running bare `stint` (which opens the TUI in a terminal; there is no `tui` subcommand).
+Run `just install` immediately after any Rust change so the local binary (`~/.cargo/bin/stint`) is updated. Bare `stint` runs `stint status`; interactive visualization and command flows live in the Pi extension at `packages/pi-stint`.
 
 ## Releases
 
@@ -38,6 +42,7 @@ Run `just install` immediately after any Rust change so the local binary is upda
 
 ## Source of Truth
 
+- Built-in guide & schema → `stint guide` / `stint schema` (`src/guide.rs`)
 - Schema spec → `docs/PRD.md` (Frontmatter schema section)
 - CLI commands → `docs/PRD.md` (CLI Commands section)
 - Check rules → `docs/PRD.md` (stint check Validation Rules section)

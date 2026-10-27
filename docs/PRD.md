@@ -43,12 +43,14 @@ Each task is a single markdown file. Filename: `<id>-<slug>.md`.
 ---
 id: "0001"                        # required, zero-padded 4-digit string
 title: "Auth middleware"          # required, string
-status: backlog                   # required, enum: backlog|todo|in-progress|done|archived
-priority: p2                      # optional, enum: p0|p1|p2|p3|p4 (p0 = highest)
+status: backlog                   # required, enum: proposed|backlog|todo|in-progress|done|archived
+priority: p2                      # optional (required for todo pipeline), enum: p0|p1|p2|p3|p4 (p0 = highest)
+size: m                           # optional (required for todo pipeline), enum: s|m|l
 estimate: "4h"                    # optional, string (e.g. "2h", "30m", "1.5h")
 actual: "0h"                      # optional, string, time logged so far
 created_at: "2026-06-14T12:00:00Z" # optional, RFC3339 UTC timestamp
-sprint: "s12"                     # optional, string, sprint ID this task belongs to
+started_at: "2026-06-14T13:00:00Z" # optional, RFC3339 UTC timestamp
+completed_at: "2026-06-14T15:00:00Z" # optional, RFC3339 UTC timestamp
 blocked_by: []                    # optional, unified blocker list (see Blocker Model)
 gh_issue: []                      # optional, list OR single int/string of GH issue numbers
 area: []                          # optional, list OR string of area labels
@@ -58,24 +60,30 @@ tags: []                          # optional, list OR string of arbitrary tags
 
 **Coercion rule:** `blocked_by`, `gh_issue`, `area`, `tags` accept either a single scalar value or a list. The library normalizes all of these internally at parse time. `stint check` validates types after coercion.
 
-### Body
+### Body & Pass Criteria Contract
 
-Everything below `---` is freeform markdown. No structure enforced. Typical sections:
+Tasks in the active pipeline (`todo` / `in-progress`, promoted via `stint approve` or validated via `stint check --strict`) require `priority`, `size`, and two structured markdown sections:
 
 ```markdown
 ## Why
 
-Why this task exists and what problem it solves.
+Why this task exists, what problem it solves, and how it serves `NORTH_STAR.md`.
 
-## Gotchas
+## Done When
 
-Non-obvious constraints, prior attempts, things that will bite you.
+- [ ] Concrete, checkable pass criterion 1
+- [ ] Concrete, checkable pass criterion 2
 
 ## References
 
 - `src/auth/middleware.rs:142` — relevant code location
 - owner/repo#847 — upstream dependency
 ```
+
+### Decision Gate Contract (`tags: [gate]`)
+
+Human decision gates are tasks tagged `gate` (filed in `status: backlog` via `stint gate file` so `stint next` never schedules them as agent work). Every gate must include all 7 sections:
+`## Ask`, `## Options`, `## Good answer`, `## Test`, `## Evidence`, `## Links`, and `## Decision` (populated when resolved via `stint gate resolve`).
 
 ---
 
@@ -102,25 +110,42 @@ Non-obvious constraints, prior attempts, things that will bite you.
 
 ## CLI Commands
 
-### Task management
+### Task & Proposal management
 
 | Command | Description |
 |---|---|
-| `stint add "Title"` | Create a new task, open editor for body |
-| `stint add "Title" --priority p1 --size m --area cli --tags ergonomics --blocked-by 0002 --gh-issue 42` | Create a task with metadata set at creation time (comma-separated or repeated flags) |
-| `stint add "Title" --body-file body.md --no-edit` | Create a task headlessly: body read from a file (or `-` for stdin), skip opening $EDITOR |
-| `stint list` | List all tasks (filterable by status, sprint, area, tag) |
-| `stint list --sprint s12` | List tasks in a sprint |
-| `stint list --status in-progress` | Filter by status |
-| `stint show <id>` | Print full task (frontmatter + body) |
-| `stint edit <id>` | Open task file in $EDITOR |
-| `stint set <id> --area cli --tags ergonomics --blocked-by 0002 --gh-issue 42` | Headlessly replace a task's area/tags/blocked_by/gh_issue lists — no $EDITOR |
-| `stint set <id> --body-file body.md` | Headlessly replace a task's body from a file (or `-` for stdin) |
-| `stint claim <id>` | Mark task in-progress and set `started_at` (omit `<id>` to auto-claim the top ready task) |
-| `stint unclaim <id>` | Revert an in-progress task to todo, clearing `started_at` (inverse of `claim`) |
-| `stint done <id>` | Mark task done, prompt for actual time |
-| `stint log <id> <time>` | Add time to actual (e.g. `stint log 0001 2h`) |
-| `stint archive <id>` | Move task to archived status |
+| `stint add "Title" [--priority p1] [--size m] [--why ...] [--done-when ...] [--references ...] [--proposed] [--json]` | Create a new task or proposal (skips `$EDITOR` automatically when inline body flags or `--json` are supplied) |
+| `stint propose "Title" [--why ...] [--done-when ...] [--json]` | File a throwaway PRD / candidate idea in `status: proposed` outside the active pipeline |
+| `stint approve <id>... [--priority p1] [--size m] [--why ...] [--done-when ...] [--json]` | Validate pass criteria (`priority`, `size`, `## Why`, `## Done When`) and promote `proposed`/`backlog` task(s) to `todo` |
+| `stint reject <id>... [--reason "..."] [--json]` | Reject and archive a `proposed` (or `backlog`) task |
+| `stint list [--status ...] [--all] [--blocked] [--hide-blocked] [--json]` | List tasks (filterable by status, sprint, area, tag, priority) |
+| `stint show <id> [--json]` | Print full task (frontmatter, computed state, extracted sections, and body) |
+| `stint edit <id>` | Open task file in `$EDITOR` |
+| `stint set <id> [--title ...] [--priority ...] [--size ...] [--area ...] [--tags ...] [--blocked-by ...] [--add-blocked-by ...] [--remove-blocked-by ...] [--why ...] [--done-when ...] [--references ...] [--body-file ...] [--json]` | Headlessly mutate frontmatter and/or markdown sections without opening `$EDITOR` |
+| `stint next [--sprint sN] [--include-backlog] [--json]` | Show ready tasks ordered by priority + age (excluding area conflicts with `in-progress` tasks) |
+| `stint claim [<id>] [--json]` | Mark task `in-progress` and set `started_at` (omit `<id>` to auto-claim the top ready task) |
+| `stint unclaim <id> [--json]` | Revert an `in-progress` task to `todo`, clearing `started_at` |
+| `stint done <id> [<actual>] [--json]` | Mark task `done`, record actual time, and prune completed blocker from dependent tasks |
+| `stint log <id> <time>` | Add time to `actual` (e.g. `stint log 0001 2h`) |
+| `stint archive <id>` | Move task to `archived` status |
+
+### Decision Gate management (`stint gate`)
+
+| Command | Description |
+|---|---|
+| `stint gate file <blocked_task_id> "<title>" --ask ... --options ... --good-answer ... --evidence ... [--test ...] [--links ...] [--json]` | Atomically file a 7-section gate in `backlog`, append it to `<blocked_task_id>.blocked_by`, and unclaim `<blocked_task_id>` if `in-progress` |
+| `stint gate list [--all] [--json]` | List open (or all) human decision gates and which tasks they block |
+| `stint gate show <gate_id> [--json]` | Display a gate's parsed 7 sections and blocked task IDs |
+| `stint gate resolve <gate_id> --decision "..." [--json]` | Record the human decision in `## Decision`, mark the gate `done` (`0m`), and prune it from blocked tasks |
+
+### Built-in Guide, Schema & Validation
+
+| Command | Description |
+|---|---|
+| `stint guide [overview\|add\|propose\|implement\|gate\|check] [--json]` | Built-in operator guide (replaces external agent skill files) |
+| `stint schema [task\|gate\|sprint\|cli] [--json]` | Built-in frontmatter, section, and CLI schema reference |
+| `stint check [<id>] [--strict] [--cross-repo] [--json]` | Validate task graph (with `--strict`, enforces pass criteria on all `todo`/`in-progress` tasks) |
+| `stint status [--json]` | Summary: active, proposed, backlog, open gates, blocked tasks, sprint progress |
 
 ### Sprint management
 
@@ -131,43 +156,28 @@ Non-obvious constraints, prior attempts, things that will bite you.
 | `stint sprint show <id>` | Show sprint with task summaries |
 | `stint sprint add <sprint-id> <task-id>` | Append task to sprint |
 | `stint sprint remove <sprint-id> <task-id>` | Remove task from sprint |
-| `stint sprint reorder <id>` | Interactive reorder (uses $EDITOR) |
-
-### Validation
-
-| Command | Description |
-|---|---|
-| `stint check` | Validate entire task graph |
-| `stint check --cross-repo` | Also resolve cross-repo blocked_by refs |
-| `stint status` | Summary: open tasks, blocked tasks, sprint progress |
-
-### GitHub integration (optional)
-
-| Command | Description |
-|---|---|
-| `stint gh import <issue-number>` | Import a GH issue as a task |
-| `stint gh import --all --label "sprint-12"` | Batch import by label |
-| `stint gh sync <id>` | Push task status back to GH issue |
+| `stint sprint reorder <id>` | Interactive reorder (uses `$EDITOR`) |
 
 ---
 
 ## `stint check` Validation Rules
 
 1. All required fields present (`id`, `title`, `status`)
-2. `status` is a valid enum value
+2. `status` is a valid enum value (`proposed`, `backlog`, `todo`, `in-progress`, `done`, `archived`)
 3. `estimate` and `actual` are valid duration strings if present
 4. `blocked_by` local task refs resolve to existing task files
 5. `blocked_by` direct task-file paths resolve to existing, parseable task files whose `id` matches the filename prefix
 6. `blocked_by` external refs are structurally valid (format check only)
-6. `sprint` field references an existing sprint file if present
 7. Sprint index files reference only existing task IDs
 8. No circular `blocked_by` references
 9. `id` matches the numeric prefix of the filename
 10. No duplicate IDs across all task files
-11. No `in-progress`/`done` task has an unresolved local-task blocker (only `backlog`/`todo` tasks may carry active blockers)
+11. No `in-progress`/`done` task has an unresolved local-task blocker (only `proposed`/`backlog`/`todo` tasks may carry active blockers)
 12. Timestamp fields (`created_at`, `started_at`, `completed_at`) are valid RFC3339 if present
-13. A task listed in a sprint's index file must have a matching `sprint` frontmatter field (bidirectional consistency)
-14. A task with a `sprint` frontmatter field must be listed in that sprint's index file (bidirectional consistency)
+13. `started_at` and `completed_at` are required on `done` tasks (`started_at <= completed_at`)
+14. `started_at` is required on `in-progress` tasks
+15. Tasks tagged `gate` must contain non-empty `## Ask`, `## Options`, `## Good answer`, `## Test`, `## Evidence`, and `## Links` sections, plus a `## Decision` heading (non-empty when `status: done`)
+16. With `--strict` (and on `stint approve`), `todo` and `in-progress` tasks must have `priority`, `size`, non-empty `## Why`, and non-empty `## Done When`
 
 ---
 

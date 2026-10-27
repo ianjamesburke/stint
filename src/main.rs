@@ -1,15 +1,16 @@
 mod cmds;
 
 use std::env;
-use std::io::IsTerminal;
 use std::process::{self, Command};
 
 use anyhow::Context;
 use clap::{CommandFactory, Parser, Subcommand};
 use clap_complete::{generate, Shell};
+use serde_json::json;
 
+use stint::guide::{format_guide, format_schema, guide_json, schema_json};
 use stint::repo::StintRepo;
-use stint::tui;
+use stint::schema::TaskStatus;
 
 // ---------------------------------------------------------------------------
 // CLI definition
@@ -19,7 +20,7 @@ use stint::tui;
 #[command(
     name = "stint",
     version,
-    about = "Git-tracked sprint planning and task tracking"
+    about = "Git-tracked sprint planning, agent task management, and decision gating"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -41,7 +42,7 @@ enum Commands {
         repo: Option<String>,
     },
 
-    /// Create a new task and open $EDITOR for the body.
+    /// Create a new task and (when interactive and no body flags given) open $EDITOR.
     Add {
         /// Task title.
         title: String,
@@ -65,8 +66,17 @@ enum Commands {
         /// Linked GitHub issue numbers (comma-separated or repeated).
         #[arg(long = "gh-issue", value_delimiter = ',')]
         gh_issue: Vec<String>,
+        /// Inline `## Why` problem statement (skips $EDITOR).
+        #[arg(long)]
+        why: Option<String>,
+        /// Inline `## Done When` pass criteria bullet(s) (repeatable; skips $EDITOR).
+        #[arg(long = "done-when")]
+        done_when: Vec<String>,
+        /// Inline `## References` bullet(s) (repeatable; skips $EDITOR).
+        #[arg(long)]
+        references: Vec<String>,
         /// Body markdown source: a file path, or "-" to read from stdin.
-        /// Replaces the default Why/Gotchas/References template wholesale.
+        /// Replaces the default Why/Done When/References template wholesale.
         #[arg(long = "body-file")]
         body_file: Option<String>,
         /// Skip opening $EDITOR after creation.
@@ -76,12 +86,98 @@ enum Commands {
         /// that `stint next` schedules from.
         #[arg(long)]
         backlog: bool,
+        /// File the task in the `proposed` state (outside the active pipeline until `stint approve`).
+        #[arg(long)]
+        proposed: bool,
+        /// Output as JSON for agent/orchestrator consumption.
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Propose a candidate stint (`status: proposed`) outside the active ready queue.
+    Propose {
+        /// Proposal title.
+        title: String,
+        /// Optional priority level (p0|p1|p2|p3|p4).
+        #[arg(long)]
+        priority: Option<String>,
+        /// Optional size estimate (s|m|l).
+        #[arg(long)]
+        size: Option<String>,
+        /// Area/component labels (comma-separated or repeated).
+        #[arg(long, value_delimiter = ',')]
+        area: Vec<String>,
+        /// Tags (comma-separated or repeated).
+        #[arg(long, value_delimiter = ',')]
+        tags: Vec<String>,
+        /// Blocker references (comma-separated or repeated).
+        #[arg(long = "blocked-by", value_delimiter = ',')]
+        blocked_by: Vec<String>,
+        /// Linked GitHub issue numbers (comma-separated or repeated).
+        #[arg(long = "gh-issue", value_delimiter = ',')]
+        gh_issue: Vec<String>,
+        /// Inline `## Why` problem statement.
+        #[arg(long)]
+        why: Option<String>,
+        /// Inline `## Done When` pass criteria bullet(s) (repeatable).
+        #[arg(long = "done-when")]
+        done_when: Vec<String>,
+        /// Inline `## References` bullet(s) (repeatable).
+        #[arg(long)]
+        references: Vec<String>,
+        /// Body markdown source: a file path, or "-" to read from stdin.
+        #[arg(long = "body-file")]
+        body_file: Option<String>,
+        /// Skip opening $EDITOR after creation.
+        #[arg(long)]
+        no_edit: bool,
+        /// Output as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Approve proposed (or backlog) task(s) into `todo`, enforcing pass criteria (`priority`, `size`, `## Why`, `## Done When`).
+    Approve {
+        /// Task ID(s) to approve.
+        #[arg(required = true)]
+        ids: Vec<String>,
+        /// Set or override priority level (p0|p1|p2|p3|p4) before checking pass criteria.
+        #[arg(long)]
+        priority: Option<String>,
+        /// Set or override size estimate (s|m|l) before checking pass criteria.
+        #[arg(long)]
+        size: Option<String>,
+        /// Set or override `## Why` section before checking pass criteria.
+        #[arg(long)]
+        why: Option<String>,
+        /// Set or override `## Done When` pass criteria bullets (repeatable).
+        #[arg(long = "done-when")]
+        done_when: Vec<String>,
+        /// Move into `backlog` (icebox) instead of `todo`.
+        #[arg(long)]
+        backlog: bool,
+        /// Output as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Reject proposed (or backlog) task(s), archiving them.
+    Reject {
+        /// Task ID(s) to reject.
+        #[arg(required = true)]
+        ids: Vec<String>,
+        /// Optional rejection reason recorded under `## Rejected`.
+        #[arg(long)]
+        reason: Option<String>,
+        /// Output as JSON.
+        #[arg(long)]
+        json: bool,
     },
 
     /// List tasks, optionally filtered.
     #[command(alias = "ls")]
     List {
-        /// Filter by status (backlog|todo|in-progress|done|archived).
+        /// Filter by status (proposed|backlog|todo|in-progress|done|archived).
         #[arg(long)]
         status: Option<String>,
         /// Include done and archived tasks when no explicit status filter is set.
@@ -105,12 +201,18 @@ enum Commands {
         /// Filter by priority (p0|p1|p2|p3|p4).
         #[arg(long)]
         priority: Option<String>,
+        /// Output as JSON.
+        #[arg(long)]
+        json: bool,
     },
 
     /// Print a full task (frontmatter + body).
     Show {
         /// Task ID (full, partial, or with slug).
         id: String,
+        /// Output as JSON.
+        #[arg(long)]
+        json: bool,
     },
 
     /// Open a task file in $EDITOR.
@@ -119,10 +221,19 @@ enum Commands {
         id: String,
     },
 
-    /// Update an existing task's metadata or body without opening $EDITOR.
+    /// Update an existing task's metadata or body sections without opening $EDITOR.
     Set {
         /// Task ID.
         id: String,
+        /// Replace the task title.
+        #[arg(long)]
+        title: Option<String>,
+        /// Set priority (p0|p1|p2|p3|p4, or "" to clear).
+        #[arg(long)]
+        priority: Option<String>,
+        /// Set size (s|m|l, or "" to clear).
+        #[arg(long)]
+        size: Option<String>,
         /// Area/component labels (comma-separated or repeated). Replaces the existing list; "" clears it.
         #[arg(long, value_delimiter = ',')]
         area: Option<Vec<String>>,
@@ -132,12 +243,30 @@ enum Commands {
         /// Blocker references (comma-separated or repeated). Replaces the existing list; "" clears it.
         #[arg(long = "blocked-by", value_delimiter = ',')]
         blocked_by: Option<Vec<String>>,
+        /// Append blocker reference(s) without replacing existing blockers.
+        #[arg(long = "add-blocked-by", value_delimiter = ',')]
+        add_blocked_by: Vec<String>,
+        /// Remove specific blocker reference(s) from the existing list.
+        #[arg(long = "remove-blocked-by", value_delimiter = ',')]
+        remove_blocked_by: Vec<String>,
         /// Linked GitHub issue numbers (comma-separated or repeated). Replaces the existing list; "" clears it.
         #[arg(long = "gh-issue", value_delimiter = ',')]
         gh_issue: Option<Vec<String>>,
+        /// Replace the `## Why` section in the task body.
+        #[arg(long)]
+        why: Option<String>,
+        /// Replace the `## Done When` section in the task body (repeatable).
+        #[arg(long = "done-when")]
+        done_when: Vec<String>,
+        /// Replace the `## References` section in the task body (repeatable).
+        #[arg(long)]
+        references: Vec<String>,
         /// Body markdown source: a file path, or "-" to read from stdin. Replaces the body wholesale.
         #[arg(long = "body-file")]
         body_file: Option<String>,
+        /// Output as JSON.
+        #[arg(long)]
+        json: bool,
     },
 
     /// Remove one or more task files.
@@ -170,6 +299,9 @@ enum Commands {
     Unclaim {
         /// Task ID.
         id: String,
+        /// Output as JSON.
+        #[arg(long)]
+        json: bool,
     },
 
     /// Mark a task done and optionally record actual time.
@@ -185,6 +317,9 @@ enum Commands {
         /// Completion timestamp. Defaults to now.
         #[arg(long)]
         completed_at: Option<String>,
+        /// Output as JSON.
+        #[arg(long)]
+        json: bool,
     },
 
     /// Add time to a task's actual field (accumulates).
@@ -241,6 +376,12 @@ enum Commands {
         tag: Option<String>,
     },
 
+    /// Human decision gates (file, list, show, resolve).
+    Gate {
+        #[command(subcommand)]
+        command: GateCommands,
+    },
+
     /// Sprint management sub-commands.
     Sprint {
         #[command(subcommand)]
@@ -254,10 +395,38 @@ enum Commands {
         /// Walk sibling repositories and validate cross-repo references (stub; not yet implemented).
         #[arg(long)]
         cross_repo: bool,
+        /// Enforce pass criteria (`priority`, `size`, `## Why`, `## Done When`) on all todo/in-progress tasks.
+        #[arg(long)]
+        strict: bool,
+        /// Output as JSON.
+        #[arg(long)]
+        json: bool,
     },
 
-    /// Show a summary: open tasks, blocked tasks, current sprint progress.
-    Status,
+    /// Show a summary: active tasks, proposed tasks, open gates, blocked tasks, and sprint progress.
+    Status {
+        /// Output as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Built-in operator guide (workflow map, task authoring, proposals, implementation, gates, check).
+    Guide {
+        /// Guide topic: overview, add, propose, implement, gate, check.
+        topic: Option<String>,
+        /// Output as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Print the machine-readable schema for tasks, gates, sprints, or the CLI.
+    Schema {
+        /// Schema kind: task, gate, sprint, cli.
+        kind: Option<String>,
+        /// Output as JSON (default is pretty JSON).
+        #[arg(long)]
+        json: bool,
+    },
 
     /// Update stint from crates.io through cargo install.
     Update,
@@ -266,6 +435,73 @@ enum Commands {
     Completions {
         /// Shell to generate completions for.
         shell: Shell,
+    },
+}
+
+#[derive(Subcommand)]
+enum GateCommands {
+    /// File a 7-section decision gate, wire it as a blocker on <blocked-task-id>, and unclaim <blocked-task-id>.
+    File {
+        /// ID of the stalled task that is blocked on this decision.
+        blocked_task_id: String,
+        /// Short title for the gate (`gate: ` prefix added automatically).
+        title: String,
+        /// One-sentence question for the human (`## Ask`).
+        #[arg(long)]
+        ask: Option<String>,
+        /// Concrete choice(s), recommended first (`## Options`; repeatable).
+        #[arg(long)]
+        options: Vec<String>,
+        /// Criteria that make an answer sufficient to unblock (`## Good answer`).
+        #[arg(long = "good-answer")]
+        good_answer: Option<String>,
+        /// Commands or steps for the human to run/review (`## Test`; defaults to "none").
+        #[arg(long)]
+        test: Option<String>,
+        /// Condensed findings so far (`## Evidence`).
+        #[arg(long)]
+        evidence: Option<String>,
+        /// Relevant task IDs, branches, PRs, or file:line paths (`## Links`; repeatable).
+        #[arg(long)]
+        links: Vec<String>,
+        /// Full 7-section markdown file path (or "-" for stdin) instead of inline flags.
+        #[arg(long = "body-file")]
+        body_file: Option<String>,
+        /// Output as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// List open human decision gates and the tasks they block.
+    #[command(alias = "ls")]
+    List {
+        /// Include resolved (`done`) and `archived` gates.
+        #[arg(long)]
+        all: bool,
+        /// Output as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Inspect a decision gate and the tasks it blocks.
+    Show {
+        /// Gate task ID.
+        id: String,
+        /// Output as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Record the human decision in `## Decision`, mark the gate done, and unblock waiting tasks.
+    Resolve {
+        /// Gate task ID.
+        id: String,
+        /// Decision text to write into `## Decision`.
+        #[arg(long)]
+        decision: String,
+        /// Output as JSON.
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -330,12 +566,9 @@ fn run(cli: Cli) -> anyhow::Result<()> {
     match cli.command {
         None => {
             let repo = find_repo()?;
-            if std::io::stdout().is_terminal() {
-                tui::run(repo)?;
-            } else {
-                cmds::cmd_status(&repo)?;
-            }
+            cmds::cmd_status(&repo)?;
         }
+
         Some(Commands::Init {
             force,
             with_github,
@@ -360,9 +593,76 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             tags,
             blocked_by,
             gh_issue,
+            why,
+            done_when,
+            references,
             body_file,
             no_edit,
             backlog,
+            proposed,
+            json,
+        }) => {
+            if backlog && proposed {
+                anyhow::bail!("--backlog and --proposed cannot be used together");
+            }
+            let repo = find_repo()?;
+            let edits = cmds::TaskFieldEdits {
+                area: Some(area),
+                tags: Some(tags),
+                blocked_by: Some(blocked_by),
+                gh_issue: Some(gh_issue),
+                body_source: body_file,
+            };
+            let status = if proposed {
+                TaskStatus::Proposed
+            } else if backlog {
+                TaskStatus::Backlog
+            } else {
+                TaskStatus::Todo
+            };
+            let opts = cmds::AddTaskOptions {
+                title: &title,
+                priority: priority.as_deref(),
+                size: size.as_deref(),
+                edits: &edits,
+                why: why.as_deref(),
+                done_when: &done_when,
+                references: &references,
+                no_edit: no_edit || json,
+                status: status.clone(),
+            };
+            let path = cmds::cmd_add_ext(&repo, &opts)?;
+            let task = repo.read_task(&path)?;
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&json!({
+                        "id": task.frontmatter.id,
+                        "title": task.frontmatter.title,
+                        "status": status.as_str(),
+                        "path": path.to_string_lossy(),
+                    }))
+                    .unwrap()
+                );
+            } else {
+                println!("{}", path.display());
+            }
+        }
+
+        Some(Commands::Propose {
+            title,
+            priority,
+            size,
+            area,
+            tags,
+            blocked_by,
+            gh_issue,
+            why,
+            done_when,
+            references,
+            body_file,
+            no_edit,
+            json,
         }) => {
             let repo = find_repo()?;
             let edits = cmds::TaskFieldEdits {
@@ -372,16 +672,97 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 gh_issue: Some(gh_issue),
                 body_source: body_file,
             };
-            let path = cmds::cmd_add(
+            let opts = cmds::AddTaskOptions {
+                title: &title,
+                priority: priority.as_deref(),
+                size: size.as_deref(),
+                edits: &edits,
+                why: why.as_deref(),
+                done_when: &done_when,
+                references: &references,
+                no_edit: no_edit || json,
+                status: TaskStatus::Proposed,
+            };
+            let path = cmds::cmd_add_ext(&repo, &opts)?;
+            let task = repo.read_task(&path)?;
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&json!({
+                        "id": task.frontmatter.id,
+                        "title": task.frontmatter.title,
+                        "status": "proposed",
+                        "path": path.to_string_lossy(),
+                    }))
+                    .unwrap()
+                );
+            } else {
+                println!("proposed: {}", path.display());
+            }
+        }
+
+        Some(Commands::Approve {
+            ids,
+            priority,
+            size,
+            why,
+            done_when,
+            backlog,
+            json,
+        }) => {
+            let repo = find_repo()?;
+            let paths = cmds::cmd_approve(
                 &repo,
-                &title,
+                &ids,
                 priority.as_deref(),
                 size.as_deref(),
-                &edits,
-                no_edit,
+                why.as_deref(),
+                &done_when,
                 backlog,
             )?;
-            println!("{}", path.display());
+            if json {
+                let items: Vec<_> = paths
+                    .iter()
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .collect();
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&json!({
+                        "approved": ids,
+                        "status": if backlog { "backlog" } else { "todo" },
+                        "paths": items,
+                    }))
+                    .unwrap()
+                );
+            } else {
+                for path in paths {
+                    println!("approved: {}", path.display());
+                }
+            }
+        }
+
+        Some(Commands::Reject { ids, reason, json }) => {
+            let repo = find_repo()?;
+            let paths = cmds::cmd_reject(&repo, &ids, reason.as_deref())?;
+            if json {
+                let items: Vec<_> = paths
+                    .iter()
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .collect();
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&json!({
+                        "rejected": ids,
+                        "status": "archived",
+                        "paths": items,
+                    }))
+                    .unwrap()
+                );
+            } else {
+                for path in paths {
+                    println!("rejected: {}", path.display());
+                }
+            }
         }
 
         Some(Commands::List {
@@ -393,6 +774,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             area,
             tag,
             priority,
+            json,
         }) => {
             let repo = find_repo()?;
             if blocked && hide_blocked {
@@ -415,12 +797,20 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 tag.as_deref(),
                 priority.as_deref(),
             )?;
-            cmds::print_list(&rows);
+            if json {
+                cmds::print_list_json(&rows);
+            } else {
+                cmds::print_list(&rows);
+            }
         }
 
-        Some(Commands::Show { id }) => {
+        Some(Commands::Show { id, json }) => {
             let repo = find_repo()?;
-            cmds::cmd_show(&repo, &id)?;
+            if json {
+                cmds::print_show_json(&repo, &id)?;
+            } else {
+                cmds::cmd_show(&repo, &id)?;
+            }
         }
 
         Some(Commands::Edit { id }) => {
@@ -430,22 +820,52 @@ fn run(cli: Cli) -> anyhow::Result<()> {
 
         Some(Commands::Set {
             id,
+            title,
+            priority,
+            size,
             area,
             tags,
             blocked_by,
+            add_blocked_by,
+            remove_blocked_by,
             gh_issue,
+            why,
+            done_when,
+            references,
             body_file,
+            json,
         }) => {
             let repo = find_repo()?;
-            let edits = cmds::TaskFieldEdits {
-                area,
-                tags,
-                blocked_by,
-                gh_issue,
-                body_source: body_file,
+            let opts = cmds::SetTaskOptions {
+                edits: cmds::TaskFieldEdits {
+                    area,
+                    tags,
+                    blocked_by,
+                    gh_issue,
+                    body_source: body_file,
+                },
+                title,
+                priority,
+                size,
+                add_blocked_by,
+                remove_blocked_by,
+                why,
+                done_when,
+                references,
             };
-            let path = cmds::cmd_set(&repo, &id, &edits)?;
-            println!("{}", path.display());
+            let path = cmds::cmd_set_ext(&repo, &id, &opts)?;
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&json!({
+                        "updated": id,
+                        "path": path.to_string_lossy(),
+                    }))
+                    .unwrap()
+                );
+            } else {
+                println!("{}", path.display());
+            }
         }
 
         Some(Commands::Remove { ids }) => {
@@ -474,10 +894,21 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             )?;
         }
 
-        Some(Commands::Unclaim { id }) => {
+        Some(Commands::Unclaim { id, json }) => {
             let repo = find_repo()?;
             let path = cmds::cmd_unclaim(&repo, &id)?;
-            println!("unclaimed: {}", path.display());
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&json!({
+                        "unclaimed": id,
+                        "path": path.to_string_lossy(),
+                    }))
+                    .unwrap()
+                );
+            } else {
+                println!("unclaimed: {}", path.display());
+            }
         }
 
         Some(Commands::Done {
@@ -485,6 +916,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             actual,
             started_at,
             completed_at,
+            json,
         }) => {
             let repo = find_repo()?;
             let path = cmds::cmd_done(
@@ -494,19 +926,32 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 started_at.as_deref(),
                 completed_at.as_deref(),
             )?;
-            println!("done: {}", path.display());
             let unblocked = cmds::tasks_unblocked_by_done(&repo, &id)?;
             let pruned = cmds::prune_done_blocker_refs(&repo, &id)?;
-            if !unblocked.is_empty() {
-                println!("unblocked:");
-                for task in unblocked {
-                    println!("  {} {}", task.id, task.title);
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&json!({
+                        "done": id,
+                        "path": path.to_string_lossy(),
+                        "unblocked": unblocked.iter().map(|t| json!({"id": t.id, "title": t.title})).collect::<Vec<_>>(),
+                        "pruned": pruned.iter().map(|t| json!({"id": t.id, "title": t.title})).collect::<Vec<_>>(),
+                    }))
+                    .unwrap()
+                );
+            } else {
+                println!("done: {}", path.display());
+                if !unblocked.is_empty() {
+                    println!("unblocked:");
+                    for task in unblocked {
+                        println!("  {} {}", task.id, task.title);
+                    }
                 }
-            }
-            if !pruned.is_empty() {
-                println!("pruned blockers:");
-                for task in pruned {
-                    println!("  {} {}", task.id, task.title);
+                if !pruned.is_empty() {
+                    println!("pruned blockers:");
+                    for task in pruned {
+                        println!("  {} {}", task.id, task.title);
+                    }
                 }
             }
         }
@@ -559,6 +1004,163 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             }
         }
 
+        Some(Commands::Gate { command }) => match command {
+            GateCommands::File {
+                blocked_task_id,
+                title,
+                ask,
+                options,
+                good_answer,
+                test,
+                evidence,
+                links,
+                body_file,
+                json,
+            } => {
+                let repo = find_repo()?;
+                let opts = cmds::GateFileOptions {
+                    blocked_task_id: &blocked_task_id,
+                    title: &title,
+                    body_source: body_file.as_deref(),
+                    ask: ask.as_deref(),
+                    options: &options,
+                    good_answer: good_answer.as_deref(),
+                    test: test.as_deref(),
+                    evidence: evidence.as_deref(),
+                    links: &links,
+                };
+                let report = cmds::cmd_gate_file(&repo, &opts)?;
+                if json {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&json!({
+                            "gate_id": report.gate_id,
+                            "gate_path": report.gate_path.to_string_lossy(),
+                            "blocked_task_id": report.blocked_task_id,
+                            "unclaimed": report.unclaimed,
+                            "ask": report.ask,
+                        }))
+                        .unwrap()
+                    );
+                } else {
+                    println!("[GATED] Stint {}", report.blocked_task_id);
+                    println!("Gate:   {} ({})", report.gate_id, report.gate_path.display());
+                    println!("Ask:    {}", report.ask);
+                    println!(
+                        "Blocks: {} now blocked_by {}{}",
+                        report.blocked_task_id,
+                        report.gate_id,
+                        if report.unclaimed {
+                            " (unclaimed -> todo)"
+                        } else {
+                            ""
+                        }
+                    );
+                }
+            }
+
+            GateCommands::List { all, json } => {
+                let repo = find_repo()?;
+                let gates = cmds::cmd_gate_list(&repo, all)?;
+                if json {
+                    let payload: Vec<_> = gates
+                        .iter()
+                        .map(|g| {
+                            json!({
+                                "id": g.id,
+                                "title": g.title,
+                                "status": g.status,
+                                "priority": g.priority,
+                                "ask": g.ask,
+                                "options": g.options,
+                                "good_answer": g.good_answer,
+                                "test": g.test,
+                                "evidence": g.evidence,
+                                "links": g.links,
+                                "decision": g.decision,
+                                "blocks": g.blocks,
+                                "path": g.path.to_string_lossy(),
+                            })
+                        })
+                        .collect();
+                    println!("{}", serde_json::to_string_pretty(&payload).unwrap());
+                } else if gates.is_empty() {
+                    println!("(no open gates)");
+                } else {
+                    for g in &gates {
+                        let blocks = if g.blocks.is_empty() {
+                            String::new()
+                        } else {
+                            format!(" [blocks: {}]", g.blocks.join(", "))
+                        };
+                        println!("{}  {}  ({}){}", g.id, g.title, g.status, blocks);
+                        if let Some(ask) = &g.ask {
+                            if !ask.is_empty() {
+                                println!("      Ask: {}", ask.lines().next().unwrap_or(""));
+                            }
+                        }
+                    }
+                }
+            }
+
+            GateCommands::Show { id, json } => {
+                let repo = find_repo()?;
+                let g = cmds::cmd_gate_show(&repo, &id)?;
+                if json {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&json!({
+                            "id": g.id,
+                            "title": g.title,
+                            "status": g.status,
+                            "priority": g.priority,
+                            "ask": g.ask,
+                            "options": g.options,
+                            "good_answer": g.good_answer,
+                            "test": g.test,
+                            "evidence": g.evidence,
+                            "links": g.links,
+                            "decision": g.decision,
+                            "blocks": g.blocks,
+                            "path": g.path.to_string_lossy(),
+                        }))
+                        .unwrap()
+                    );
+                } else {
+                    cmds::cmd_show(&repo, &id)?;
+                    if !g.blocks.is_empty() {
+                        println!("\nBlocks tasks: {}", g.blocks.join(", "));
+                    }
+                }
+            }
+
+            GateCommands::Resolve { id, decision, json } => {
+                let repo = find_repo()?;
+                let report = cmds::cmd_gate_resolve(&repo, &id, &decision)?;
+                if json {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&json!({
+                            "resolved": report.gate_id,
+                            "path": report.gate_path.to_string_lossy(),
+                            "decision": report.decision,
+                            "unblocked": report.unblocked.iter().map(|t| json!({"id": t.id, "title": t.title})).collect::<Vec<_>>(),
+                            "pruned": report.pruned.iter().map(|t| json!({"id": t.id, "title": t.title})).collect::<Vec<_>>(),
+                        }))
+                        .unwrap()
+                    );
+                } else {
+                    println!("resolved gate {}: {}", report.gate_id, report.gate_path.display());
+                    if !report.unblocked.is_empty() {
+                        println!("unblocked:");
+                        for task in report.unblocked {
+                            println!("  {} {}", task.id, task.title);
+                        }
+                    }
+                }
+            }
+        },
+
         Some(Commands::Sprint { command }) => match command {
             SprintCommands::New {
                 id,
@@ -594,10 +1196,29 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             }
         },
 
-        Some(Commands::Check { id, cross_repo }) => {
+        Some(Commands::Check {
+            id,
+            cross_repo,
+            strict,
+            json,
+        }) => {
             let repo = find_repo()?;
-            let errors = cmds::cmd_check(&repo, cross_repo, id.as_deref())?;
-            if errors.is_empty() {
+            let (errors, advisories) =
+                cmds::cmd_check_ext(&repo, cross_repo, id.as_deref(), strict)?;
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&json!({
+                        "ok": errors.is_empty(),
+                        "errors": errors,
+                        "advisories": advisories,
+                    }))
+                    .unwrap()
+                );
+                if !errors.is_empty() {
+                    process::exit(1);
+                }
+            } else if errors.is_empty() {
                 println!("ok");
             } else {
                 for e in &errors {
@@ -607,9 +1228,33 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             }
         }
 
-        Some(Commands::Status) => {
+        Some(Commands::Status { json }) => {
             let repo = find_repo()?;
-            cmds::cmd_status(&repo)?;
+            if json {
+                cmds::print_status_json(&repo)?;
+            } else {
+                cmds::cmd_status(&repo)?;
+            }
+        }
+
+        Some(Commands::Guide { topic, json }) => {
+            if json {
+                let val = guide_json(topic.as_deref()).map_err(|e| anyhow::anyhow!("{}", e))?;
+                println!("{}", serde_json::to_string_pretty(&val)?);
+            } else {
+                let text = format_guide(topic.as_deref()).map_err(|e| anyhow::anyhow!("{}", e))?;
+                print!("{}", text);
+            }
+        }
+
+        Some(Commands::Schema { kind, json }) => {
+            if json {
+                let val = schema_json(kind.as_deref()).map_err(|e| anyhow::anyhow!("{}", e))?;
+                println!("{}", serde_json::to_string_pretty(&val)?);
+            } else {
+                let text = format_schema(kind.as_deref()).map_err(|e| anyhow::anyhow!("{}", e))?;
+                println!("{}", text);
+            }
         }
 
         Some(Commands::Update) => {

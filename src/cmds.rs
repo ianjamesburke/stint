@@ -12,15 +12,18 @@ use owo_colors::OwoColorize;
 use anyhow::{bail, Context};
 use chrono::{DateTime, SecondsFormat, Utc};
 use fs2::FileExt;
-use stint::check::check;
+use stint::check::{check, check_pass_criteria, validate_gate_body};
 use stint::duration::Duration;
 use stint::mutate::{
-    add_actual, clear_started_at, minimal_frontmatter, new_sprint_content, new_task_content,
-    next_task_id, resolve_id, restart_task, set_actual, set_completed_at, set_started_at_if_absent,
-    set_status, title_to_slug, DEFAULT_TASK_BODY,
+    add_actual, append_blockers, build_gate_body, build_task_body, clear_started_at,
+    minimal_frontmatter, new_sprint_content, new_task_content, next_task_id, remove_blockers,
+    resolve_id, restart_task, set_actual, set_completed_at, set_started_at_if_absent, set_status,
+    title_to_slug, DEFAULT_TASK_BODY,
 };
 use stint::next::{compute_next, compute_next_with_resolution, NextOptions, NextReport, NextTask};
-use stint::schema::{BlockedByRef, Sprint, TaskStatus};
+use stint::schema::{
+    extract_section, set_section, BlockedByRef, Priority, Size, Sprint, TaskStatus,
+};
 use stint::serialize::serialize_task;
 use stint::sprint::{
     normalize_sprint_id, numeric_prefix, sprint_add_task, sprint_remove_task, task_link,
@@ -278,6 +281,7 @@ fn read_body_source(source: &str) -> anyhow::Result<String> {
 
 /// Create a new task file, apply any field overrides, open `$EDITOR` unless
 /// `no_edit` is set, and print the created path.
+#[allow(dead_code)]
 pub fn cmd_add(
     repo: &StintRepo,
     title: &str,
@@ -382,6 +386,7 @@ where
 
 /// Apply field overrides to an existing task's frontmatter and/or body.
 /// Never opens `$EDITOR` — the headless counterpart to `stint edit`.
+#[allow(dead_code)]
 pub fn cmd_set(
     repo: &StintRepo,
     id_input: &str,
@@ -498,6 +503,7 @@ fn paint_state(state: &str, width: usize, on: bool) -> String {
         "ready" => field.green().to_string(),
         "active" => field.cyan().bold().to_string(),
         "blocked" => field.yellow().to_string(),
+        "proposed" => field.magenta().to_string(),
         "done" | "archived" => field.bright_black().to_string(),
         "backlog" => field.dimmed().to_string(),
         _ => field,
@@ -586,46 +592,56 @@ pub fn cmd_show(repo: &StintRepo, id_input: &str) -> anyhow::Result<()> {
     let direct_resolution = repo.resolve_direct_task_path_blockers(&tasks)?;
     let active =
         active_blockers_with_resolution(&task, &done, &direct_resolution.blocker_resolution);
+    let state = classify_with_resolution(&task, &done, &direct_resolution.blocker_resolution);
     let fm = &task.frontmatter;
 
     // Look up sprint membership from the index files.
     let sprint_id = task_to_sprint_map(&sprints).get(fm.id.as_str()).cloned();
 
-    println!("ID:          {}", fm.id);
-    println!("Title:       {}", fm.title);
-    println!("Status:      {}", fm.status);
+    println!("ID:           {}", fm.id);
+    println!("Title:        {}", fm.title);
+    println!("Status:       {} ({})", fm.status, state.as_str());
     if let Some(p) = &fm.priority {
-        println!("Priority:    {}", p);
+        println!("Priority:     {}", p);
     }
     if let Some(s) = &fm.size {
-        println!("Size:        {}", s);
+        println!("Size:         {}", s);
     }
     if let Some(e) = &fm.estimate {
-        println!("Estimate:    {}", e);
+        println!("Estimate:     {}", e);
     }
     if let Some(a) = &fm.actual {
-        println!("Actual:      {}", a);
+        println!("Actual:       {}", a);
+    }
+    if let Some(created_at) = &fm.created_at {
+        println!("Created at:   {}", created_at);
     }
     if let Some(started_at) = &fm.started_at {
-        println!("Started at:  {}", started_at);
+        println!("Started at:   {}", started_at);
     }
     if let Some(completed_at) = &fm.completed_at {
-        println!("Completed at:{}", completed_at);
+        println!("Completed at: {}", completed_at);
     }
     if let Some(s) = &sprint_id {
-        println!("Sprint:      {}", s);
+        println!("Sprint:       {}", s);
     }
     if !active.is_empty() {
-        println!("Blocked by:  {}", format_blockers_inline(&active));
+        println!("Blocked by:   {}", format_blockers_inline(&active));
     }
     if !fm.area.is_empty() {
-        println!("Area:        {}", fm.area.join(", "));
+        println!("Area:         {}", fm.area.join(", "));
     }
     if !fm.tags.is_empty() {
-        println!("Tags:        {}", fm.tags.join(", "));
+        println!("Tags:         {}", fm.tags.join(", "));
     }
+    let rel_path = repo
+        .stint_dir
+        .parent()
+        .and_then(|root| path.strip_prefix(root).ok())
+        .unwrap_or(&path);
+    println!("Path:         {}", rel_path.display());
     if !task.body.is_empty() {
-        println!();
+        println!("\n{}", "─".repeat(60));
         print!("{}", task.body);
     }
     Ok(())
@@ -1505,11 +1521,31 @@ pub fn cmd_status(repo: &StintRepo) -> anyhow::Result<()> {
     );
 
     let active_count = report.open_count.saturating_sub(report.backlog_count);
-    println!("Active:  {} (todo/in-progress)", active_count);
-    println!("Backlog: {} (icebox)", report.backlog_count);
+    println!("Active:   {} (todo/in-progress)", active_count);
+    println!("Backlog:  {} (icebox)", report.backlog_count);
+    if report.proposed_count > 0 {
+        println!("Proposed: {} (awaiting approval)", report.proposed_count);
+    }
+
+    if !report.open_gates.is_empty() {
+        println!("Gates ({}):", report.open_gates.len());
+        for gate in &report.open_gates {
+            let blocks = if gate.blocks.is_empty() {
+                String::new()
+            } else {
+                format!(" (blocks {})", gate.blocks.join(", "))
+            };
+            println!("  {} {}{}", gate.id, gate.title, blocks);
+            if let Some(ask) = &gate.ask {
+                if let Some(first_line) = ask.lines().next() {
+                    println!("       Ask: {}", truncate(first_line.trim(), 64));
+                }
+            }
+        }
+    }
 
     if report.blocked_tasks.is_empty() {
-        println!("Blocked:    none");
+        println!("Blocked:  none");
     } else {
         println!("Blocked ({}):", report.blocked_tasks.len());
         for bt in &report.blocked_tasks {
@@ -1541,6 +1577,813 @@ pub fn cmd_status(repo: &StintRepo) -> anyhow::Result<()> {
 }
 
 // ---------------------------------------------------------------------------
+// Extended Add / Propose / Approve / Reject / Set
+// ---------------------------------------------------------------------------
+
+/// Options for creating a task or proposal via `cmd_add_ext`.
+pub struct AddTaskOptions<'a> {
+    pub title: &'a str,
+    pub priority: Option<&'a str>,
+    pub size: Option<&'a str>,
+    pub edits: &'a TaskFieldEdits,
+    pub why: Option<&'a str>,
+    pub done_when: &'a [String],
+    pub references: &'a [String],
+    pub no_edit: bool,
+    pub status: TaskStatus,
+}
+
+/// Create a task with optional inline body sections (`--why`, `--done-when`, `--references`)
+/// and explicit initial `TaskStatus` (`Todo`, `Backlog`, or `Proposed`).
+pub fn cmd_add_ext(repo: &StintRepo, opts: &AddTaskOptions<'_>) -> anyhow::Result<PathBuf> {
+    let parsed_priority = opts
+        .priority
+        .map(|p| {
+            p.parse::<Priority>()
+                .map_err(|e| anyhow::anyhow!("{}", e))
+        })
+        .transpose()?;
+
+    let parsed_size = opts
+        .size
+        .map(|s| s.parse::<Size>().map_err(|e| anyhow::anyhow!("{}", e)))
+        .transpose()?;
+
+    let has_inline_body =
+        opts.why.is_some() || !opts.done_when.is_empty() || !opts.references.is_empty();
+
+    let body = match &opts.edits.body_source {
+        Some(source) => read_body_source(source)?,
+        None if has_inline_body => build_task_body(opts.why, opts.done_when, opts.references),
+        None => DEFAULT_TASK_BODY.to_owned(),
+    };
+
+    let slug = title_to_slug(opts.title);
+    let created_at = timestamp_or_now(None)?;
+
+    repo.ensure_dirs()?;
+    let path = with_add_lock(repo, || {
+        let tasks = repo.load_tasks()?;
+        let id = next_task_id(&tasks);
+        let filename = if slug.is_empty() {
+            format!("{}.md", id)
+        } else {
+            format!("{}-{}.md", id, slug)
+        };
+        let path = repo.tasks_dir().join(&filename);
+
+        let mut frontmatter = minimal_frontmatter(&id, opts.title);
+        frontmatter.status = opts.status.clone();
+        frontmatter.priority = parsed_priority;
+        frontmatter.size = parsed_size;
+        frontmatter.created_at = Some(created_at);
+        frontmatter.area = clean_list(opts.edits.area.as_deref().unwrap_or_default());
+        frontmatter.tags = clean_list(opts.edits.tags.as_deref().unwrap_or_default());
+        frontmatter.gh_issue = clean_list(opts.edits.gh_issue.as_deref().unwrap_or_default());
+        frontmatter.blocked_by = clean_list(opts.edits.blocked_by.as_deref().unwrap_or_default())
+            .iter()
+            .map(|s| BlockedByRef::from_str(s))
+            .collect();
+
+        let task = stint::schema::Task {
+            frontmatter,
+            body,
+            filename,
+        };
+        repo.write_task(&path, &serialize_task(&task))?;
+        Ok(path)
+    })?;
+
+    let skip_editor = opts.no_edit || opts.edits.body_source.is_some() || has_inline_body;
+    if !skip_editor {
+        open_editor(&path)?;
+    }
+    Ok(path)
+}
+
+/// Approve one or more `proposed` (or `backlog`) tasks into the active stint pipeline (`todo`),
+/// enforcing that `priority`, `size`, `## Why`, and `## Done When` are present.
+pub fn cmd_approve(
+    repo: &StintRepo,
+    ids: &[String],
+    priority: Option<&str>,
+    size: Option<&str>,
+    why: Option<&str>,
+    done_when: &[String],
+    to_backlog: bool,
+) -> anyhow::Result<Vec<PathBuf>> {
+    if ids.is_empty() {
+        bail!("at least one task id is required");
+    }
+
+    let parsed_priority = priority
+        .map(|p| {
+            p.parse::<Priority>()
+                .map_err(|e| anyhow::anyhow!("{}", e))
+        })
+        .transpose()?;
+    let parsed_size = size
+        .map(|s| s.parse::<Size>().map_err(|e| anyhow::anyhow!("{}", e)))
+        .transpose()?;
+
+    let mut approved = Vec::with_capacity(ids.len());
+    for id_input in ids {
+        let path = repo.resolve_task_path(id_input)?;
+        let mut task = repo.read_task(&path)?;
+
+        if !matches!(
+            task.frontmatter.status,
+            TaskStatus::Proposed | TaskStatus::Backlog
+        ) {
+            bail!(
+                "task {} has status {}; only proposed or backlog tasks can be approved",
+                task.id(),
+                task.frontmatter.status
+            );
+        }
+
+        if let Some(p) = parsed_priority {
+            task.frontmatter.priority = Some(p);
+        }
+        if let Some(s) = parsed_size {
+            task.frontmatter.size = Some(s);
+        }
+        if let Some(w) = why {
+            task.body = set_section(&task.body, "Why", w);
+        }
+        if !done_when.is_empty() {
+            let bullets = done_when
+                .iter()
+                .map(|item| {
+                    let t = item.trim();
+                    if t.starts_with("- ") || t.starts_with("* ") {
+                        t.to_owned()
+                    } else {
+                        format!("- {t}")
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            task.body = set_section(&task.body, "Done When", &bullets);
+        }
+
+        if !to_backlog {
+            let missing = check_pass_criteria(&task);
+            if !missing.is_empty() {
+                bail!(
+                    "task {} cannot enter the todo pipeline ({}): {}\n  Supply --priority, --size, --why, --done-when or edit the task first.",
+                    task.id(),
+                    path.display(),
+                    missing.join("; ")
+                );
+            }
+        }
+
+        set_status(
+            &mut task,
+            if to_backlog {
+                TaskStatus::Backlog
+            } else {
+                TaskStatus::Todo
+            },
+        );
+        repo.write_task(&path, &serialize_task(&task))?;
+        approved.push(path);
+    }
+
+    Ok(approved)
+}
+
+/// Reject one or more `proposed` (or `backlog`) tasks, moving them to `archived`.
+pub fn cmd_reject(
+    repo: &StintRepo,
+    ids: &[String],
+    reason: Option<&str>,
+) -> anyhow::Result<Vec<PathBuf>> {
+    if ids.is_empty() {
+        bail!("at least one task id is required");
+    }
+
+    let mut rejected = Vec::with_capacity(ids.len());
+    for id_input in ids {
+        let path = repo.resolve_task_path(id_input)?;
+        let mut task = repo.read_task(&path)?;
+        if let Some(r) = reason.map(str::trim).filter(|s| !s.is_empty()) {
+            task.body = set_section(&task.body, "Rejected", r);
+        }
+        set_status(&mut task, TaskStatus::Archived);
+        repo.write_task(&path, &serialize_task(&task))?;
+        rejected.push(path);
+    }
+
+    Ok(rejected)
+}
+
+/// Extended options for `stint set`.
+#[derive(Debug, Default)]
+pub struct SetTaskOptions {
+    pub edits: TaskFieldEdits,
+    pub title: Option<String>,
+    pub priority: Option<String>,
+    pub size: Option<String>,
+    pub add_blocked_by: Vec<String>,
+    pub remove_blocked_by: Vec<String>,
+    pub why: Option<String>,
+    pub done_when: Vec<String>,
+    pub references: Vec<String>,
+}
+
+impl SetTaskOptions {
+    pub fn is_empty(&self) -> bool {
+        self.edits.is_empty()
+            && self.title.is_none()
+            && self.priority.is_none()
+            && self.size.is_none()
+            && self.add_blocked_by.is_empty()
+            && self.remove_blocked_by.is_empty()
+            && self.why.is_none()
+            && self.done_when.is_empty()
+            && self.references.is_empty()
+    }
+}
+
+/// Extended headless mutation for `stint set`.
+pub fn cmd_set_ext(
+    repo: &StintRepo,
+    id_input: &str,
+    opts: &SetTaskOptions,
+) -> anyhow::Result<PathBuf> {
+    if opts.is_empty() {
+        bail!(
+            "no fields provided; specify at least one of --title, --priority, --size, --area, --tags, --blocked-by, --add-blocked-by, --remove-blocked-by, --gh-issue, --why, --done-when, --references, --body-file"
+        );
+    }
+
+    let path = repo.resolve_task_path(id_input)?;
+    let mut task = repo.read_task(&path)?;
+
+    if let Some(title) = &opts.title {
+        let trimmed = title.trim();
+        if trimmed.is_empty() {
+            bail!("--title cannot be empty");
+        }
+        task.frontmatter.title = trimmed.to_owned();
+    }
+    if let Some(p) = &opts.priority {
+        if p.trim().is_empty() {
+            task.frontmatter.priority = None;
+        } else {
+            task.frontmatter.priority = Some(
+                p.parse::<Priority>()
+                    .map_err(|e| anyhow::anyhow!("{}", e))?,
+            );
+        }
+    }
+    if let Some(s) = &opts.size {
+        if s.trim().is_empty() {
+            task.frontmatter.size = None;
+        } else {
+            task.frontmatter.size =
+                Some(s.parse::<Size>().map_err(|e| anyhow::anyhow!("{}", e))?);
+        }
+    }
+    if let Some(area) = &opts.edits.area {
+        task.frontmatter.area = clean_list(area);
+    }
+    if let Some(tags) = &opts.edits.tags {
+        task.frontmatter.tags = clean_list(tags);
+    }
+    if let Some(gh_issue) = &opts.edits.gh_issue {
+        task.frontmatter.gh_issue = clean_list(gh_issue);
+    }
+    if let Some(blocked_by) = &opts.edits.blocked_by {
+        task.frontmatter.blocked_by = clean_list(blocked_by)
+            .iter()
+            .map(|s| BlockedByRef::from_str(s))
+            .collect();
+    }
+    if !opts.add_blocked_by.is_empty() {
+        let refs: Vec<BlockedByRef> = clean_list(&opts.add_blocked_by)
+            .iter()
+            .map(|s| BlockedByRef::from_str(s))
+            .collect();
+        append_blockers(&mut task, refs);
+    }
+    if !opts.remove_blocked_by.is_empty() {
+        let refs: Vec<BlockedByRef> = clean_list(&opts.remove_blocked_by)
+            .iter()
+            .map(|s| BlockedByRef::from_str(s))
+            .collect();
+        remove_blockers(&mut task, &refs);
+    }
+    if let Some(source) = &opts.edits.body_source {
+        task.body = read_body_source(source)?;
+    }
+    if let Some(why) = &opts.why {
+        task.body = set_section(&task.body, "Why", why);
+    }
+    if !opts.done_when.is_empty() {
+        let bullets = opts
+            .done_when
+            .iter()
+            .map(|item| {
+                let t = item.trim();
+                if t.starts_with("- ") || t.starts_with("* ") {
+                    t.to_owned()
+                } else {
+                    format!("- {t}")
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        task.body = set_section(&task.body, "Done When", &bullets);
+    }
+    if !opts.references.is_empty() {
+        let bullets = opts
+            .references
+            .iter()
+            .map(|item| {
+                let t = item.trim();
+                if t.starts_with("- ") || t.starts_with("* ") {
+                    t.to_owned()
+                } else {
+                    format!("- {t}")
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        task.body = set_section(&task.body, "References", &bullets);
+    }
+
+    let content = serialize_task(&task);
+    repo.write_task(&path, &content)?;
+    Ok(path)
+}
+
+// ---------------------------------------------------------------------------
+// Decision Gate commands (`stint gate file | list | show | resolve`)
+// ---------------------------------------------------------------------------
+
+pub struct GateFileOptions<'a> {
+    pub blocked_task_id: &'a str,
+    pub title: &'a str,
+    pub body_source: Option<&'a str>,
+    pub ask: Option<&'a str>,
+    pub options: &'a [String],
+    pub good_answer: Option<&'a str>,
+    pub test: Option<&'a str>,
+    pub evidence: Option<&'a str>,
+    pub links: &'a [String],
+}
+
+#[derive(Debug, Clone)]
+pub struct GateFiledReport {
+    pub gate_id: String,
+    pub gate_path: PathBuf,
+    pub blocked_task_id: String,
+    pub unclaimed: bool,
+    pub ask: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct GateDetail {
+    pub id: String,
+    pub title: String,
+    pub status: String,
+    pub priority: Option<String>,
+    pub ask: Option<String>,
+    pub options: Option<String>,
+    pub good_answer: Option<String>,
+    pub test: Option<String>,
+    pub evidence: Option<String>,
+    pub links: Option<String>,
+    pub decision: Option<String>,
+    pub blocks: Vec<String>,
+    pub path: PathBuf,
+}
+
+#[derive(Debug, Clone)]
+pub struct GateResolvedReport {
+    pub gate_id: String,
+    pub gate_path: PathBuf,
+    pub decision: String,
+    pub unblocked: Vec<UnblockedTask>,
+    pub pruned: Vec<PrunedBlockerTask>,
+}
+
+/// File a 7-section human decision gate, wire it into `<blocked_task_id>`'s `blocked_by`,
+/// and automatically unclaim `<blocked_task_id>` if it is currently `in-progress`.
+pub fn cmd_gate_file(
+    repo: &StintRepo,
+    opts: &GateFileOptions<'_>,
+) -> anyhow::Result<GateFiledReport> {
+    let stalled_path = repo.resolve_task_path(opts.blocked_task_id)?;
+    let mut stalled_task = repo.read_task(&stalled_path)?;
+    let blocked_task_id = stalled_task.frontmatter.id.clone();
+
+    let body = if let Some(source) = opts.body_source {
+        read_body_source(source)?
+    } else {
+        let ask = opts.ask.ok_or_else(|| {
+            anyhow::anyhow!("missing --ask (or provide --body-file with all 7 gate sections)")
+        })?;
+        if opts.options.is_empty() {
+            bail!("missing --options (provide 2-4 concrete choices, recommended first)");
+        }
+        let good_answer = opts
+            .good_answer
+            .ok_or_else(|| anyhow::anyhow!("missing --good-answer"))?;
+        let evidence = opts
+            .evidence
+            .ok_or_else(|| anyhow::anyhow!("missing --evidence"))?;
+        let links_fallback = vec![format!("task {}", blocked_task_id)];
+        let links = if opts.links.is_empty() {
+            &links_fallback[..]
+        } else {
+            opts.links
+        };
+        build_gate_body(ask, opts.options, good_answer, opts.test, evidence, links)
+    };
+
+    let missing = validate_gate_body(&body, false);
+    if !missing.is_empty() {
+        bail!(
+            "gate artifact is incomplete; missing or empty section(s): {}",
+            missing.join(", ")
+        );
+    }
+
+    let raw_title = opts.title.trim();
+    let gate_title = if raw_title.to_ascii_lowercase().starts_with("gate:") {
+        raw_title.to_owned()
+    } else {
+        format!("gate: {}", raw_title)
+    };
+    let slug = title_to_slug(&gate_title);
+    let created_at = timestamp_or_now(None)?;
+
+    repo.ensure_dirs()?;
+    let (gate_id, gate_path) = with_add_lock(repo, || {
+        let tasks = repo.load_tasks()?;
+        let id = next_task_id(&tasks);
+        let filename = if slug.is_empty() {
+            format!("{}.md", id)
+        } else {
+            format!("{}-{}.md", id, slug)
+        };
+        let path = repo.tasks_dir().join(&filename);
+
+        let mut frontmatter = minimal_frontmatter(&id, &gate_title);
+        // Gates stay in backlog so `stint next` never schedules them as agent work.
+        frontmatter.status = TaskStatus::Backlog;
+        frontmatter.priority = stalled_task.frontmatter.priority.or(Some(Priority::P1));
+        frontmatter.size = Some(Size::S);
+        frontmatter.created_at = Some(created_at);
+        frontmatter.area = stalled_task.frontmatter.area.clone();
+        frontmatter.tags = vec!["gate".to_owned()];
+
+        let gate_task = stint::schema::Task {
+            frontmatter,
+            body: body.clone(),
+            filename,
+        };
+        repo.write_task(&path, &serialize_task(&gate_task))?;
+        Ok((id, path))
+    })?;
+
+    // Wire the gate into the stalled task's blocked_by without clobbering existing blockers,
+    // and unclaim if currently in-progress.
+    append_blockers(
+        &mut stalled_task,
+        vec![BlockedByRef::LocalTask(gate_id.clone())],
+    );
+    let unclaimed = if stalled_task.frontmatter.status == TaskStatus::InProgress {
+        set_status(&mut stalled_task, TaskStatus::Todo);
+        clear_started_at(&mut stalled_task);
+        true
+    } else {
+        false
+    };
+    repo.write_task(&stalled_path, &serialize_task(&stalled_task))?;
+
+    let ask_summary = extract_section(&body, "Ask").unwrap_or_default();
+
+    Ok(GateFiledReport {
+        gate_id,
+        gate_path,
+        blocked_task_id,
+        unclaimed,
+        ask: ask_summary,
+    })
+}
+
+/// List open (or all) human decision gates.
+pub fn cmd_gate_list(repo: &StintRepo, include_all: bool) -> anyhow::Result<Vec<GateDetail>> {
+    let tasks = repo.load_tasks()?;
+    let mut gates = Vec::new();
+
+    for task in &tasks {
+        if !task.is_gate() {
+            continue;
+        }
+        if !include_all
+            && matches!(
+                task.frontmatter.status,
+                TaskStatus::Done | TaskStatus::Archived
+            )
+        {
+            continue;
+        }
+        gates.push(build_gate_detail(repo, task, &tasks)?);
+    }
+
+    Ok(gates)
+}
+
+/// Load a single gate's full details by ID.
+pub fn cmd_gate_show(repo: &StintRepo, gate_id_input: &str) -> anyhow::Result<GateDetail> {
+    let path = repo.resolve_task_path(gate_id_input)?;
+    let task = repo.read_task(&path)?;
+    if !task.is_gate() {
+        bail!("task {} is not tagged 'gate'", task.id());
+    }
+    let tasks = repo.load_tasks()?;
+    build_gate_detail(repo, &task, &tasks)
+}
+
+fn build_gate_detail(
+    repo: &StintRepo,
+    gate: &stint::schema::Task,
+    all_tasks: &[stint::schema::Task],
+) -> anyhow::Result<GateDetail> {
+    let gate_id = &gate.frontmatter.id;
+    let blocks: Vec<String> = all_tasks
+        .iter()
+        .filter(|other| {
+            other
+                .frontmatter
+                .blocked_by
+                .iter()
+                .any(|b| matches!(b, BlockedByRef::LocalTask(id) if id == gate_id))
+        })
+        .map(|other| other.frontmatter.id.clone())
+        .collect();
+    let path = repo.resolve_task_path(gate_id)?;
+
+    Ok(GateDetail {
+        id: gate.frontmatter.id.clone(),
+        title: gate.frontmatter.title.clone(),
+        status: gate.frontmatter.status.to_string(),
+        priority: gate.frontmatter.priority.map(|p| p.to_string()),
+        ask: extract_section(&gate.body, "Ask"),
+        options: extract_section(&gate.body, "Options"),
+        good_answer: extract_section(&gate.body, "Good answer"),
+        test: extract_section(&gate.body, "Test"),
+        evidence: extract_section(&gate.body, "Evidence"),
+        links: extract_section(&gate.body, "Links"),
+        decision: extract_section(&gate.body, "Decision"),
+        blocks,
+        path,
+    })
+}
+
+/// Resolve a gate by recording `decision` into `## Decision`, marking the gate `done`,
+/// and pruning the gate from blocked tasks' `blocked_by` lists.
+pub fn cmd_gate_resolve(
+    repo: &StintRepo,
+    gate_id_input: &str,
+    decision: &str,
+) -> anyhow::Result<GateResolvedReport> {
+    let trimmed_decision = decision.trim();
+    if trimmed_decision.is_empty() {
+        bail!("--decision cannot be empty");
+    }
+
+    let path = repo.resolve_task_path(gate_id_input)?;
+    let mut gate = repo.read_task(&path)?;
+    if !gate.is_gate() {
+        bail!("task {} is not tagged 'gate'", gate.id());
+    }
+
+    let now = timestamp_or_now(None)?;
+    gate.body = set_section(&gate.body, "Decision", trimmed_decision);
+    set_status(&mut gate, TaskStatus::Done);
+    set_started_at_if_absent(&mut gate, now.clone());
+    set_completed_at(&mut gate, now);
+    set_actual(&mut gate, Duration::from_minutes(0));
+
+    let gate_id = gate.frontmatter.id.clone();
+    repo.write_task(&path, &serialize_task(&gate))?;
+
+    let unblocked = tasks_unblocked_by_done(repo, &gate_id)?;
+    let pruned = prune_done_blocker_refs(repo, &gate_id)?;
+
+    Ok(GateResolvedReport {
+        gate_id,
+        gate_path: path,
+        decision: trimmed_decision.to_owned(),
+        unblocked,
+        pruned,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Strict check & JSON output helpers
+// ---------------------------------------------------------------------------
+
+/// Run `stint check` and optionally enforce strict pass criteria (`priority`, `size`,
+/// `## Why`, `## Done When`) on all `todo` and `in-progress` tasks.
+pub fn cmd_check_ext(
+    repo: &StintRepo,
+    cross_repo: bool,
+    task_id: Option<&str>,
+    strict: bool,
+) -> anyhow::Result<(Vec<String>, Vec<String>)> {
+    let mut errors = cmd_check(repo, cross_repo, task_id)?;
+    let mut advisories = Vec::new();
+
+    let (tasks, _) = repo.load_tasks_with_errors()?;
+    for task in &tasks {
+        if let Some(target_id) = task_id {
+            if task.frontmatter.id != target_id {
+                continue;
+            }
+        }
+        if matches!(
+            task.frontmatter.status,
+            TaskStatus::Todo | TaskStatus::InProgress
+        ) && !task.is_gate()
+        {
+            for issue in check_pass_criteria(task) {
+                let msg = format!("task {}: {}", task.frontmatter.id, issue);
+                if strict {
+                    errors.push(msg);
+                } else {
+                    advisories.push(msg);
+                }
+            }
+        }
+    }
+
+    Ok((errors, advisories))
+}
+
+pub fn print_list_json(rows: &[TaskRow]) {
+    use serde_json::{json, Value};
+    let items: Vec<Value> = rows
+        .iter()
+        .map(|r| {
+            json!({
+                "id": r.id,
+                "title": r.title,
+                "state": r.state,
+                "blocked": r.blocked,
+                "blockers": r.blockers.iter().map(|b| b.to_string()).collect::<Vec<_>>(),
+                "estimate": r.estimate,
+                "sprint": r.sprint,
+                "priority": r.priority,
+                "size": r.size,
+            })
+        })
+        .collect();
+    println!("{}", serde_json::to_string_pretty(&items).unwrap());
+}
+
+pub fn print_show_json(repo: &StintRepo, id_input: &str) -> anyhow::Result<()> {
+    use serde_json::json;
+    let path = repo.resolve_task_path(id_input)?;
+    let task = repo.read_task(&path)?;
+    let tasks = repo.load_tasks()?;
+    let sprints = repo.load_sprints()?;
+    let done = done_ids(&tasks);
+    let direct_resolution = repo.resolve_direct_task_path_blockers(&tasks)?;
+    let active =
+        active_blockers_with_resolution(&task, &done, &direct_resolution.blocker_resolution);
+    let state = classify_with_resolution(&task, &done, &direct_resolution.blocker_resolution);
+    let sprint_id = task_to_sprint_map(&sprints)
+        .get(task.frontmatter.id.as_str())
+        .cloned();
+    let fm = &task.frontmatter;
+
+    let payload = json!({
+        "id": fm.id,
+        "title": fm.title,
+        "status": fm.status.as_str(),
+        "state": state.as_str(),
+        "is_gate": task.is_gate(),
+        "priority": fm.priority.map(|p| p.as_str()),
+        "size": fm.size.map(|s| s.as_str()),
+        "estimate": fm.estimate.map(|e| e.to_string()),
+        "actual": fm.actual.map(|a| a.to_string()),
+        "created_at": fm.created_at,
+        "started_at": fm.started_at,
+        "completed_at": fm.completed_at,
+        "sprint": sprint_id,
+        "blocked_by": fm.blocked_by.iter().map(|b| b.to_string()).collect::<Vec<_>>(),
+        "active_blockers": active.iter().map(|b| b.to_string()).collect::<Vec<_>>(),
+        "gh_issue": fm.gh_issue,
+        "area": fm.area,
+        "tags": fm.tags,
+        "sections": {
+            "why": extract_section(&task.body, "Why"),
+            "done_when": extract_section(&task.body, "Done When"),
+            "references": extract_section(&task.body, "References"),
+            "ask": extract_section(&task.body, "Ask"),
+            "options": extract_section(&task.body, "Options"),
+            "decision": extract_section(&task.body, "Decision"),
+        },
+        "body": task.body,
+        "path": path.to_string_lossy(),
+    });
+    println!("{}", serde_json::to_string_pretty(&payload).unwrap());
+    Ok(())
+}
+
+pub fn print_status_json(repo: &StintRepo) -> anyhow::Result<()> {
+    use serde_json::json;
+    let tasks = repo.load_tasks()?;
+    let sprints = repo.load_sprints()?;
+    let direct_resolution = repo.resolve_direct_task_path_blockers(&tasks)?;
+    let report = compute_status_with_resolution(
+        &tasks,
+        &sprints,
+        None,
+        &direct_resolution.blocker_resolution,
+    );
+    let next_report = compute_next_with_resolution(
+        &tasks,
+        &sprints,
+        NextOptions {
+            sprint: None,
+            include_area_conflicts: false,
+            include_backlog: false,
+        },
+        &direct_resolution.blocker_resolution,
+    );
+
+    let active_tasks: Vec<_> = tasks
+        .iter()
+        .filter(|t| t.frontmatter.status == TaskStatus::InProgress)
+        .map(|t| {
+            json!({
+                "id": t.frontmatter.id,
+                "title": t.frontmatter.title,
+                "priority": t.frontmatter.priority.map(|p| p.as_str()),
+                "size": t.frontmatter.size.map(|s| s.as_str()),
+                "area": t.frontmatter.area,
+                "started_at": t.frontmatter.started_at,
+            })
+        })
+        .collect();
+
+    let proposed_tasks: Vec<_> = tasks
+        .iter()
+        .filter(|t| t.frontmatter.status == TaskStatus::Proposed)
+        .map(|t| {
+            json!({
+                "id": t.frontmatter.id,
+                "title": t.frontmatter.title,
+                "priority": t.frontmatter.priority.map(|p| p.as_str()),
+                "size": t.frontmatter.size.map(|s| s.as_str()),
+                "area": t.frontmatter.area,
+            })
+        })
+        .collect();
+
+    let active_count = report.open_count.saturating_sub(report.backlog_count);
+    let payload = json!({
+        "active_count": active_count,
+        "in_progress_count": report.in_progress_count,
+        "ready_count": next_report.ready.len(),
+        "backlog_count": report.backlog_count,
+        "proposed_count": report.proposed_count,
+        "in_progress": active_tasks,
+        "proposed": proposed_tasks,
+        "open_gates": report.open_gates.iter().map(|g| json!({
+            "id": g.id,
+            "title": g.title,
+            "ask": g.ask,
+            "blocks": g.blocks,
+        })).collect::<Vec<_>>(),
+        "blocked": report.blocked_tasks.iter().map(|bt| json!({
+            "id": bt.id,
+            "title": bt.title,
+            "blocked_by": bt.blocked_by.iter().map(|b| b.to_string()).collect::<Vec<_>>(),
+        })).collect::<Vec<_>>(),
+        "sprint": report.sprint_progress.as_ref().map(|p| json!({
+            "sprint_id": p.sprint_id,
+            "task_count": p.task_count,
+            "done_count": p.done_count,
+            "committed_minutes": p.committed_minutes,
+            "logged_minutes": p.logged_minutes,
+            "remaining_minutes": p.remaining_minutes,
+        })),
+    });
+    println!("{}", serde_json::to_string_pretty(&payload).unwrap());
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
@@ -1561,11 +2404,13 @@ fn task_to_sprint_map(sprints: &[Sprint]) -> HashMap<String, String> {
 
 /// Open `path` in `$EDITOR`.  If `$EDITOR` is not set, falls back to `vi`.
 ///
-/// In test environments, if `STINT_TEST_EDITOR` is set to `none`, this is a
-/// no-op (so tests can call `cmd_add` without needing a real editor).
+/// In test environments (`STINT_TEST_EDITOR=none`) or when stdin/stdout is not
+/// an interactive terminal, this is a no-op so headless agents never hang.
 pub fn open_editor(path: &std::path::Path) -> anyhow::Result<()> {
-    // Allow tests to suppress editor invocation.
     if std::env::var("STINT_TEST_EDITOR").as_deref() == Ok("none") {
+        return Ok(());
+    }
+    if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         return Ok(());
     }
     let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_owned());

@@ -101,7 +101,114 @@ pub fn title_to_slug(title: &str) -> String {
 }
 
 /// Default markdown body template for a freshly created task.
-pub const DEFAULT_TASK_BODY: &str = "## Why\n\n\n## Gotchas\n\n\n## References\n\n";
+pub const DEFAULT_TASK_BODY: &str = "## Why\n\n\n## Done When\n\n\n## References\n\n";
+
+/// Required sections in a decision gate task body (`tags: ["gate"]`).
+pub const REQUIRED_GATE_SECTIONS: &[&str] = &[
+    "Ask",
+    "Options",
+    "Good answer",
+    "Test",
+    "Evidence",
+    "Links",
+    "Decision",
+];
+
+/// Default markdown body template for a decision gate.
+pub const DEFAULT_GATE_BODY: &str = "\
+## Ask\n\n\n\
+## Options\n\n\n\
+## Good answer\n\n\n\
+## Test\n\nnone\n\n\
+## Evidence\n\n\n\
+## Links\n\n\n\
+## Decision\n\n";
+
+/// Build a structured task body from CLI flags (`--why`, `--done-when`, `--references`).
+pub fn build_task_body(
+    why: Option<&str>,
+    done_when: &[String],
+    references: &[String],
+) -> String {
+    let why_text = why.map(str::trim).unwrap_or("");
+    let done_items = format_bullet_list(done_when);
+    let ref_items = format_bullet_list(references);
+
+    let mut out = String::new();
+    out.push_str("## Why\n\n");
+    if !why_text.is_empty() {
+        out.push_str(why_text);
+        out.push('\n');
+    }
+    out.push_str("\n## Done When\n\n");
+    if !done_items.is_empty() {
+        out.push_str(&done_items);
+        out.push('\n');
+    }
+    out.push_str("\n## References\n\n");
+    if !ref_items.is_empty() {
+        out.push_str(&ref_items);
+        out.push('\n');
+    }
+    out
+}
+
+/// Build a structured gate body from CLI flags.
+pub fn build_gate_body(
+    ask: &str,
+    options: &[String],
+    good_answer: &str,
+    test: Option<&str>,
+    evidence: &str,
+    links: &[String],
+) -> String {
+    let options_block = format_bullet_list(options);
+    let links_block = format_bullet_list(links);
+    let test_text = test.map(str::trim).filter(|s| !s.is_empty()).unwrap_or("none");
+
+    format!(
+        "## Ask\n\n{}\n\n## Options\n\n{}\n\n## Good answer\n\n{}\n\n## Test\n\n{}\n\n## Evidence\n\n{}\n\n## Links\n\n{}\n\n## Decision\n\n",
+        ask.trim(),
+        options_block,
+        good_answer.trim(),
+        test_text,
+        evidence.trim(),
+        links_block,
+    )
+}
+
+fn format_bullet_list(items: &[String]) -> String {
+    items
+        .iter()
+        .flat_map(|item| item.lines())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| {
+            if s.starts_with("- ") || s.starts_with("* ") {
+                s.to_owned()
+            } else {
+                format!("- {s}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Append blocker references to `task.frontmatter.blocked_by`, avoiding duplicates.
+pub fn append_blockers(task: &mut Task, new_refs: Vec<crate::schema::BlockedByRef>) {
+    for r in new_refs {
+        if !task.frontmatter.blocked_by.contains(&r) {
+            task.frontmatter.blocked_by.push(r);
+        }
+    }
+}
+
+/// Remove matching blocker references from `task.frontmatter.blocked_by`.
+pub fn remove_blockers(task: &mut Task, to_remove: &[crate::schema::BlockedByRef]) {
+    task.frontmatter
+        .blocked_by
+        .retain(|existing| !to_remove.contains(existing));
+}
 
 /// Build the initial file content for a new task.
 ///

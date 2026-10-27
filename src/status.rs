@@ -1,7 +1,7 @@
 /// Compute the `stint status` summary from a task graph.
 use std::collections::HashSet;
 
-use crate::schema::{BlockedByRef, Sprint, Task, TaskStatus};
+use crate::schema::{extract_section, BlockedByRef, Sprint, Task, TaskStatus};
 use crate::sprint::numeric_prefix;
 use crate::state::{active_blockers_with_resolution, done_ids, BlockerResolution};
 
@@ -14,6 +14,19 @@ pub struct BlockedTask {
     pub title: String,
     /// All active blocker references for this task.
     pub blocked_by: Vec<BlockedByRef>,
+}
+
+/// Summary of an open human decision gate (`tags` contains `gate`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GateSummary {
+    /// Gate task ID.
+    pub id: String,
+    /// Gate title.
+    pub title: String,
+    /// Extracted `## Ask` section, if present.
+    pub ask: Option<String>,
+    /// IDs of open tasks blocked by this gate.
+    pub blocks: Vec<String>,
 }
 
 /// Sprint-level time progress.
@@ -40,6 +53,12 @@ pub struct StatusReport {
     pub open_count: usize,
     /// Count of tasks with status backlog (icebox only).
     pub backlog_count: usize,
+    /// Count of tasks with status proposed (candidate ideas awaiting approval).
+    pub proposed_count: usize,
+    /// Count of tasks with status in-progress.
+    pub in_progress_count: usize,
+    /// Open decision gates awaiting a human answer.
+    pub open_gates: Vec<GateSummary>,
     /// Todo+InProgress tasks that have at least one active blocker.
     pub blocked_tasks: Vec<BlockedTask>,
     /// Progress for the current sprint, if one exists.
@@ -79,12 +98,57 @@ pub fn compute_status_with_resolution(
         .filter(|t| matches!(t.frontmatter.status, TaskStatus::Backlog))
         .count();
 
+    let proposed_count = tasks
+        .iter()
+        .filter(|t| matches!(t.frontmatter.status, TaskStatus::Proposed))
+        .count();
+
+    let in_progress_count = tasks
+        .iter()
+        .filter(|t| matches!(t.frontmatter.status, TaskStatus::InProgress))
+        .count();
+
+    let open_gates = tasks
+        .iter()
+        .filter(|t| {
+            t.is_gate()
+                && !matches!(
+                    t.frontmatter.status,
+                    TaskStatus::Done | TaskStatus::Archived
+                )
+        })
+        .map(|gate| {
+            let gate_id = &gate.frontmatter.id;
+            let blocks: Vec<String> = tasks
+                .iter()
+                .filter(|other| {
+                    !matches!(
+                        other.frontmatter.status,
+                        TaskStatus::Done | TaskStatus::Archived
+                    ) && other
+                        .frontmatter
+                        .blocked_by
+                        .iter()
+                        .any(|b| matches!(b, BlockedByRef::LocalTask(id) if id == gate_id))
+                })
+                .map(|other| other.frontmatter.id.clone())
+                .collect();
+            let ask = extract_section(&gate.body, "Ask").filter(|s| !s.is_empty());
+            GateSummary {
+                id: gate.frontmatter.id.clone(),
+                title: gate.frontmatter.title.clone(),
+                ask,
+                blocks,
+            }
+        })
+        .collect();
+
     let done = done_ids(tasks);
 
     let blocked_tasks = tasks
         .iter()
         .filter(|t| {
-            // Backlog tasks are iced; only surface blockers for active tasks.
+            // Backlog and proposed tasks are outside the active queue; only surface blockers for active tasks.
             matches!(
                 t.frontmatter.status,
                 TaskStatus::Todo | TaskStatus::InProgress
@@ -153,6 +217,9 @@ pub fn compute_status_with_resolution(
     StatusReport {
         open_count,
         backlog_count,
+        proposed_count,
+        in_progress_count,
+        open_gates,
         blocked_tasks,
         sprint_progress,
     }

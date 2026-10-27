@@ -9,7 +9,7 @@ description = "Task and sprint tracking as markdown files in your repo"
 readme = "README.md"
 keywords = ["cli", "sprint", "tasks", "planning", "markdown"]
 categories = ["command-line-utilities", "development-tools"]
-exclude = [".stint", ".wtp.yml", ".github", "CLAUDE.md", "install.sh", "apps", "worktrees", ".plexi-beta"]
+exclude = [".stint", ".wtp.yml", ".github", "CLAUDE.md", "install.sh", "apps", "packages", "worktrees", ".plexi-beta"]
 
 [lib]
 name = "stint"
@@ -29,9 +29,6 @@ chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive"] }
 clap_complete = "4"
 owo-colors = "4"
-crossterm = "0.28"
-notify = "8"
-ratatui = "0.29"
 toml = "0.8"
 fs2 = "0.4"
 

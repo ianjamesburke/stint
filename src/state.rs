@@ -16,6 +16,8 @@ use crate::schema::{BlockedByRef, Task, TaskStatus};
 /// classification: every task maps to exactly one variant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TaskState {
+    /// Proposed. Candidate idea awaiting approval; outside the stint pipeline.
+    Proposed,
     /// Backlog. Iced; not in the actionable pool.
     Iced,
     /// Todo with no unresolved blockers. Claimable now.
@@ -34,6 +36,7 @@ impl TaskState {
     /// Lowercase display label for the state.
     pub fn as_str(self) -> &'static str {
         match self {
+            TaskState::Proposed => "proposed",
             TaskState::Iced => "backlog",
             TaskState::Ready => "ready",
             TaskState::Blocked => "blocked",
@@ -129,6 +132,7 @@ pub fn classify_with_resolution(
     resolution: &BlockerResolution,
 ) -> TaskState {
     match task.frontmatter.status {
+        TaskStatus::Proposed => TaskState::Proposed,
         TaskStatus::Done => TaskState::Done,
         TaskStatus::Archived => TaskState::Archived,
         TaskStatus::Backlog => TaskState::Iced,

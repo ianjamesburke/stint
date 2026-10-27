@@ -152,9 +152,11 @@ impl std::fmt::Display for Size {
 /// Status lifecycle for a task.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum TaskStatus {
-    /// Not yet scheduled.
+    /// Candidate idea or proposal not yet approved into the stint pipeline.
+    Proposed,
+    /// Not yet scheduled (icebox).
     Backlog,
-    /// Scheduled but not started.
+    /// Scheduled and ready to be claimed (unless blocked).
     Todo,
     /// Currently being worked on.
     InProgress,
@@ -172,7 +174,7 @@ impl std::fmt::Display for TaskStatusParseError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "unknown status {:?}; expected one of backlog, todo, in-progress, done, archived",
+            "unknown status {:?}; expected one of proposed, backlog, todo, in-progress, done, archived",
             self.0
         )
     }
@@ -185,6 +187,7 @@ impl FromStr for TaskStatus {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
+            "proposed" => Ok(TaskStatus::Proposed),
             "backlog" => Ok(TaskStatus::Backlog),
             "todo" => Ok(TaskStatus::Todo),
             "in-progress" => Ok(TaskStatus::InProgress),
@@ -199,6 +202,7 @@ impl TaskStatus {
     /// Return the canonical string representation.
     pub fn as_str(&self) -> &'static str {
         match self {
+            TaskStatus::Proposed => "proposed",
             TaskStatus::Backlog => "backlog",
             TaskStatus::Todo => "todo",
             TaskStatus::InProgress => "in-progress",
@@ -424,6 +428,120 @@ impl Task {
     pub fn id(&self) -> &str {
         &self.frontmatter.id
     }
+
+    /// Whether this task is a human decision gate (`tags` contains `"gate"`).
+    pub fn is_gate(&self) -> bool {
+        self.frontmatter
+            .tags
+            .iter()
+            .any(|t| t.eq_ignore_ascii_case("gate"))
+    }
+
+    /// Whether this task is in the `proposed` state.
+    pub fn is_proposed(&self) -> bool {
+        self.frontmatter.status == TaskStatus::Proposed
+    }
+}
+
+/// Extract the trimmed content of a markdown `## <heading>` section (case-insensitive).
+/// Returns `Some("")` if the heading exists with no body, or `None` if the heading is absent.
+pub fn extract_section(body: &str, heading: &str) -> Option<String> {
+    let target = heading.trim().to_ascii_lowercase();
+    let mut in_section = false;
+    let mut collected = Vec::new();
+
+    for line in body.lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("## ") {
+            if in_section {
+                break;
+            }
+            if rest.trim().to_ascii_lowercase() == target {
+                in_section = true;
+                continue;
+            }
+        } else if in_section {
+            collected.push(line);
+        }
+    }
+
+    if in_section {
+        Some(collected.join("\n").trim().to_owned())
+    } else {
+        None
+    }
+}
+
+/// Whether `body` contains a `## <heading>` section with non-empty content
+/// (ignoring placeholder HTML comments or empty bullet `-`).
+pub fn has_non_empty_section(body: &str, heading: &str) -> bool {
+    match extract_section(body, heading) {
+        None => false,
+        Some(content) => {
+            let meaningful: String = content
+                .lines()
+                .map(str::trim)
+                .filter(|line| !line.is_empty() && *line != "-" && *line != "*")
+                .collect::<Vec<_>>()
+                .join("\n");
+            !meaningful.is_empty()
+        }
+    }
+}
+
+/// Replace the body of an existing `## <heading>` section (case-insensitive),
+/// or append a new `## <heading>` section at the end of `body`.
+pub fn set_section(body: &str, heading: &str, new_content: &str) -> String {
+    let target = heading.trim().to_ascii_lowercase();
+    let mut out_lines: Vec<String> = Vec::new();
+    let mut in_target = false;
+    let mut replaced = false;
+
+    for line in body.lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("## ") {
+            if in_target {
+                in_target = false;
+            }
+            if !replaced && rest.trim().to_ascii_lowercase() == target {
+                in_target = true;
+                replaced = true;
+                out_lines.push(line.to_owned());
+                out_lines.push(String::new());
+                let trimmed_content = new_content.trim();
+                if !trimmed_content.is_empty() {
+                    for c_line in trimmed_content.lines() {
+                        out_lines.push(c_line.to_owned());
+                    }
+                    out_lines.push(String::new());
+                }
+                continue;
+            }
+        }
+        if !in_target {
+            out_lines.push(line.to_owned());
+        }
+    }
+
+    if !replaced {
+        if !out_lines.is_empty() && !out_lines.last().unwrap().is_empty() {
+            out_lines.push(String::new());
+        }
+        out_lines.push(format!("## {}", heading.trim()));
+        out_lines.push(String::new());
+        let trimmed_content = new_content.trim();
+        if !trimmed_content.is_empty() {
+            for c_line in trimmed_content.lines() {
+                out_lines.push(c_line.to_owned());
+            }
+        }
+    }
+
+    let mut result = out_lines.join("\n");
+    if !result.ends_with('\n') {
+        result.push('\n');
+    }
+    result
 }
 
 /// Parsed sprint file header.
@@ -521,10 +639,35 @@ mod tests {
 
     #[test]
     fn task_status_round_trip() {
-        for s in &["backlog", "todo", "in-progress", "done", "archived"] {
+        for s in &[
+            "proposed",
+            "backlog",
+            "todo",
+            "in-progress",
+            "done",
+            "archived",
+        ] {
             let status: TaskStatus = s.parse().unwrap();
             assert_eq!(status.as_str(), *s);
         }
+    }
+
+    #[test]
+    fn section_extract_and_set_round_trip() {
+        let body = "## Why\n\nNeeds auth.\n\n## Done When\n\n- Tests pass\n\n## Decision\n\n";
+        assert_eq!(extract_section(body, "Why").as_deref(), Some("Needs auth."));
+        assert!(has_non_empty_section(body, "done when"));
+        assert!(!has_non_empty_section(body, "Decision"));
+
+        let updated = set_section(body, "Decision", "Approved Option A.");
+        assert_eq!(
+            extract_section(&updated, "Decision").as_deref(),
+            Some("Approved Option A.")
+        );
+        assert_eq!(
+            extract_section(&updated, "Why").as_deref(),
+            Some("Needs auth.")
+        );
     }
 
     #[test]

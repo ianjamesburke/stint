@@ -1763,3 +1763,188 @@ fn sprint_add_errors_when_task_already_present() {
     let err = cmds::cmd_sprint_add(&repo, "s1", "0001").unwrap_err();
     assert!(err.to_string().contains("already in the sprint"));
 }
+
+// ---------------------------------------------------------------------------
+// Proposals & Pass Criteria Approval
+// ---------------------------------------------------------------------------
+
+#[test]
+fn propose_approve_and_reject_lifecycle() {
+    let (_tmp, repo) = setup();
+
+    // Create a proposed task missing pass criteria.
+    let path = cmds::cmd_add_ext(
+        &repo,
+        &cmds::AddTaskOptions {
+            title: "Half-baked idea",
+            priority: None,
+            size: None,
+            edits: &cmds::TaskFieldEdits::default(),
+            why: Some("Might be useful."),
+            done_when: &[],
+            references: &[],
+            no_edit: true,
+            status: stint::schema::TaskStatus::Proposed,
+        },
+    )
+    .unwrap();
+
+    // Proposed task must not appear in `stint next`.
+    let task = repo.read_task(&path).unwrap();
+    assert_eq!(task.frontmatter.status, stint::schema::TaskStatus::Proposed);
+    assert!(cmds::cmd_next(&repo, None, false, false).unwrap().ready.is_empty());
+
+    // Approving without priority, size, and ## Done When must fail.
+    let err = cmds::cmd_approve(
+        &repo,
+        &["1".to_string()],
+        None,
+        None,
+        None,
+        &[],
+        false,
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("cannot enter the todo pipeline"));
+
+    // Supply the remaining pass criteria inline during approve.
+    let done_when = vec!["`cargo test` passes".to_string()];
+    cmds::cmd_approve(
+        &repo,
+        &["1".to_string()],
+        Some("p1"),
+        Some("s"),
+        None,
+        &done_when,
+        false,
+    )
+    .unwrap();
+
+    let task = repo.read_task(&path).unwrap();
+    assert_eq!(task.frontmatter.status, stint::schema::TaskStatus::Todo);
+    assert_eq!(task.frontmatter.priority, Some(stint::schema::Priority::P1));
+    assert_eq!(task.frontmatter.size, Some(stint::schema::Size::S));
+
+    // Reject moves the task to archived and records optional ## Rejected reason.
+    cmds::cmd_reject(&repo, &["1".to_string()], Some("Out of scope for v1")).unwrap();
+    let task = repo.read_task(&path).unwrap();
+    assert_eq!(task.frontmatter.status, stint::schema::TaskStatus::Archived);
+    assert_eq!(
+        stint::schema::extract_section(&task.body, "Rejected").as_deref(),
+        Some("Out of scope for v1")
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Decision Gates (file, list, show, resolve)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn gate_file_blocks_and_unclaims_stalled_task_then_resolve_unblocks() {
+    let (_tmp, repo) = setup();
+
+    // Create and claim task 0001.
+    let done_when = vec!["Webhook handler verified".to_string()];
+    let area = vec!["billing".to_string()];
+    let task1_path = cmds::cmd_add_ext(
+        &repo,
+        &cmds::AddTaskOptions {
+            title: "Build billing webhook",
+            priority: Some("p0"),
+            size: Some("m"),
+            edits: &cmds::TaskFieldEdits {
+                area: Some(area),
+                ..Default::default()
+            },
+            why: Some("Stripe events must be ingested."),
+            done_when: &done_when,
+            references: &[],
+            no_edit: true,
+            status: stint::schema::TaskStatus::Todo,
+        },
+    )
+    .unwrap();
+    cmds::cmd_claim(&repo, Some("0001"), None, false, None, false).unwrap();
+
+    let task1 = repo.read_task(&task1_path).unwrap();
+    assert_eq!(task1.frontmatter.status, stint::schema::TaskStatus::InProgress);
+
+    // File a gate blocking 0001.
+    let gate_options = vec![
+        "**A: DLQ** — fast ack".to_string(),
+        "**B: Sync retry** — simple".to_string(),
+    ];
+    let gate_links = vec!["src/webhook.rs".to_string()];
+    let filed = cmds::cmd_gate_file(
+        &repo,
+        &cmds::GateFileOptions {
+            blocked_task_id: "1",
+            title: "Retry policy on Stripe 5xx",
+            body_source: None,
+            ask: Some("Should we retry 5xx synchronously or enqueue to DLQ?"),
+            options: &gate_options,
+            good_answer: Some("Pick A or B and max retry count."),
+            test: Some("Must keep webhook latency < 200ms."),
+            evidence: Some("Stripe times out after 10s."),
+            links: &gate_links,
+        },
+    )
+    .unwrap();
+    assert_eq!(filed.gate_id, "0002");
+    assert!(filed.unclaimed);
+
+    // Task 0001 should now be blocked by 0002 and unclaimed back to Todo.
+    let task1 = repo.read_task(&task1_path).unwrap();
+    assert_eq!(task1.frontmatter.status, stint::schema::TaskStatus::Todo);
+    assert_eq!(
+        task1.frontmatter.blocked_by,
+        vec![stint::schema::BlockedByRef::LocalTask("0002".to_string())]
+    );
+
+    // Gate 0002 and task 0001 should pass strict check.
+    let (errors, advisories) = cmds::cmd_check_ext(&repo, false, None, true).unwrap();
+    assert!(errors.is_empty(), "strict check errors: {:?}", errors);
+    assert!(advisories.is_empty());
+
+    let open_gates = cmds::cmd_gate_list(&repo, false).unwrap();
+    assert_eq!(open_gates.len(), 1);
+    assert_eq!(open_gates[0].id, "0002");
+    assert_eq!(open_gates[0].blocks, vec!["0001".to_string()]);
+
+    let detail = cmds::cmd_gate_show(&repo, "2").unwrap();
+    assert_eq!(detail.id, "0002");
+
+    // Resolve gate 0002 -> records decision, marks 0002 done, and prunes 0002 from 0001.blocked_by.
+    let resolved = cmds::cmd_gate_resolve(&repo, "2", "Option A (DLQ) with 3 retries.").unwrap();
+    assert_eq!(resolved.gate_id, "0002");
+    assert_eq!(resolved.unblocked.len(), 1);
+    assert_eq!(resolved.unblocked[0].id, "0001");
+
+    let gate2 = repo.read_task(&filed.gate_path).unwrap();
+    assert_eq!(gate2.frontmatter.status, stint::schema::TaskStatus::Done);
+    assert_eq!(
+        stint::schema::extract_section(&gate2.body, "Decision").as_deref(),
+        Some("Option A (DLQ) with 3 retries.")
+    );
+
+    let task1_after = repo.read_task(&task1_path).unwrap();
+    assert!(task1_after.frontmatter.blocked_by.is_empty());
+
+    let (errors, _) = cmds::cmd_check_ext(&repo, false, None, true).unwrap();
+    assert!(errors.is_empty(), "strict check errors after resolve: {:?}", errors);
+}
+
+// ---------------------------------------------------------------------------
+// Built-in Guide & Schema
+// ---------------------------------------------------------------------------
+
+#[test]
+fn guide_and_schema_topics_work() {
+    assert!(stint::guide::format_guide(None).unwrap().contains("# stint guide: overview"));
+    assert!(stint::guide::format_guide(Some("gate")).unwrap().contains("stint gate file"));
+    assert!(stint::guide::format_schema(None).unwrap().contains("frontmatter"));
+    let json = stint::guide::schema_json(Some("cli")).unwrap();
+    assert!(json.get("commands").is_some());
+}
+
+

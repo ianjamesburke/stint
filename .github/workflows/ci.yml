@@ -37,8 +37,11 @@ jobs:
       - name: Run Rust unit and integration tests
         run: cargo test
 
-      - name: Validate repository .stint task graph
-        run: ./target/debug/stint check --strict
+      - name: Validate example and workspace task graphs
+        run: |
+          if [ -d .stint ]; then ./target/debug/stint check --strict; fi
+          (cd examples/demo && ../../target/debug/stint check --strict)
+          (cd examples/api-service && ../../target/debug/stint check --strict)
 
       - name: Run pi-stint extension tests
         env:

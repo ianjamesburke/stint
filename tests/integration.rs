@@ -689,8 +689,7 @@ fn list_filters_blocked_tasks() {
     assert_eq!(blocked.len(), 1);
     assert_eq!(blocked[0].id, "0002");
 
-    let unblocked =
-        cmds::cmd_list(&repo, None, false, Some(false), None, None, None).unwrap();
+    let unblocked = cmds::cmd_list(&repo, None, false, Some(false), None, None, None).unwrap();
     assert_eq!(unblocked.len(), 1);
     assert_eq!(unblocked[0].id, "0001");
 }
@@ -733,8 +732,7 @@ fn list_filters_by_tag() {
     let t2 = "---\nid: \"0002\"\ntitle: \"B\"\nstatus: backlog\ntags:\n  - perf\n---\n";
     write_task_file(&repo, "0001-a.md", t1);
     write_task_file(&repo, "0002-b.md", t2);
-    let rows =
-        cmds::cmd_list(&repo, None, false, None, None, Some("security"), None).unwrap();
+    let rows = cmds::cmd_list(&repo, None, false, None, None, Some("security"), None).unwrap();
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].id, "0001");
 }
@@ -1801,4 +1799,256 @@ fn guide_and_schema_topics_work() {
         .contains("frontmatter"));
     let json = stint::guide::schema_json(Some("cli")).unwrap();
     assert!(json.get("commands").is_some());
+}
+
+#[test]
+fn concurrent_priority_compare_and_set_has_one_winner() {
+    let (tmp, repo) = setup();
+    write_task_file(&repo, "0001-race.md", &task_content("0001", "Race", "todo"));
+    let binary = env!("CARGO_BIN_EXE_stint");
+    let spawn = |priority: &str| {
+        Command::new(binary)
+            .current_dir(tmp.path())
+            .args([
+                "set",
+                "0001",
+                "--priority",
+                priority,
+                "--expect-priority",
+                "unset",
+                "--json",
+            ])
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap()
+    };
+    let a = spawn("p1");
+    let b = spawn("p2");
+    let results = [a.wait_with_output().unwrap(), b.wait_with_output().unwrap()];
+    assert_eq!(
+        results.iter().filter(|r| r.status.success()).count(),
+        1,
+        "{results:?}"
+    );
+    for result in results {
+        let v: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
+        assert!(
+            v.get("priority").is_some() || v.get("actual_priority").is_some(),
+            "{v}"
+        );
+    }
+}
+
+#[test]
+fn concurrent_set_and_claim_preserve_both_changes() {
+    let (tmp, repo) = setup();
+    write_task_file(&repo, "0001-race.md", &task_content("0001", "Race", "todo"));
+    let binary = env!("CARGO_BIN_EXE_stint");
+    let mut a = Command::new(binary)
+        .current_dir(tmp.path())
+        .args([
+            "set",
+            "0001",
+            "--priority",
+            "p1",
+            "--expect-priority",
+            "unset",
+        ])
+        .spawn()
+        .unwrap();
+    let mut b = Command::new(binary)
+        .current_dir(tmp.path())
+        .args(["claim", "0001"])
+        .spawn()
+        .unwrap();
+    assert!(a.wait().unwrap().success());
+    assert!(b.wait().unwrap().success());
+    let task = repo
+        .read_task(&repo.resolve_task_path("0001").unwrap())
+        .unwrap();
+    assert_eq!(task.frontmatter.priority.unwrap().to_string(), "p1");
+    assert_eq!(task.frontmatter.status.to_string(), "in-progress");
+}
+
+#[test]
+fn killed_writer_releases_kernel_lock() {
+    use fs2::FileExt;
+    let (tmp, repo) = setup();
+    write_task_file(&repo, "0001-race.md", &task_content("0001", "Race", "todo"));
+    let binary = env!("CARGO_BIN_EXE_stint");
+    let mut holder = Command::new(binary)
+        .current_dir(tmp.path())
+        .env("STINT_TEST_HOLD_WRITER_LOCK", "1")
+        .args(["set", "0001", "--priority", "p1"])
+        .spawn()
+        .unwrap();
+    let path = repo.stint_dir.join("writer.lock");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if let Ok(f) = fs::OpenOptions::new().read(true).write(true).open(&path) {
+            if f.try_lock_exclusive().is_err() {
+                break;
+            }
+            FileExt::unlock(&f).unwrap();
+        }
+        assert!(Instant::now() < deadline, "writer did not acquire lock");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    holder.kill().unwrap();
+    holder.wait().unwrap();
+    assert!(Command::new(binary)
+        .current_dir(tmp.path())
+        .args(["set", "0001", "--priority", "p2"])
+        .status()
+        .unwrap()
+        .success());
+    let task = repo
+        .read_task(&repo.resolve_task_path("0001").unwrap())
+        .unwrap();
+    assert_eq!(task.frontmatter.priority.unwrap().to_string(), "p2");
+}
+
+#[test]
+fn interrupted_atomic_write_keeps_original_and_recovers() {
+    let (tmp, repo) = setup();
+    let original = task_content("0001", "Race", "todo");
+    write_task_file(&repo, "0001-race.md", &original);
+    let binary = env!("CARGO_BIN_EXE_stint");
+    let mut writer = Command::new(binary)
+        .current_dir(tmp.path())
+        .env("STINT_TEST_HOLD_BEFORE_TASK_RENAME", "1")
+        .args(["set", "0001", "--priority", "p1"])
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if fs::read_dir(repo.tasks_dir()).unwrap().any(|e| {
+            e.unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".stint-write-")
+        }) {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "write did not reach temporary file"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    writer.kill().unwrap();
+    writer.wait().unwrap();
+    assert_eq!(
+        fs::read_to_string(repo.tasks_dir().join("0001-race.md")).unwrap(),
+        original
+    );
+    assert!(Command::new(binary)
+        .current_dir(tmp.path())
+        .args(["set", "0001", "--priority", "p2"])
+        .status()
+        .unwrap()
+        .success());
+    assert_eq!(
+        repo.read_task(&repo.resolve_task_path("0001").unwrap())
+            .unwrap()
+            .frontmatter
+            .priority
+            .unwrap()
+            .to_string(),
+        "p2"
+    );
+}
+
+#[test]
+fn concurrent_priority_and_title_edits_preserve_both() {
+    let (tmp, repo) = setup();
+    write_task_file(&repo, "0001-race.md", &task_content("0001", "Race", "todo"));
+    let binary = env!("CARGO_BIN_EXE_stint");
+    let mut a = Command::new(binary)
+        .current_dir(tmp.path())
+        .args([
+            "set",
+            "0001",
+            "--priority",
+            "p1",
+            "--expect-priority",
+            "unset",
+        ])
+        .spawn()
+        .unwrap();
+    let mut b = Command::new(binary)
+        .current_dir(tmp.path())
+        .args(["set", "0001", "--title", "Changed"])
+        .spawn()
+        .unwrap();
+    assert!(a.wait().unwrap().success());
+    assert!(b.wait().unwrap().success());
+    let task = repo
+        .read_task(&repo.resolve_task_path("0001").unwrap())
+        .unwrap();
+    assert_eq!(task.frontmatter.priority.unwrap().to_string(), "p1");
+    assert_eq!(task.frontmatter.title, "Changed");
+}
+
+#[test]
+fn concurrent_gate_and_set_preserve_priority_and_blocker() {
+    let (tmp, repo) = setup();
+    write_task_file(&repo, "0001-race.md", &task_content("0001", "Race", "todo"));
+    let binary = env!("CARGO_BIN_EXE_stint");
+    let mut a = Command::new(binary)
+        .current_dir(tmp.path())
+        .args(["set", "0001", "--priority", "p2"])
+        .spawn()
+        .unwrap();
+    let mut b = Command::new(binary)
+        .current_dir(tmp.path())
+        .args([
+            "gate",
+            "file",
+            "0001",
+            "Decision",
+            "--ask",
+            "Which?",
+            "--options",
+            "A",
+            "--options",
+            "B",
+            "--good-answer",
+            "Choose",
+            "--evidence",
+            "Evidence",
+        ])
+        .spawn()
+        .unwrap();
+    assert!(a.wait().unwrap().success());
+    assert!(b.wait().unwrap().success());
+    let task = repo
+        .read_task(&repo.resolve_task_path("0001").unwrap())
+        .unwrap();
+    assert_eq!(task.frontmatter.priority.unwrap().to_string(), "p2");
+    assert_eq!(task.frontmatter.blocked_by.len(), 1);
+}
+
+#[test]
+fn concurrent_remove_and_set_never_resurrects_a_task() {
+    let (tmp, repo) = setup();
+    write_task_file(&repo, "0001-race.md", &task_content("0001", "Race", "todo"));
+    let binary = env!("CARGO_BIN_EXE_stint");
+    let mut a = Command::new(binary)
+        .current_dir(tmp.path())
+        .args(["set", "0001", "--priority", "p1"])
+        .spawn()
+        .unwrap();
+    let mut b = Command::new(binary)
+        .current_dir(tmp.path())
+        .args(["remove", "0001"])
+        .spawn()
+        .unwrap();
+    let set_status = a.wait().unwrap();
+    assert!(b.wait().unwrap().success());
+    assert!(!repo.tasks_dir().join("0001-race.md").exists());
+    if !set_status.success() {
+        assert!(repo.resolve_task_path("0001").is_err());
+    }
 }

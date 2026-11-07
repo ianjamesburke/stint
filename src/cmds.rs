@@ -52,6 +52,7 @@ pub fn cmd_init(
     github_repo: Option<&str>,
 ) -> anyhow::Result<InitReport> {
     let repo = StintRepo::init(root, force)?;
+    let _operation_lock = repo.lock_writer()?;
     let mut report = InitReport {
         repo: repo.stint_dir.clone(),
         imported: 0,

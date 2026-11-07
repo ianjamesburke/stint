@@ -1,8 +1,10 @@
 /// Locate the `.stint/` directory, load tasks, resolve task IDs.
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context};
+use fs2::FileExt;
 use stint::parse::{numeric_prefix, parse_task, ParseError};
 use stint::schema::{BlockedByRef, Task, TaskStatus};
 use stint::state::BlockerResolution;
@@ -19,6 +21,19 @@ pub struct DirectTaskPathResolution {
 }
 
 impl StintRepo {
+    pub fn lock_writer(&self) -> anyhow::Result<fs::File> {
+        let path = self.stint_dir.join("writer.lock");
+        let file = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&path)
+            .with_context(|| format!("open {}", path.display()))?;
+        file.lock_exclusive()
+            .with_context(|| format!("lock {}", path.display()))?;
+        Ok(file)
+    }
     /// Create a new `.stint/` workspace directly under `root`.
     pub fn init(root: &Path, force: bool) -> anyhow::Result<Self> {
         let stint_dir = root.join(".stint");
@@ -116,7 +131,6 @@ impl StintRepo {
         Ok((tasks, errors))
     }
 
-
     pub fn resolve_direct_task_path_blockers(
         &self,
         tasks: &[Task],
@@ -186,7 +200,6 @@ impl StintRepo {
         }
     }
 
-
     /// Read a task file by path and parse it.
     pub fn read_task(&self, path: &Path) -> anyhow::Result<Task> {
         let content =
@@ -201,7 +214,41 @@ impl StintRepo {
 
     /// Write a serialized task back to its file.
     pub fn write_task(&self, path: &Path, content: &str) -> anyhow::Result<()> {
-        fs::write(path, content).with_context(|| format!("write {}", path.display()))
+        let parent = path.parent().context("task path has no parent")?;
+        let mut n = 0u32;
+        let (temporary, mut file) = loop {
+            let candidate = parent.join(format!(".stint-write-{}-{n}.tmp", std::process::id()));
+            match fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&candidate)
+            {
+                Ok(file) => break (candidate, file),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                    n = n.checked_add(1).context("temporary name exhaustion")?
+                }
+                Err(e) => return Err(e).with_context(|| format!("create {}", candidate.display())),
+            }
+        };
+        let result = (|| -> anyhow::Result<()> {
+            if let Ok(metadata) = fs::metadata(path) {
+                file.set_permissions(metadata.permissions())
+                    .context("preserve task permissions")?;
+            }
+            file.write_all(content.as_bytes())
+                .context("write task temporary file")?;
+            file.sync_all().context("sync task temporary file")?;
+            #[cfg(debug_assertions)]
+            if std::env::var_os("STINT_TEST_HOLD_BEFORE_TASK_RENAME").is_some() {
+                std::thread::sleep(std::time::Duration::from_secs(30));
+            }
+            fs::rename(&temporary, path).with_context(|| format!("replace {}", path.display()))?;
+            Ok(())
+        })();
+        if result.is_err() {
+            let _ = fs::remove_file(&temporary);
+        }
+        result
     }
 }
 

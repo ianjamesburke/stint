@@ -228,6 +228,9 @@ enum Commands {
         /// Set priority (p0|p1|p2|p3|p4, or "" to clear).
         #[arg(long)]
         priority: Option<String>,
+        /// Only update if current priority matches p0..p4 or unset.
+        #[arg(long, requires = "priority")]
+        expect_priority: Option<String>,
         /// Set size (s|m|l, or "" to clear).
         #[arg(long)]
         size: Option<String>,
@@ -497,6 +500,22 @@ fn main() {
 }
 
 fn run(cli: Cli) -> anyhow::Result<()> {
+    // Serialize cooperating CLI operations, including each full read/modify/write.
+    // Keep the lock alive through output and release it automatically on exit.
+    let repo_for_lock = if matches!(&cli.command, Some(Commands::Init { .. })) {
+        None
+    } else {
+        find_repo().ok()
+    };
+    let _operation_lock = if let Some(repo) = repo_for_lock {
+        Some(repo.lock_writer()?)
+    } else {
+        None
+    };
+    #[cfg(debug_assertions)]
+    if std::env::var_os("STINT_TEST_HOLD_WRITER_LOCK").is_some() && _operation_lock.is_some() {
+        std::thread::sleep(std::time::Duration::from_secs(30));
+    }
     match cli.command {
         None => {
             let repo = find_repo()?;
@@ -754,6 +773,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             id,
             title,
             priority,
+            expect_priority,
             size,
             area,
             tags,
@@ -768,6 +788,36 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             json,
         }) => {
             let repo = find_repo()?;
+            if let Some(expected) = expect_priority {
+                let expected = if expected.eq_ignore_ascii_case("unset") {
+                    None
+                } else {
+                    Some(expected.parse::<stint::schema::Priority>()?)
+                };
+                let actual = repo
+                    .read_task(&repo.resolve_task_path(&id)?)?
+                    .frontmatter
+                    .priority;
+                if expected != actual {
+                    if json {
+                        println!(
+                            "{}",
+                            json!({"error": "priority_conflict", "id": id,
+                            "expected_priority": expected.map(|p| p.to_string()),
+                            "actual_priority": actual.map(|p| p.to_string())})
+                        );
+                    }
+                    anyhow::bail!(
+                        "priority conflict: expected {}, found {}",
+                        expected
+                            .map(|p| p.to_string())
+                            .unwrap_or_else(|| "unset".into()),
+                        actual
+                            .map(|p| p.to_string())
+                            .unwrap_or_else(|| "unset".into())
+                    );
+                }
+            }
             let opts = cmds::SetTaskOptions {
                 edits: cmds::TaskFieldEdits {
                     area,
@@ -792,6 +842,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                     serde_json::to_string_pretty(&json!({
                         "updated": id,
                         "path": path.to_string_lossy(),
+                        "priority": repo.read_task(&path)?.frontmatter.priority.map(|p| p.to_string()),
                     }))
                     .unwrap()
                 );
@@ -815,13 +866,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             json,
         }) => {
             let repo = find_repo()?;
-            cmds::cmd_claim(
-                &repo,
-                id.as_deref(),
-                restart,
-                started_at.as_deref(),
-                json,
-            )?;
+            cmds::cmd_claim(&repo, id.as_deref(), restart, started_at.as_deref(), json)?;
         }
 
         Some(Commands::Unclaim { id, json }) => {
@@ -904,11 +949,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             json,
         }) => {
             let repo = find_repo()?;
-            let report = cmds::cmd_next(
-                &repo,
-                include_area_conflicts,
-                include_backlog,
-            )?;
+            let report = cmds::cmd_next(&repo, include_area_conflicts, include_backlog)?;
             if json {
                 cmds::print_next_json(&repo, &report);
             } else {
@@ -1096,8 +1137,6 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 }
             }
         },
-
-
 
         Some(Commands::Check {
             id,

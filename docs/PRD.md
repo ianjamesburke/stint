@@ -121,7 +121,7 @@ Human decision gates are tasks tagged `gate` (filed in `status: backlog` via `st
 | `stint list [--status ...] [--all] [--blocked] [--hide-blocked] [--json]` | List tasks (filterable by status, sprint, area, tag, priority) |
 | `stint show <id> [--json]` | Print full task (frontmatter, computed state, extracted sections, and body) |
 | `stint edit <id>` | Open task file in `$EDITOR` |
-| `stint set <id> [--title ...] [--priority ...] [--size ...] [--area ...] [--tags ...] [--blocked-by ...] [--add-blocked-by ...] [--remove-blocked-by ...] [--why ...] [--done-when ...] [--references ...] [--body-file ...] [--json]` | Headlessly mutate frontmatter and/or markdown sections without opening `$EDITOR` |
+| `stint set <id> [--title ...] [--priority ...] [--expect-priority p0..p4|unset] [--size ...] [--area ...] [--tags ...] [--blocked-by ...] [--add-blocked-by ...] [--remove-blocked-by ...] [--why ...] [--done-when ...] [--references ...] [--body-file ...] [--json]` | Headlessly mutate frontmatter and/or markdown sections without opening `$EDITOR` |
 | `stint next [--sprint sN] [--include-backlog] [--json]` | Show ready tasks ordered by priority + age (excluding area conflicts with `in-progress` tasks) |
 | `stint claim [<id>] [--json]` | Mark task `in-progress` and set `started_at` (omit `<id>` to auto-claim the top ready task) |
 | `stint unclaim <id> [--json]` | Revert an `in-progress` task to `todo`, clearing `started_at` |
@@ -253,3 +253,7 @@ repo = "owner/repo"      # optional, inferred from git remote if absent
 - [ ] Library modules have no I/O side effects
 - [ ] `src/main.rs` is a thin shell — no business logic
 - [ ] Builds cleanly with `cargo build`
+
+### Concurrent task writers
+
+Stint CLI processes coordinate task reads and mutations with a shared/exclusive repository advisory lock and replace task files atomically. Editors work on a private copy without holding the lock; a concurrent task change causes a conflict and preserves the editor copy for recovery. Use `stint set <id> --priority p1 --expect-priority unset --json` to change a known prior priority; supply `p0` through `p4` or `unset` as the expectation. A mismatch returns a nonzero exit and JSON `priority_conflict` with `expected_priority` and `actual_priority` (null means unset). Without an expectation, existing set behavior is unchanged. External editors and older Stint binaries do not take this lock; their writes can race and need separate coordination. For cooperating CLI multi-task changes, an undo journal restores the original task files after an interrupted process or error. Recovery occurs before the next Stint command that observes the journal; an interrupted command has an unknown outcome until recovery. This protects against process interruption, not storage failure or writes by noncooperating tools.

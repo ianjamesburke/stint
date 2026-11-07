@@ -278,7 +278,7 @@ pub fn schema_json(kind: Option<&str>) -> Result<Value, String> {
             {"cmd": "stint claim [id] [--restart] [--json]", "description": "Claim a specific task or auto-claim the top ready task under an advisory lock"},
             {"cmd": "stint unclaim <id> [--json]", "description": "Revert an in-progress task to todo and clear started_at"},
             {"cmd": "stint done <id> [--actual <duration>] [--json]", "description": "Mark task done, prune it from dependent tasks' blocked_by, and report unblocked tasks"},
-            {"cmd": "stint set <id> [--priority ...] [--size ...] [--add-blocked-by ...] [--remove-blocked-by ...] [--why ...] [--done-when ...]", "description": "Headlessly update task frontmatter or body sections"},
+            {"cmd": "stint set <id> [--priority ...] [--expect-priority p0..p4|unset] [--size ...] [--add-blocked-by ...] [--remove-blocked-by ...] [--why ...] [--done-when ...]", "description": "Headlessly update task frontmatter or body sections"},
             {"cmd": "stint gate file <task-id> <ask-title> [--body-file ...] [--ask ...] [--options ...] [--json]", "description": "File a 7-section decision gate, wire it into <task-id>'s blocked_by, and unclaim <task-id>"},
             {"cmd": "stint gate list [--all] [--json]", "description": "List open human decision gates and the tasks they block"},
             {"cmd": "stint gate show <gate-id> [--json]", "description": "Inspect a gate and the tasks it blocks"},

@@ -228,6 +228,9 @@ enum Commands {
         /// Set priority (p0|p1|p2|p3|p4, or "" to clear).
         #[arg(long)]
         priority: Option<String>,
+        /// Only update if current priority matches p0..p4 or unset.
+        #[arg(long, requires = "priority")]
+        expect_priority: Option<String>,
         /// Set size (s|m|l, or "" to clear).
         #[arg(long)]
         size: Option<String>,
@@ -497,6 +500,96 @@ fn main() {
 }
 
 fn run(cli: Cli) -> anyhow::Result<()> {
+    let is_init = matches!(&cli.command, Some(Commands::Init { .. }));
+    if let Some(Commands::Edit { id }) = &cli.command {
+        let repo = find_repo()?;
+        let lock = repo.lock_writer()?;
+        repo.recover_transaction()?;
+        let path = repo.resolve_task_path(id)?;
+        return edit_safely(&repo, &path, lock);
+    }
+    let is_write = matches!(
+        &cli.command,
+        Some(
+            Commands::Add { .. }
+                | Commands::Propose { .. }
+                | Commands::Approve { .. }
+                | Commands::Reject { .. }
+                | Commands::Edit { .. }
+                | Commands::Set { .. }
+                | Commands::Remove { .. }
+                | Commands::Claim { .. }
+                | Commands::Unclaim { .. }
+                | Commands::Done { .. }
+                | Commands::Log { .. }
+                | Commands::Archive { .. }
+                | Commands::Ready { .. }
+                | Commands::Defer { .. }
+                | Commands::Gate {
+                    command: GateCommands::File { .. } | GateCommands::Resolve { .. }
+                }
+        )
+    );
+    let is_multi = matches!(
+        &cli.command,
+        Some(
+            Commands::Approve { .. }
+                | Commands::Reject { .. }
+                | Commands::Remove { .. }
+                | Commands::Done { .. }
+                | Commands::Ready { .. }
+                | Commands::Defer { .. }
+                | Commands::Gate {
+                    command: GateCommands::File { .. } | GateCommands::Resolve { .. }
+                }
+        )
+    );
+    let repo_for_lock = if is_init { None } else { find_repo().ok() };
+    let mut operation_lock = if let Some(repo) = &repo_for_lock {
+        if is_write {
+            Some(repo.lock_writer()?)
+        } else {
+            Some(repo.lock_reader()?)
+        }
+    } else {
+        None
+    };
+    if operation_lock.is_some() && is_write {
+        repo_for_lock.as_ref().unwrap().recover_transaction()?;
+    }
+    #[cfg(debug_assertions)]
+    if !is_write {
+        if let Some(marker) = std::env::var_os("STINT_TEST_PAUSE_READER") {
+            let marker = std::path::PathBuf::from(marker);
+            std::fs::write(&marker, "locked")?;
+            while marker.exists() {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        }
+    }
+    if is_multi {
+        if let Some(repo) = &repo_for_lock {
+            repo.begin_transaction()?;
+        }
+    }
+    #[cfg(debug_assertions)]
+    if std::env::var_os("STINT_TEST_HOLD_WRITER_LOCK").is_some() && operation_lock.is_some() {
+        std::thread::sleep(std::time::Duration::from_secs(30));
+    }
+    let result = run_command(cli, &mut operation_lock);
+    if is_multi {
+        if let Some(repo) = &repo_for_lock {
+            if result.is_ok() {
+                repo.commit_transaction()?;
+            } else {
+                repo.recover_transaction()?;
+            }
+        }
+    }
+    result
+}
+
+fn run_command(cli: Cli, operation_lock: &mut Option<std::fs::File>) -> anyhow::Result<()> {
     match cli.command {
         None => {
             let repo = find_repo()?;
@@ -540,6 +633,12 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 anyhow::bail!("--backlog and --proposed cannot be used together");
             }
             let repo = find_repo()?;
+            let launch_editor = !no_edit
+                && !json
+                && body_file.is_none()
+                && why.is_none()
+                && done_when.is_empty()
+                && references.is_empty();
             let edits = cmds::TaskFieldEdits {
                 area: Some(area),
                 tags: Some(tags),
@@ -562,10 +661,15 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 why: why.as_deref(),
                 done_when: &done_when,
                 references: &references,
-                no_edit: no_edit || json,
+                no_edit: true,
                 status: status.clone(),
             };
             let path = cmds::cmd_add_ext(&repo, &opts)?;
+            if launch_editor {
+                let lock = operation_lock.take().context("missing writer lock")?;
+                edit_safely(&repo, &path, lock)?;
+                *operation_lock = Some(repo.lock_reader()?);
+            }
             let task = repo.read_task(&path)?;
             if json {
                 println!(
@@ -599,6 +703,12 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             json,
         }) => {
             let repo = find_repo()?;
+            let launch_editor = !no_edit
+                && !json
+                && body_file.is_none()
+                && why.is_none()
+                && done_when.is_empty()
+                && references.is_empty();
             let edits = cmds::TaskFieldEdits {
                 area: Some(area),
                 tags: Some(tags),
@@ -614,10 +724,15 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 why: why.as_deref(),
                 done_when: &done_when,
                 references: &references,
-                no_edit: no_edit || json,
+                no_edit: true,
                 status: TaskStatus::Proposed,
             };
             let path = cmds::cmd_add_ext(&repo, &opts)?;
+            if launch_editor {
+                let lock = operation_lock.take().context("missing writer lock")?;
+                edit_safely(&repo, &path, lock)?;
+                *operation_lock = Some(repo.lock_reader()?);
+            }
             let task = repo.read_task(&path)?;
             if json {
                 println!(
@@ -754,6 +869,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             id,
             title,
             priority,
+            expect_priority,
             size,
             area,
             tags,
@@ -768,6 +884,36 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             json,
         }) => {
             let repo = find_repo()?;
+            if let Some(expected) = expect_priority {
+                let expected = if expected.eq_ignore_ascii_case("unset") {
+                    None
+                } else {
+                    Some(expected.parse::<stint::schema::Priority>()?)
+                };
+                let actual = repo
+                    .read_task(&repo.resolve_task_path(&id)?)?
+                    .frontmatter
+                    .priority;
+                if expected != actual {
+                    if json {
+                        println!(
+                            "{}",
+                            json!({"error": "priority_conflict", "id": id,
+                        "expected_priority": expected.map(|p| p.to_string()),
+                        "actual_priority": actual.map(|p| p.to_string())})
+                        );
+                    }
+                    anyhow::bail!(
+                        "priority conflict: expected {}, found {}",
+                        expected
+                            .map(|p| p.to_string())
+                            .unwrap_or_else(|| "unset".into()),
+                        actual
+                            .map(|p| p.to_string())
+                            .unwrap_or_else(|| "unset".into())
+                    );
+                }
+            }
             let opts = cmds::SetTaskOptions {
                 edits: cmds::TaskFieldEdits {
                     area,
@@ -788,13 +934,14 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             let path = cmds::cmd_set_ext(&repo, &id, &opts)?;
             if json {
                 println!(
-                    "{}",
-                    serde_json::to_string_pretty(&json!({
-                        "updated": id,
-                        "path": path.to_string_lossy(),
-                    }))
-                    .unwrap()
-                );
+                "{}",
+                serde_json::to_string_pretty(&json!({
+                    "updated": id,
+                    "path": path.to_string_lossy(),
+                    "priority": repo.read_task(&path)?.frontmatter.priority.map(|p| p.to_string()),
+                }))
+                .unwrap()
+            );
             } else {
                 println!("{}", path.display());
             }
@@ -815,13 +962,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             json,
         }) => {
             let repo = find_repo()?;
-            cmds::cmd_claim(
-                &repo,
-                id.as_deref(),
-                restart,
-                started_at.as_deref(),
-                json,
-            )?;
+            cmds::cmd_claim(&repo, id.as_deref(), restart, started_at.as_deref(), json)?;
         }
 
         Some(Commands::Unclaim { id, json }) => {
@@ -856,19 +997,23 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 started_at.as_deref(),
                 completed_at.as_deref(),
             )?;
+            #[cfg(debug_assertions)]
+            if std::env::var_os("STINT_TEST_HOLD_DONE_AFTER_WRITE").is_some() {
+                std::thread::sleep(std::time::Duration::from_secs(30));
+            }
             let unblocked = cmds::tasks_unblocked_by_done(&repo, &id)?;
             let pruned = cmds::prune_done_blocker_refs(&repo, &id)?;
             if json {
                 println!(
-                    "{}",
-                    serde_json::to_string_pretty(&json!({
-                        "done": id,
-                        "path": path.to_string_lossy(),
-                        "unblocked": unblocked.iter().map(|t| json!({"id": t.id, "title": t.title})).collect::<Vec<_>>(),
-                        "pruned": pruned.iter().map(|t| json!({"id": t.id, "title": t.title})).collect::<Vec<_>>(),
-                    }))
-                    .unwrap()
-                );
+                "{}",
+                serde_json::to_string_pretty(&json!({
+                    "done": id,
+                    "path": path.to_string_lossy(),
+                    "unblocked": unblocked.iter().map(|t| json!({"id": t.id, "title": t.title})).collect::<Vec<_>>(),
+                    "pruned": pruned.iter().map(|t| json!({"id": t.id, "title": t.title})).collect::<Vec<_>>(),
+                }))
+                .unwrap()
+            );
             } else {
                 println!("done: {}", path.display());
                 if !unblocked.is_empty() {
@@ -904,11 +1049,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             json,
         }) => {
             let repo = find_repo()?;
-            let report = cmds::cmd_next(
-                &repo,
-                include_area_conflicts,
-                include_backlog,
-            )?;
+            let report = cmds::cmd_next(&repo, include_area_conflicts, include_backlog)?;
             if json {
                 cmds::print_next_json(&repo, &report);
             } else {
@@ -1071,16 +1212,16 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 let report = cmds::cmd_gate_resolve(&repo, &id, &decision)?;
                 if json {
                     println!(
-                        "{}",
-                        serde_json::to_string_pretty(&json!({
-                            "resolved": report.gate_id,
-                            "path": report.gate_path.to_string_lossy(),
-                            "decision": report.decision,
-                            "unblocked": report.unblocked.iter().map(|t| json!({"id": t.id, "title": t.title})).collect::<Vec<_>>(),
-                            "pruned": report.pruned.iter().map(|t| json!({"id": t.id, "title": t.title})).collect::<Vec<_>>(),
-                        }))
-                        .unwrap()
-                    );
+                    "{}",
+                    serde_json::to_string_pretty(&json!({
+                        "resolved": report.gate_id,
+                        "path": report.gate_path.to_string_lossy(),
+                        "decision": report.decision,
+                        "unblocked": report.unblocked.iter().map(|t| json!({"id": t.id, "title": t.title})).collect::<Vec<_>>(),
+                        "pruned": report.pruned.iter().map(|t| json!({"id": t.id, "title": t.title})).collect::<Vec<_>>(),
+                    }))
+                    .unwrap()
+                );
                 } else {
                     println!(
                         "resolved gate {}: {}",
@@ -1096,8 +1237,6 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 }
             }
         },
-
-
 
         Some(Commands::Check {
             id,
@@ -1174,6 +1313,72 @@ fn run(cli: Cli) -> anyhow::Result<()> {
 // ---------------------------------------------------------------------------
 // Helper
 // ---------------------------------------------------------------------------
+
+fn edit_safely(
+    repo: &StintRepo,
+    path: &std::path::Path,
+    lock: std::fs::File,
+) -> anyhow::Result<()> {
+    use std::io::Write;
+    let original = std::fs::read(path).with_context(|| format!("read {}", path.display()))?;
+    let mut counter = 0u32;
+    let (temp_path, mut temp) = loop {
+        let p = repo
+            .stint_dir
+            .join(format!("edit-{}-{counter}.md", std::process::id()));
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&p)
+        {
+            Ok(f) => break (p, f),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                counter = counter
+                    .checked_add(1)
+                    .context("editor temp name exhaustion")?
+            }
+            Err(e) => return Err(e).context("create editor copy"),
+        }
+    };
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        temp.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    }
+    temp.write_all(&original)?;
+    temp.sync_all()?;
+    drop(temp);
+    drop(lock);
+    if let Err(error) = cmds::open_editor(&temp_path) {
+        anyhow::bail!(
+            "{error:#}; editor copy preserved at {}",
+            temp_path.display()
+        );
+    }
+    let edited = std::fs::read(&temp_path)
+        .with_context(|| format!("read editor copy {}", temp_path.display()))?;
+    let _lock = repo.lock_writer()?;
+    repo.recover_transaction()?;
+    if edited != original {
+        let current = std::fs::read(path).with_context(|| {
+            format!(
+                "task changed or removed; editor copy preserved at {}",
+                temp_path.display()
+            )
+        })?;
+        if current != original {
+            anyhow::bail!(
+                "task changed during editing; editor copy preserved at {}",
+                temp_path.display()
+            );
+        }
+        let text = std::str::from_utf8(&edited).context("editor copy is not UTF-8")?;
+        repo.write_task(path, text)
+            .with_context(|| format!("save editor copy {}", temp_path.display()))?;
+    }
+    std::fs::remove_file(&temp_path).context("remove editor copy")?;
+    Ok(())
+}
 
 fn cmd_update() -> anyhow::Result<()> {
     let status = Command::new("cargo")

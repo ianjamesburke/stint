@@ -1,8 +1,11 @@
 /// Locate the `.stint/` directory, load tasks, resolve task IDs.
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context};
+use fs2::FileExt;
+use serde::{Deserialize, Serialize};
 use stint::parse::{numeric_prefix, parse_task, ParseError};
 use stint::schema::{BlockedByRef, Task, TaskStatus};
 use stint::state::BlockerResolution;
@@ -18,7 +21,137 @@ pub struct DirectTaskPathResolution {
     pub errors: Vec<String>,
 }
 
+#[derive(Serialize, Deserialize)]
+struct JournalEntry {
+    name: String,
+    contents: Vec<u8>,
+    #[cfg(unix)]
+    mode: u32,
+}
+
 impl StintRepo {
+    fn journal_path(&self) -> PathBuf {
+        self.stint_dir.join("writer-journal.json")
+    }
+
+    pub fn has_journal(&self) -> anyhow::Result<bool> {
+        self.journal_path()
+            .try_exists()
+            .context("check writer journal")
+    }
+
+    /// Called only with the repository writer lock held.
+    pub fn begin_transaction(&self) -> anyhow::Result<()> {
+        self.ensure_dirs()?;
+        let mut entries = Vec::new();
+        for entry in fs::read_dir(self.tasks_dir())? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.extension().and_then(|s| s.to_str()) != Some("md") {
+                continue;
+            }
+            let metadata = fs::symlink_metadata(&path)?;
+            if !metadata.is_file() {
+                bail!("cannot journal non-regular task {}", path.display());
+            }
+            let name = entry
+                .file_name()
+                .into_string()
+                .map_err(|_| anyhow::anyhow!("non-UTF8 task name"))?;
+            #[cfg(unix)]
+            use std::os::unix::fs::PermissionsExt;
+            entries.push(JournalEntry {
+                name,
+                contents: fs::read(path)?,
+                #[cfg(unix)]
+                mode: metadata.permissions().mode(),
+            });
+        }
+        let bytes = serde_json::to_string(&entries)?;
+        self.write_task(&self.journal_path(), &bytes)?;
+        Ok(())
+    }
+
+    /// Roll back an interrupted multi-task operation. The journal is removed only
+    /// after all original files have been restored, so recovery itself is resumable.
+    pub fn recover_transaction(&self) -> anyhow::Result<()> {
+        let path = self.journal_path();
+        if !path.try_exists().context("check writer journal")? {
+            return Ok(());
+        }
+        let entries: Vec<JournalEntry> =
+            serde_json::from_slice(&fs::read(&path).context("read writer journal")?)
+                .context("parse writer journal")?;
+        let mut names = std::collections::HashSet::new();
+        for entry in &entries {
+            let name = Path::new(&entry.name);
+            if name.file_name() != Some(name.as_os_str())
+                || name.extension().and_then(|s| s.to_str()) != Some("md")
+                || !names.insert(entry.name.clone())
+            {
+                bail!("invalid task name in writer journal");
+            }
+        }
+        for entry in &entries {
+            let task_path = self.tasks_dir().join(&entry.name);
+            let text = std::str::from_utf8(&entry.contents).context("non-UTF8 task in journal")?;
+            self.write_task(&task_path, text)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(&task_path, fs::Permissions::from_mode(entry.mode))?;
+            }
+        }
+        for entry in fs::read_dir(self.tasks_dir())? {
+            let entry = entry?;
+            let name = entry.file_name();
+            if entry.path().extension().and_then(|s| s.to_str()) == Some("md")
+                && !names.contains(&name.to_string_lossy().into_owned())
+            {
+                fs::remove_file(entry.path())
+                    .context("remove newly created task during recovery")?;
+            }
+        }
+        fs::remove_file(path).context("remove recovered writer journal")?;
+        Ok(())
+    }
+
+    pub fn commit_transaction(&self) -> anyhow::Result<()> {
+        fs::remove_file(self.journal_path()).context("remove committed writer journal")
+    }
+    pub fn lock_writer(&self) -> anyhow::Result<fs::File> {
+        let path = self.stint_dir.join("writer.lock");
+        let file = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&path)
+            .with_context(|| format!("open {}", path.display()))?;
+        file.lock_exclusive()
+            .with_context(|| format!("lock {}", path.display()))?;
+        Ok(file)
+    }
+    pub fn lock_reader(&self) -> anyhow::Result<fs::File> {
+        loop {
+            let path = self.stint_dir.join("writer.lock");
+            let file = fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .open(&path)
+                .with_context(|| format!("open {}", path.display()))?;
+            FileExt::lock_shared(&file).with_context(|| format!("lock {}", path.display()))?;
+            if !self.has_journal()? {
+                return Ok(file);
+            }
+            drop(file);
+            let writer = self.lock_writer()?;
+            self.recover_transaction()?;
+            drop(writer);
+        }
+    }
     /// Create a new `.stint/` workspace directly under `root`.
     pub fn init(root: &Path, force: bool) -> anyhow::Result<Self> {
         let stint_dir = root.join(".stint");
@@ -116,7 +249,6 @@ impl StintRepo {
         Ok((tasks, errors))
     }
 
-
     pub fn resolve_direct_task_path_blockers(
         &self,
         tasks: &[Task],
@@ -186,7 +318,6 @@ impl StintRepo {
         }
     }
 
-
     /// Read a task file by path and parse it.
     pub fn read_task(&self, path: &Path) -> anyhow::Result<Task> {
         let content =
@@ -201,7 +332,47 @@ impl StintRepo {
 
     /// Write a serialized task back to its file.
     pub fn write_task(&self, path: &Path, content: &str) -> anyhow::Result<()> {
-        fs::write(path, content).with_context(|| format!("write {}", path.display()))
+        let parent = path.parent().context("task path has no parent")?;
+        let mut n = 0u32;
+        let (temporary, mut file) = loop {
+            let candidate = parent.join(format!(".stint-write-{}-{n}.tmp", std::process::id()));
+            match fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&candidate)
+            {
+                Ok(file) => break (candidate, file),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                    n = n.checked_add(1).context("temporary name exhaustion")?
+                }
+                Err(e) => return Err(e).with_context(|| format!("create {}", candidate.display())),
+            }
+        };
+        let result = (|| -> anyhow::Result<()> {
+            #[cfg(unix)]
+            if path == self.journal_path() {
+                use std::os::unix::fs::PermissionsExt;
+                file.set_permissions(fs::Permissions::from_mode(0o600))
+                    .context("protect writer journal")?;
+            }
+            if let Ok(metadata) = fs::metadata(path) {
+                file.set_permissions(metadata.permissions())
+                    .context("preserve task permissions")?;
+            }
+            file.write_all(content.as_bytes())
+                .context("write task temporary file")?;
+            file.sync_all().context("sync task temporary file")?;
+            #[cfg(debug_assertions)]
+            if std::env::var_os("STINT_TEST_HOLD_BEFORE_TASK_RENAME").is_some() {
+                std::thread::sleep(std::time::Duration::from_secs(30));
+            }
+            fs::rename(&temporary, path).with_context(|| format!("replace {}", path.display()))?;
+            Ok(())
+        })();
+        if result.is_err() {
+            let _ = fs::remove_file(&temporary);
+        }
+        result
     }
 }
 

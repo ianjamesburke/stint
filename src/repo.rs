@@ -132,6 +132,26 @@ impl StintRepo {
             .with_context(|| format!("lock {}", path.display()))?;
         Ok(file)
     }
+    pub fn lock_reader(&self) -> anyhow::Result<fs::File> {
+        loop {
+            let path = self.stint_dir.join("writer.lock");
+            let file = fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .open(&path)
+                .with_context(|| format!("open {}", path.display()))?;
+            FileExt::lock_shared(&file).with_context(|| format!("lock {}", path.display()))?;
+            if !self.has_journal()? {
+                return Ok(file);
+            }
+            drop(file);
+            let writer = self.lock_writer()?;
+            self.recover_transaction()?;
+            drop(writer);
+        }
+    }
     /// Create a new `.stint/` workspace directly under `root`.
     pub fn init(root: &Path, force: bool) -> anyhow::Result<Self> {
         let stint_dir = root.join(".stint");

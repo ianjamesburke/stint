@@ -2216,3 +2216,210 @@ fn interrupted_done_restores_task_and_blocker() {
         1
     );
 }
+
+#[cfg(unix)]
+#[test]
+fn edit_allows_editor_to_run_stint_set_without_deadlock() {
+    use std::os::unix::fs::PermissionsExt;
+    let (tmp, repo) = setup();
+    write_task_file(&repo, "0001-race.md", &task_content("0001", "Race", "todo"));
+    let binary = env!("CARGO_BIN_EXE_stint");
+    let editor = tmp.path().join("editor-set.sh");
+    fs::write(
+        &editor,
+        format!(
+            "#!/bin/sh\n'{}' set 0001 --priority p1 >/dev/null\n",
+            binary
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&editor, fs::Permissions::from_mode(0o755)).unwrap();
+    let mut edit = Command::new("script")
+        .current_dir(tmp.path())
+        .env_remove("STINT_TEST_EDITOR")
+        .env("EDITOR", &editor)
+        .args(["-q", "/dev/null", binary, "edit", "0001"])
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        if let Some(status) = edit.try_wait().unwrap() {
+            assert!(status.success());
+            break;
+        }
+        if Instant::now() >= deadline {
+            edit.kill().unwrap();
+            edit.wait().unwrap();
+            panic!("editor invoking stint set deadlocked");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(
+        repo.read_task(&repo.resolve_task_path("0001").unwrap())
+            .unwrap()
+            .frontmatter
+            .priority
+            .unwrap()
+            .to_string(),
+        "p1"
+    );
+}
+
+#[test]
+fn reader_lock_prevents_gate_change_after_reader_starts() {
+    let (tmp, repo) = setup();
+    write_task_file(
+        &repo,
+        "0001-race.md",
+        &task_content("0001", "Race", "in-progress"),
+    );
+    let binary = env!("CARGO_BIN_EXE_stint");
+    let marker = tmp.path().join("reader-locked");
+    let mut reader = Command::new(binary)
+        .current_dir(tmp.path())
+        .env("STINT_TEST_PAUSE_READER", &marker)
+        .args(["list", "--json"])
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !marker.exists() {
+        assert!(reader.try_wait().unwrap().is_none());
+        assert!(Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let mut writer = Command::new(binary)
+        .current_dir(tmp.path())
+        .env("STINT_TEST_HOLD_GATE_AFTER_CREATE", "1")
+        .args([
+            "gate",
+            "file",
+            "0001",
+            "Decision",
+            "--ask",
+            "Which?",
+            "--options",
+            "A",
+            "--options",
+            "B",
+            "--good-answer",
+            "Choose",
+            "--evidence",
+            "Evidence",
+        ])
+        .spawn()
+        .unwrap();
+    std::thread::sleep(Duration::from_millis(250));
+    let modified_early = repo.tasks_dir().join("0002-gate-decision.md").exists();
+    fs::remove_file(&marker).unwrap();
+    assert!(reader.wait_with_output().unwrap().status.success());
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !repo.tasks_dir().join("0002-gate-decision.md").exists() {
+        assert!(writer.try_wait().unwrap().is_none());
+        assert!(Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    writer.kill().unwrap();
+    writer.wait().unwrap();
+    assert!(Command::new(binary)
+        .current_dir(tmp.path())
+        .args(["list", "--json"])
+        .output()
+        .unwrap()
+        .status
+        .success());
+    assert!(
+        !modified_early,
+        "writer modified tasks while reader held snapshot lock"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn editor_conflict_preserves_both_writer_and_editor_contents() {
+    use std::os::unix::fs::PermissionsExt;
+    let (tmp, repo) = setup();
+    write_task_file(&repo, "0001-race.md", &task_content("0001", "Race", "todo"));
+    let binary = env!("CARGO_BIN_EXE_stint");
+    let editor = tmp.path().join("editor-conflict.sh");
+    fs::write(&editor, format!("#!/bin/sh\n'{}' set 0001 --priority p1 >/dev/null\nprintf '\\neditor text\\n' >> \"$1\"\n", binary)).unwrap();
+    fs::set_permissions(&editor, fs::Permissions::from_mode(0o755)).unwrap();
+    let status = Command::new("script")
+        .current_dir(tmp.path())
+        .env_remove("STINT_TEST_EDITOR")
+        .env("EDITOR", &editor)
+        .args(["-q", "/dev/null", binary, "edit", "0001"])
+        .status()
+        .unwrap();
+    assert!(!status.success());
+    assert_eq!(
+        repo.read_task(&repo.resolve_task_path("0001").unwrap())
+            .unwrap()
+            .frontmatter
+            .priority
+            .unwrap()
+            .to_string(),
+        "p1"
+    );
+    let copies: Vec<_> = fs::read_dir(&repo.stint_dir)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| {
+            p.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("edit-")
+        })
+        .collect();
+    assert_eq!(copies.len(), 1);
+    assert!(fs::read_to_string(&copies[0])
+        .unwrap()
+        .contains("editor text"));
+}
+
+#[cfg(unix)]
+#[test]
+fn add_editor_allows_nested_write() {
+    use std::os::unix::fs::PermissionsExt;
+    let (tmp, repo) = setup();
+    let binary = env!("CARGO_BIN_EXE_stint");
+    let editor = tmp.path().join("add-editor.sh");
+    fs::write(
+        &editor,
+        format!(
+            "#!/bin/sh\n'{}' set 0001 --priority p1 >/dev/null\n",
+            binary
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&editor, fs::Permissions::from_mode(0o755)).unwrap();
+    let mut add = Command::new("script")
+        .current_dir(tmp.path())
+        .env_remove("STINT_TEST_EDITOR")
+        .env("EDITOR", &editor)
+        .args(["-q", "/dev/null", binary, "add", "New task"])
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        if let Some(status) = add.try_wait().unwrap() {
+            assert!(status.success());
+            break;
+        }
+        if Instant::now() >= deadline {
+            add.kill().unwrap();
+            add.wait().unwrap();
+            panic!("add editor invoking stint set deadlocked");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(
+        repo.read_task(&repo.resolve_task_path("0001").unwrap())
+            .unwrap()
+            .frontmatter
+            .priority
+            .unwrap()
+            .to_string(),
+        "p1"
+    );
+}

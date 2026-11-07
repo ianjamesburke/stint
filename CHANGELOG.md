@@ -1,6 +1,13 @@
 # Changelog
 
 Newest releases appear first.
+## [0.4.1] - 2026-11-07
+
+### Changes
+- test: invoke platform-specific PTY harness (stint 0021)
+- fix: synchronize readers and release lock during editing (stint 0021)
+- fix: recover interrupted task transactions (stint 0021)
+- fix: coordinate task writes and guard priority changes (stint 0021)
 ## [0.4.0] - 2026-10-27
 
 ### Changes

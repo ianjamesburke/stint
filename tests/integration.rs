@@ -68,6 +68,26 @@ fn setup_empty_dir() -> TempDir {
     TempDir::new().unwrap()
 }
 
+#[cfg(unix)]
+fn pty_command(binary: &str, args: &[&str]) -> Command {
+    let mut command = Command::new("script");
+    #[cfg(target_os = "linux")]
+    {
+        let quote = |value: &str| format!("'{}'", value.replace('\'', "'\\''"));
+        let shell_command = std::iter::once(binary)
+            .chain(args.iter().copied())
+            .map(quote)
+            .collect::<Vec<_>>()
+            .join(" ");
+        command.args(["-q", "-e", "-c", &shell_command, "/dev/null"]);
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        command.args(["-q", "/dev/null", binary]).args(args);
+    }
+    command
+}
+
 /// Write a raw task file into the repo's tasks dir.
 fn write_task_file(repo: &StintRepo, filename: &str, content: &str) {
     fs::write(repo.tasks_dir().join(filename), content).unwrap();
@@ -2067,11 +2087,10 @@ fn edit_allows_editor_to_read_stint_without_deadlock() {
     )
     .unwrap();
     fs::set_permissions(&editor, fs::Permissions::from_mode(0o755)).unwrap();
-    let mut edit = Command::new("script")
+    let mut edit = pty_command(binary, &["edit", "0001"])
         .current_dir(tmp.path())
         .env_remove("STINT_TEST_EDITOR")
         .env("EDITOR", &editor)
-        .args(["-q", "/dev/null", binary, "edit", "0001"])
         .spawn()
         .unwrap();
     let deadline = Instant::now() + Duration::from_secs(2);
@@ -2234,11 +2253,10 @@ fn edit_allows_editor_to_run_stint_set_without_deadlock() {
     )
     .unwrap();
     fs::set_permissions(&editor, fs::Permissions::from_mode(0o755)).unwrap();
-    let mut edit = Command::new("script")
+    let mut edit = pty_command(binary, &["edit", "0001"])
         .current_dir(tmp.path())
         .env_remove("STINT_TEST_EDITOR")
         .env("EDITOR", &editor)
-        .args(["-q", "/dev/null", binary, "edit", "0001"])
         .spawn()
         .unwrap();
     let deadline = Instant::now() + Duration::from_secs(2);
@@ -2344,11 +2362,10 @@ fn editor_conflict_preserves_both_writer_and_editor_contents() {
     let editor = tmp.path().join("editor-conflict.sh");
     fs::write(&editor, format!("#!/bin/sh\n'{}' set 0001 --priority p1 >/dev/null\nprintf '\\neditor text\\n' >> \"$1\"\n", binary)).unwrap();
     fs::set_permissions(&editor, fs::Permissions::from_mode(0o755)).unwrap();
-    let status = Command::new("script")
+    let status = pty_command(binary, &["edit", "0001"])
         .current_dir(tmp.path())
         .env_remove("STINT_TEST_EDITOR")
         .env("EDITOR", &editor)
-        .args(["-q", "/dev/null", binary, "edit", "0001"])
         .status()
         .unwrap();
     assert!(!status.success());
@@ -2393,11 +2410,10 @@ fn add_editor_allows_nested_write() {
     )
     .unwrap();
     fs::set_permissions(&editor, fs::Permissions::from_mode(0o755)).unwrap();
-    let mut add = Command::new("script")
+    let mut add = pty_command(binary, &["add", "New task"])
         .current_dir(tmp.path())
         .env_remove("STINT_TEST_EDITOR")
         .env("EDITOR", &editor)
-        .args(["-q", "/dev/null", binary, "add", "New task"])
         .spawn()
         .unwrap();
     let deadline = Instant::now() + Duration::from_secs(2);

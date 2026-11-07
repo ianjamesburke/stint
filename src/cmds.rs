@@ -53,6 +53,7 @@ pub fn cmd_init(
 ) -> anyhow::Result<InitReport> {
     let repo = StintRepo::init(root, force)?;
     let _operation_lock = repo.lock_writer()?;
+    repo.recover_transaction()?;
     let mut report = InitReport {
         repo: repo.stint_dir.clone(),
         imported: 0,
@@ -61,7 +62,11 @@ pub fn cmd_init(
 
     if with_github {
         let issues = fetch_open_github_issues(github_repo)?;
-        let imported = import_github_issues(&repo, &issues)?;
+        repo.begin_transaction()?;
+        let imported = match import_github_issues(&repo, &issues) {
+            Ok(imported) => { repo.commit_transaction()?; imported }
+            Err(error) => { repo.recover_transaction()?; return Err(error); }
+        };
         report.imported = imported.imported;
         report.skipped = imported.skipped;
     }
@@ -2069,6 +2074,11 @@ pub fn cmd_gate_file(
         repo.write_task(&path, &serialize_task(&gate_task))?;
         Ok((id, path))
     })?;
+
+    #[cfg(debug_assertions)]
+    if std::env::var_os("STINT_TEST_HOLD_GATE_AFTER_CREATE").is_some() {
+        std::thread::sleep(std::time::Duration::from_secs(30));
+    }
 
     // Wire the gate into the stalled task's blocked_by without clobbering existing blockers,
     // and unclaim if currently in-progress.

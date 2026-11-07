@@ -2052,3 +2052,167 @@ fn concurrent_remove_and_set_never_resurrects_a_task() {
         assert!(repo.resolve_task_path("0001").is_err());
     }
 }
+
+#[cfg(unix)]
+#[test]
+fn edit_allows_editor_to_read_stint_without_deadlock() {
+    use std::os::unix::fs::PermissionsExt;
+    let (tmp, repo) = setup();
+    write_task_file(&repo, "0001-race.md", &task_content("0001", "Race", "todo"));
+    let binary = env!("CARGO_BIN_EXE_stint");
+    let editor = tmp.path().join("editor.sh");
+    fs::write(
+        &editor,
+        format!("#!/bin/sh\n'{}' list >/dev/null\n", binary),
+    )
+    .unwrap();
+    fs::set_permissions(&editor, fs::Permissions::from_mode(0o755)).unwrap();
+    let mut edit = Command::new("script")
+        .current_dir(tmp.path())
+        .env_remove("STINT_TEST_EDITOR")
+        .env("EDITOR", &editor)
+        .args(["-q", "/dev/null", binary, "edit", "0001"])
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        if let Some(status) = edit.try_wait().unwrap() {
+            assert!(status.success());
+            break;
+        }
+        if Instant::now() >= deadline {
+            edit.kill().unwrap();
+            edit.wait().unwrap();
+            panic!("editor invoking stint list deadlocked");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+#[test]
+fn interrupted_gate_creation_recovers_without_orphan() {
+    let (tmp, repo) = setup();
+    write_task_file(
+        &repo,
+        "0001-race.md",
+        &task_content("0001", "Race", "in-progress"),
+    );
+    let binary = env!("CARGO_BIN_EXE_stint");
+    let mut writer = Command::new(binary)
+        .current_dir(tmp.path())
+        .env("STINT_TEST_HOLD_GATE_AFTER_CREATE", "1")
+        .args([
+            "gate",
+            "file",
+            "0001",
+            "Decision",
+            "--ask",
+            "Which?",
+            "--options",
+            "A",
+            "--options",
+            "B",
+            "--good-answer",
+            "Choose",
+            "--evidence",
+            "Evidence",
+        ])
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !repo.tasks_dir().join("0002-gate-decision.md").exists() {
+        assert!(
+            writer.try_wait().unwrap().is_none(),
+            "gate exited before interruption point"
+        );
+        assert!(Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(
+        writer.try_wait().unwrap().is_none(),
+        "gate did not pause after creation"
+    );
+    writer.kill().unwrap();
+    writer.wait().unwrap();
+    let check = Command::new(binary)
+        .current_dir(tmp.path())
+        .args(["list", "--json"])
+        .output()
+        .unwrap();
+    assert!(
+        check.status.success(),
+        "{}",
+        String::from_utf8_lossy(&check.stderr)
+    );
+    assert!(
+        !repo.tasks_dir().join("0002-gate-decision.md").exists(),
+        "orphan gate remained after recovery"
+    );
+    let task = repo
+        .read_task(&repo.resolve_task_path("0001").unwrap())
+        .unwrap();
+    assert_eq!(task.frontmatter.status.to_string(), "in-progress");
+    assert!(task.frontmatter.blocked_by.is_empty());
+}
+
+#[test]
+fn interrupted_done_restores_task_and_blocker() {
+    let (tmp, repo) = setup();
+    write_task_file(
+        &repo,
+        "0001-race.md",
+        &task_content("0001", "Race", "in-progress"),
+    );
+    write_task_file(
+        &repo,
+        "0002-dependent.md",
+        "---\nid: \"0002\"\ntitle: \"Dependent\"\nstatus: todo\nblocked_by: [\"0001\"]\n---\n",
+    );
+    let binary = env!("CARGO_BIN_EXE_stint");
+    let mut writer = Command::new(binary)
+        .current_dir(tmp.path())
+        .env("STINT_TEST_HOLD_DONE_AFTER_WRITE", "1")
+        .args(["done", "0001", "--actual", "1m"])
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let task = repo
+            .read_task(&repo.resolve_task_path("0001").unwrap())
+            .unwrap();
+        if task.frontmatter.status.to_string() == "done" {
+            break;
+        }
+        assert!(writer.try_wait().unwrap().is_none());
+        assert!(Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    writer.kill().unwrap();
+    writer.wait().unwrap();
+    let result = Command::new(binary)
+        .current_dir(tmp.path())
+        .args(["list", "--json"])
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert_eq!(
+        repo.read_task(&repo.resolve_task_path("0001").unwrap())
+            .unwrap()
+            .frontmatter
+            .status
+            .to_string(),
+        "in-progress"
+    );
+    assert_eq!(
+        repo.read_task(&repo.resolve_task_path("0002").unwrap())
+            .unwrap()
+            .frontmatter
+            .blocked_by
+            .len(),
+        1
+    );
+}

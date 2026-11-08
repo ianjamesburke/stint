@@ -26,4 +26,3 @@ codex-run-logs/
 # Local environment files
 .env
 .env.*
-dist/

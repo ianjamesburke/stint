@@ -65,11 +65,14 @@ plexi-test:
     cargo build
     {{plexi}} app test packages/plexi-stint
 
-# Validate and build the separate board package into packages/plexi-stint/dist/.
+# Validate and build the separate board package into target/plexi/.
+# Stages a copy without tests or notes so the package ships only the app.
 plexi-package:
-    mkdir -p packages/plexi-stint/dist
     {{plexi}} app check packages/plexi-stint
-    {{plexi}} app package packages/plexi-stint --out packages/plexi-stint/dist/plexi-stint-$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1).plexipkg
+    rm -rf target/plexi
+    mkdir -p target/plexi/stage
+    rsync -a --exclude dist --exclude tests --exclude __pycache__ --exclude .pytest_cache --exclude render-output --exclude AGENTS.md packages/plexi-stint/ target/plexi/stage/plexi-stint/
+    {{plexi}} app package target/plexi/stage/plexi-stint --out target/plexi/plexi-stint-$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1).plexipkg
 
 # Prove the board stays out of the crate and the crate builds without Plexi or Python.
 plexi-crate-check:

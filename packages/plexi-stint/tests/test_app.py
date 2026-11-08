@@ -82,7 +82,7 @@ def test_keyboard_priority_change_sends_the_guarded_set_and_waits_for_stint():
 def test_mouse_priority_button_and_row_click_use_the_same_path():
     with AppHarness(str(APP)) as h:
         boot(h)
-        h.ui_action("pick-p2:0")
+        h.ui_action("pick:0002")
         sent = ops(h.run(1))
         assert sent and sent[0]["operation_id"] == "stint.show" and sent[0]["values"] == {"task": "0002"}
         result(h, sent[0]["request_id"], model.OP_SHOW, data={"id": "0002", "body": "b"})

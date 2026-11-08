@@ -1,9 +1,9 @@
 schema_version = 1
-generated_by = "plexi app init"
-plexi_cli_version = "0.4.2"
-sdk_version = "0.4.2"
+generated_by = "plexi app init --adopt"
+plexi_cli_version = "0.4.3"
+sdk_version = "0.4.3"
 manifest_schema_version = 1
 python_runtime_version = "3.12"
 template_version = 5
-channel = "alpha"
-profile_dir = ".plexi-alpha"
+channel = "pr-3006"
+profile_dir = ".plexi-pr-3006"

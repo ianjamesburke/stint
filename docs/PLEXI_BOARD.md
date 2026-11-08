@@ -30,13 +30,13 @@ screen with this guidance.
    (a release asset), or build it from a checkout of this repository:
 
    ```sh
-   just plexi-package          # writes packages/plexi-stint/dist/plexi-stint-<version>.plexipkg
+   just plexi-package          # writes target/plexi/plexi-stint-<version>.plexipkg
    ```
 
 3. Install it and review the trust sheet:
 
    ```sh
-   plexi app install packages/plexi-stint/dist/plexi-stint-<version>.plexipkg
+   plexi app install target/plexi/plexi-stint-<version>.plexipkg
    ```
 
 4. Open a Plexi pane in a workspace that has a `.stint/` directory and run

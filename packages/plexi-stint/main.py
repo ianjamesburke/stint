@@ -28,7 +28,7 @@ def _board():
 
 
 def _effects(new_state, requests):
-    out = [SetState({"board": new_state})]
+    out: list = [SetState({"board": new_state})]
     for r in requests:
         log.info(f"Stint Board: request {r['request_id']} {r['operation_id']}")
         out.append(CliOperation(request_id=r["request_id"], operation_id=r["operation_id"], values=r["values"]))
@@ -37,7 +37,7 @@ def _effects(new_state, requests):
 
 def init(size, args):
     log.info("Stint Board: init")
-    s, requests = model.start()
+    s, requests = model.start(state.get("board"))  # a seeded board (app render --state) survives init
     return [SetTitle("Stint Board"), SetTimer(id=model.TIMER_REFRESH, delay_ms=model.REFRESH_MS, repeat=True), *_effects(s, requests)]
 
 
@@ -84,11 +84,10 @@ def _action(s, handler_id):
         return model.retry(s)
     if handler_id == "refresh":
         return model.refresh(s)
-    if handler_id.startswith("pick-"):
-        column, _, idx = handler_id[len("pick-"):].partition(":")
-        tasks = model.grouped(s).get(column, [])
-        if idx.isdigit() and int(idx) < len(tasks):
-            return model.select(s, tasks[int(idx)]["id"])
+    if handler_id.startswith("pick:"):
+        task_id = handler_id.split(":", 1)[1]
+        if any(t["id"] == task_id for t in model.visible_tasks(s)):
+            return model.select(s, task_id)
     return None
 
 

@@ -1,0 +1,86 @@
+{
+ "board": {
+  "phase": "ready",
+  "cli_version": "0.4.1",
+  "message": "",
+  "tasks": [
+   {
+    "id": "0019",
+    "title": "Add configurable handoff and resumable closeout",
+    "priority": "p1",
+    "state": "proposed",
+    "size": "l",
+    "blocked": false,
+    "blockers": []
+   },
+   {
+    "id": "0020",
+    "title": "feat(plexi): separately installed priority board",
+    "priority": "p1",
+    "state": "blocked",
+    "size": "l",
+    "blocked": true,
+    "blockers": [
+     "../plexi:1175"
+    ]
+   },
+   {
+    "id": "0002",
+    "title": "Second thing in progress",
+    "priority": "p0",
+    "state": "in-progress",
+    "size": "m",
+    "blocked": false,
+    "blockers": []
+   },
+   {
+    "id": "0003",
+    "title": "Unprioritised idea",
+    "priority": null,
+    "state": "proposed",
+    "size": "",
+    "blocked": false,
+    "blockers": []
+   },
+   {
+    "id": "0004",
+    "title": "Polish",
+    "priority": "p3",
+    "state": "ready",
+    "size": "s",
+    "blocked": false,
+    "blockers": []
+   }
+  ],
+  "loaded": true,
+  "list_error": "",
+  "detail": {
+   "id": "0002",
+   "body": "## Why\nBecause the board needs a seeded fixture.\n\n## Done When\n- renders",
+   "area": [
+    "cli"
+   ]
+  },
+  "detail_error": "",
+  "selected": "0002",
+  "query": "",
+  "searching": false,
+  "write_blocked": false,
+  "edit": {
+   "task": "0002",
+   "from": "p1",
+   "to": "p2",
+   "state": "conflict",
+   "message": "",
+   "found": "p0"
+  },
+  "notice": {
+   "tone": "warning",
+   "text": "0002 changed elsewhere: it is p0, not p1. Kept p0. Press r to retry p2."
+  },
+  "focused": false,
+  "seq": 0,
+  "queue": [],
+  "inflight": null
+ }
+}

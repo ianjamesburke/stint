@@ -3,6 +3,7 @@
 from plexi_sdk.ui import (
     SPACE_MD,
     SPACE_SM,
+    SPACE_XS,
     Actions,
     AppBar,
     Banner,
@@ -46,20 +47,21 @@ def _banner(s):
     return out
 
 
+def _short(title, limit=20):
+    return title if len(title) <= limit else title[: limit - 1] + "\u2026"
+
+
 def _column(s, name, tasks):
-    sel = s["selected"]
-    idx = next((i for i, t in enumerate(tasks) if t["id"] == sel), -1)
-    items = [
-        {"name": f"{t['id']} {t['title']}", "description": t["state"] + (" | blocked" if t["blocked"] else "")}
-        for t in tasks
-    ]
     label = "unset" if name == "unset" else name.upper()
-    body = (
-        SelectList(items, selected_idx=idx, on_select=f"pick-{name}")
-        if items
-        else Text("none", tone="hint")
-    )
-    return Card([Heading(f"{label} ({len(tasks)})", truncate=True), body], padding=SPACE_SM, gap=SPACE_SM)
+    rows = [
+        Button(
+            f"{t['id']} {_short(t['title'])}",
+            on_click=f"pick:{t['id']}",
+            style="primary" if t["id"] == s["selected"] else "ghost",
+        )
+        for t in tasks
+    ] or [Text("none", tone="hint")]
+    return Column([Heading(f"{label} ({len(tasks)})", truncate=True), *rows], gap=SPACE_XS)
 
 
 def _detail(s):

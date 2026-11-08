@@ -1,0 +1,86 @@
+schema_version = 1
+
+[app]
+id = "plexi-stint"
+type = "app"
+name = "Stint Board"
+entry = "main.py"
+# Matched to the Stint CLI release (Cargo.toml). Checked by tests/test_release_pins.py.
+version = "0.4.1"
+description = "Priority board for Stint tasks, driven through approved typed CLI operations"
+watch = false
+
+[app.capabilities]
+capabilities = ["cli.operations", "timer"]
+
+# Hard floor: the first Plexi build with approved typed CLI operations.
+[requires]
+plexi_min = "0.4.3"
+
+[launch]
+
+# Every operation runs the installed `stint` CLI, pinned and approved by the
+# person in Plexi. The board never reads or writes .stint files itself.
+
+[[cli_operation]]
+id = "stint.version"
+executable = "stint"
+argv = ["--version"]
+timeout_ms = 5000
+[cli_operation.output]
+format = "text"
+max_bytes = 256
+[cli_operation.authority]
+mode = "read"
+fs_read = ["workspace"]
+
+[[cli_operation]]
+id = "stint.list"
+executable = "stint"
+argv = ["list", "--json"]
+timeout_ms = 10000
+[cli_operation.output]
+format = "json"
+max_bytes = 524288
+[cli_operation.authority]
+mode = "read"
+fs_read = ["workspace"]
+
+[[cli_operation]]
+id = "stint.show"
+executable = "stint"
+argv = ["show", "--json", "--", "{task}"]
+timeout_ms = 10000
+[cli_operation.output]
+format = "json"
+max_bytes = 262144
+[cli_operation.authority]
+mode = "read"
+fs_read = ["workspace"]
+[cli_operation.slots.task]
+type = "string"
+max_len = 64
+
+# Guarded compare-and-set (stint 0021): applies only if the task still has
+# the priority the board displayed. `unset` is an explicit expected value.
+[[cli_operation]]
+id = "stint.set_priority"
+executable = "stint"
+argv = ["set", "--json", "--priority={priority}", "--expect-priority={expected}", "--", "{task}"]
+timeout_ms = 10000
+[cli_operation.output]
+format = "json"
+max_bytes = 4096
+[cli_operation.authority]
+mode = "mutate"
+fs_read = ["workspace"]
+fs_write = ["workspace"]
+[cli_operation.slots.priority]
+type = "enum"
+values = ["p0", "p1", "p2", "p3", "p4"]
+[cli_operation.slots.expected]
+type = "enum"
+values = ["p0", "p1", "p2", "p3", "p4", "unset"]
+[cli_operation.slots.task]
+type = "string"
+max_len = 64

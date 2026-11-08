@@ -163,7 +163,7 @@ def test_conflict_keeps_the_newer_value_and_retry_is_explicit():
     b.apply(model.request_priority(b.s, "p0"))
     b.reply(ok=False, data=CONFLICT, code="nonzero_exit", error="exited with status 1")
     assert b.s["edit"]["state"] == "conflict"
-    assert "p2" in b.s["notice"]["text"] and "Kept p2" in b.s["notice"]["text"]
+    assert b.s["notice"]["text"] == "0001 was changed elsewhere to p2. Your change to p0 wasn't applied. Press R to retry p0."
     sets = [o for o in b.ops() if o[0] == model.OP_SET]
     assert len(sets) == 1, "no automatic retry"
     # the refresh that follows shows the newer value
@@ -320,3 +320,11 @@ def test_every_mutation_outcome_triggers_a_refresh():
         b.apply(model.request_priority(b.s, "p0"))
         b.reply(**reply)
         assert b.s["inflight"] and b.s["inflight"]["op"] == model.OP_LIST
+
+
+def test_task_removed_elsewhere_gets_its_own_wording():
+    b = Board().ready()
+    b.apply(model.request_priority(b.s, "p0"))
+    b.reply(ok=False, code="timeout", error="x")
+    b.drain({model.OP_LIST: dict(data=[dict(t) for t in TASKS[1:]]), model.OP_SHOW: dict(data={"body": ""})})
+    assert "was removed elsewhere" in b.s["notice"]["text"]

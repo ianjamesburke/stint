@@ -63,7 +63,7 @@ def test_startup_requests_only_declared_operations_with_no_forbidden_fields():
 def test_board_shows_tasks_columns_and_detail():
     with AppHarness(str(APP)) as h:
         shown = json.dumps(boot(h))
-    for needle in ("P1 (1)", "P2 (1)", "unset (1)", "Alpha thing", "Because"):
+    for needle in ("P1 (1)", "P2 (1)", "Unset (1)", "Alpha thing", "Because"):
         assert needle in shown, needle
 
 
@@ -106,6 +106,12 @@ def test_conflict_is_explained_and_retry_is_explicit():
         refresh = ops(cmds)
         assert refresh and refresh[0]["operation_id"] == "stint.list"
         assert not any(o["operation_id"] == "stint.set_priority" for o in refresh)
+
+
+def test_detail_renders_markdown_headings_as_labels_and_columns_share_text():
+    with AppHarness(str(APP)) as h:
+        shown = json.dumps(boot(h))
+    assert "## Why" not in shown and '"Why"' in shown
 
 
 def test_denied_mutation_keeps_the_board_browsable():

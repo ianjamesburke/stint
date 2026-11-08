@@ -236,7 +236,7 @@ def request_priority(s, target):
         _notice(s, "warning", "The board is not connected to stint yet.")
         return _done(s)
     if s["write_blocked"]:
-        _notice(s, "warning", "Read-only: priority changes were not approved. Press e to ask again.")
+        _notice(s, "warning", "Read-only: priority changes were not approved. Press E to ask again.")
         return _done(s)
     edit = s["edit"]
     if edit and edit["state"] in ("sending", "reconciling"):
@@ -370,19 +370,25 @@ def _reconcile(s, edit):
         _notice(s, "success", f"{edit['task']} is {edit['to']} (confirmed by refresh).")
     elif now == edit["from"]:
         edit["state"] = "failed"
-        _notice(s, "warning", f"{edit['task']} is still {edit['from']}: the change was not applied. Press r to retry.")
+        _notice(s, "warning", f"{edit['task']} is still {edit['from']}: the change was not applied. Press R to retry.")
     else:
+        if task is None:
+            edit["gone"] = True
         _conflict(s, edit, now)
 
 
 def _conflict(s, edit, actual):
     edit["state"] = "conflict"
     edit["found"] = actual
-    where = actual or "gone"
-    _notice(
-        s, "warning",
-        f"{edit['task']} changed elsewhere: it is {where}, not {edit['from']}. Kept {where}. Press r to retry {edit['to']}.",
-    )
+    if actual is None and edit.get("gone"):
+        text = f"{edit['task']} was removed elsewhere. Your change to {edit['to']} wasn't applied."
+    else:
+        where = actual or "unset"
+        text = (
+            f"{edit['task']} was changed elsewhere to {where}. Your change to {edit['to']} "
+            f"wasn't applied. Press R to retry {edit['to']}."
+        )
+    _notice(s, "warning", text)
 
 
 def _on_show(s, f, ok, data, code, error):
@@ -413,7 +419,7 @@ def _on_set(s, f, ok, data, code, error):
         return
     if code in WRITE_BLOCKING:
         s["write_blocked"], s["edit"] = True, None
-        _notice(s, "warning", "Read-only: priority changes were not approved. Browsing still works. Press e to ask again.")
+        _notice(s, "warning", "Read-only: priority changes were not approved. Browsing still works. Press E to ask again.")
         return
     if code in UNCERTAIN:
         edit["state"] = "reconciling"
@@ -422,7 +428,7 @@ def _on_set(s, f, ok, data, code, error):
         _enqueue_refresh(s)
         return
     edit["state"], edit["message"] = "failed", error
-    _notice(s, "error", f"{edit['task']} was not changed ({code}): {error} Press r to retry.")
+    _notice(s, "error", f"{edit['task']} was not changed ({code}): {error} Press R to retry.")
     _enqueue_refresh(s)
 
 

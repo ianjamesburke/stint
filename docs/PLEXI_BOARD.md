@@ -17,6 +17,11 @@ screen with this guidance.
 - The `stint` CLI at the matching version, installed where Plexi looks for
   programs (`~/.cargo/bin` is searched).
 
+> **Release blocker:** set `plexi_min` in `packages/plexi-stint/manifest.toml` to the
+> first Plexi release containing stint 1175 (expected 0.4.4) before tagging. It is
+> 0.4.3 only so the PR-channel walkthrough can install the board; the tagged 0.4.3
+> lacks approved CLI operations, so a plain 0.4.3 Plexi would pass the floor and then fail.
+
 ## Install
 
 1. Install the matching CLI (the version printed here, <version>, is the one this board is built for):
@@ -52,11 +57,23 @@ pins which program runs but does not confine it.
 
 ## Keys
 
-`h j k l` move, `0`-`4` set priority, `/` search, `r` refresh or retry a
-conflicted change, `e` ask for edit permission again. Clicking a row selects
+`h j k l` move, `0`-`4` set priority, `/` search, `R` refresh or retry a
+conflicted change, `E` ask for edit permission again. Clicking a row selects
 it; the priority buttons change it. A change applies only if the task still
 has the priority the board showed. If someone else changed it first, the board
 keeps their value and offers an explicit retry.
+
+## Plexi too old
+
+A Plexi without approved CLI operations refuses the package before anything runs. Observed on
+a Plexi that predates them (0.4.2):
+
+```
+error: validation failed for <path>: unknown capability 'cli.operations' in <path>/manifest.toml
+```
+
+Update Plexi to the version in Requirements, enable the experiment, and install again. The
+`plexi_min` floor produces its own version message once it names a release that has the feature.
 
 ## Upgrade
 

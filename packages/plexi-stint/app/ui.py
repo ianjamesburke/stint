@@ -47,21 +47,41 @@ def _banner(s):
     return out
 
 
-def _short(title, limit=20):
-    return title if len(title) <= limit else title[: limit - 1] + "\u2026"
+CELL = 16  # max characters per cell; the SDK gives rows no equal-share width control
+
+
+def _cell(text):
+    return text if len(text) <= CELL else text[: CELL - 1] + "\u2026"
 
 
 def _column(s, name, tasks):
-    label = "unset" if name == "unset" else name.upper()
+    label = "Unset" if name == "unset" else name.upper()
     rows = [
         Button(
-            f"{t['id']} {_short(t['title'])}",
+            _cell(f"{t['id']} {t['title']}"),
             on_click=f"pick:{t['id']}",
             style="primary" if t["id"] == s["selected"] else "ghost",
         )
         for t in tasks
-    ] or [Text("none", tone="hint")]
-    return Column([Heading(f"{label} ({len(tasks)})", truncate=True), *rows], gap=SPACE_XS)
+    ] or [Text(_cell("No tasks"), tone="hint")]
+    return Column([Heading(f"{label} ({len(tasks)})", truncate=True), *rows], gap=SPACE_XS, grow=True)
+
+
+def _blocks(body):
+    """Task markdown as plain blocks: headings become bold labels, bullets get a dot."""
+    out = []
+    for line in str(body or "").splitlines():
+        line = line.rstrip()
+        if not line.strip():
+            continue
+        stripped = line.lstrip("#").strip()
+        if line.startswith("#"):
+            out.append(Text(stripped, bold=True, color="accent"))
+        elif line.lstrip().startswith(("- ", "* ")):
+            out.append(Text("\u2022 " + line.lstrip()[2:]))
+        else:
+            out.append(Text(line))
+    return out or [Text("(no body)", tone="hint")]
 
 
 def _detail(s):
@@ -91,9 +111,9 @@ def _detail(s):
         body.append(Text("Loading details...", tone="hint"))
     else:
         rows.extend((k, ", ".join(detail[k])) for k in ("area",) if detail.get(k))
-        body.append(Text(str(detail.get("body") or "").strip() or "(no body)", monospace=True))
+        body.extend(_blocks(detail.get("body")))
     return Column(
-        [Heading(task["title"], truncate=True), KeyValue(rows), Actions(buttons), Scrollable(Column(body, gap=SPACE_SM))],
+        [Heading(task["title"], truncate=True), KeyValue(rows), Actions(buttons), Scrollable(Column(body, gap=SPACE_XS))],
         gap=SPACE_SM,
     )
 
@@ -122,9 +142,9 @@ def _search(s):
 FOOTER = [
     ("hjkl", "move"),
     ("0-4", "set priority"),
-    ("r", "retry/refresh"),
+    ("R", "retry/refresh"),
     ("/", "search"),
-    ("e", "re-enable edits"),
+    ("E", "re-enable edits"),
 ]
 
 

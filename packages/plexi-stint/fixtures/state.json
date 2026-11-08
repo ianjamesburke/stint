@@ -76,7 +76,7 @@
   },
   "notice": {
    "tone": "warning",
-   "text": "0002 changed elsewhere: it is p0, not p1. Kept p0. Press r to retry p2."
+   "text": "0002 was changed elsewhere to p0. Your change to p2 wasn't applied. Press R to retry p2."
   },
   "focused": false,
   "seq": 0,

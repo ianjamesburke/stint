@@ -13,7 +13,9 @@ watch = false
 [app.capabilities]
 capabilities = ["cli.operations", "timer"]
 
-# Hard floor: the first Plexi build with approved typed CLI operations.
+# RELEASE BLOCKER: 0.4.3 is tagged and lacks approved typed CLI operations. Set this to
+# the first Plexi release containing stint 1175 (expected 0.4.4) before tagging.
+# 0.4.3 only lets the PR-channel walkthrough install the board.
 [requires]
 plexi_min = "0.4.3"
 

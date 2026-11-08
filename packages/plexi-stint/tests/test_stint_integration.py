@@ -162,7 +162,7 @@ def test_conflict_preserves_the_newer_value_then_explicit_retry_applies(repo):
     assert priority_of(repo, "0001") == "p3", "stale write must not clobber the newer value"
     assert r.s["edit"]["state"] == "conflict"
     assert model.selected_task(r.s)["priority"] == "p3", "board converges on the newer value"
-    assert "Kept p3" in r.s["notice"]["text"]
+    assert "changed elsewhere to p3" in r.s["notice"]["text"] and "wasn't applied" in r.s["notice"]["text"]
     r.do(model.retry)
     assert priority_of(repo, "0001") == "p0"
     assert r.s["edit"] is None

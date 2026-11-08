@@ -152,9 +152,10 @@ def test_search_filters_tasks():
         assert "Beta thing" in json.dumps(h.run(1))
 
 
-def test_timer_requests_a_refresh_and_focus_refreshes_immediately():
+def test_timer_sends_nothing_while_focus_is_unknown():
+    """Periodic refresh needs a FocusGained event. Until the SDK runtime delivers
+    focus events (see the PR gap note), the board must not poll on its own."""
     with AppHarness(str(APP)) as h:
         boot(h)
         h._send({"type": "timer", "timer_id": str(model.TIMER_REFRESH)})
-        sent = ops(h.run(1))
-        assert sent and sent[0]["operation_id"] == "stint.list"
+        assert ops(h.run(1)) == []

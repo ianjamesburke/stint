@@ -259,9 +259,9 @@ def test_pre_launch_failure_says_nothing_changed_and_allows_retry():
 
 def test_tick_and_focus_refresh_but_do_not_pile_up():
     b = Board().ready()
-    b.apply(model.on_tick(b.s))
-    b.apply(model.on_tick(b.s))
     b.apply(model.on_focus(b.s))
+    b.apply(model.on_tick(b.s))
+    b.apply(model.on_tick(b.s))
     lists = [o for o in b.ops() if o[0] == model.OP_LIST]
     assert len(lists) == 2, "one startup list plus one in-flight refresh; duplicates are collapsed"
     b.drain({model.OP_LIST: dict(data=[dict(t) for t in TASKS]), model.OP_SHOW: dict(data={"body": ""})})
@@ -271,7 +271,7 @@ def test_tick_and_focus_refresh_but_do_not_pile_up():
 
 def test_agent_change_appears_after_refresh_and_stale_results_are_ignored():
     b = Board().ready()
-    b.apply(model.on_tick(b.s))
+    b.apply(model.refresh(b.s))
     moved = [dict(t) for t in TASKS]
     moved[1]["priority"] = "p0"
     b.reply(data=moved)
@@ -281,13 +281,42 @@ def test_agent_change_appears_after_refresh_and_stale_results_are_ignored():
 
 def test_selected_task_disappearing_reselects():
     b = Board().ready()
-    b.apply(model.on_tick(b.s))
+    b.apply(model.refresh(b.s))
     b.reply(data=[dict(TASKS[1])])
     assert b.s["selected"] == "0002"
 
 
 def test_unreadable_list_output_is_reported_not_swallowed():
     b = Board().ready()
-    b.apply(model.on_tick(b.s))
+    b.apply(model.refresh(b.s))
     b.reply(data={"not": "a list"})
     assert "cannot read" in b.s["list_error"]
+
+
+def test_periodic_refresh_is_slow_and_only_while_focused():
+    assert model.REFRESH_MS >= 30000
+    b = Board().ready()
+    n = len(b.sent)
+    b.apply(model.on_tick(b.s))
+    assert len(b.sent) == n, "focus is unknown until a FocusGained event: no periodic refresh"
+    b.apply(model.on_focus(b.s))
+    b.drain({model.OP_LIST: dict(data=[dict(t) for t in TASKS]), model.OP_SHOW: dict(data={"body": ""})})
+    b.apply(model.on_blur(b.s))
+    n = len(b.sent)
+    b.apply(model.on_tick(b.s))
+    assert len(b.sent) == n, "never refresh while unfocused"
+    b.apply(model.on_focus(b.s))
+    assert b.ops()[-1][0] == model.OP_LIST, "refocus refreshes immediately"
+    b.drain({model.OP_LIST: dict(data=[dict(t) for t in TASKS]), model.OP_SHOW: dict(data={"body": ""})})
+    b.apply(model.on_tick(b.s))
+    assert b.s["inflight"]["op"] == model.OP_LIST
+
+
+def test_every_mutation_outcome_triggers_a_refresh():
+    for reply in (dict(data={"updated": "0001", "priority": "p0"}),
+                  dict(ok=False, data=CONFLICT, code="nonzero_exit", error="x"),
+                  dict(ok=False, code="approval_timeout", error="x")):
+        b = Board().ready()
+        b.apply(model.request_priority(b.s, "p0"))
+        b.reply(**reply)
+        assert b.s["inflight"] and b.s["inflight"]["op"] == model.OP_LIST

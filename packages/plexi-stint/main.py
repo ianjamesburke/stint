@@ -6,10 +6,11 @@ events to the model and model requests to effects.
 """
 
 from plexi_sdk import log, state
-from plexi_sdk.effects import CliOperation, SetState, SetTimer, SetTitle
+from plexi_sdk.effects import CancelTimer, CliOperation, SetState, SetTimer, SetTitle
 from plexi_sdk.events import (
     CliOperationResult,
     FocusGained,
+    FocusLost,
     KeyEvent,
     TimerFired,
     UiAction,
@@ -105,7 +106,11 @@ def update(event):
     elif isinstance(event, TimerFired) and event.id == model.TIMER_REFRESH:
         result = model.on_tick(s)
     elif isinstance(event, FocusGained):
-        result = model.on_focus(s)
+        s2, reqs = model.on_focus(s)
+        return [SetTimer(id=model.TIMER_REFRESH, delay_ms=model.REFRESH_MS, repeat=True), *_effects(s2, reqs)]
+    elif isinstance(event, FocusLost):
+        s2, reqs = model.on_blur(s)
+        return [CancelTimer(id=model.TIMER_REFRESH), *_effects(s2, reqs)]
     elif isinstance(event, CliOperationResult):
         result = model.on_result(s, event.request_id, event.ok, event.data, event.error_code, event.error)
     if result is None:

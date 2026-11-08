@@ -15,7 +15,8 @@ EXPECTED_STINT = "0.4.1"
 
 PRIORITIES = ["p0", "p1", "p2", "p3", "p4"]
 COLUMNS = PRIORITIES + ["unset"]
-REFRESH_MS = 5000
+# Each refresh is an audited, consented process launch: keep it rare.
+REFRESH_MS = 30000
 TIMER_REFRESH = 1
 
 OP_VERSION = "stint.version"
@@ -49,6 +50,7 @@ def new_state():
         "write_blocked": False,
         "edit": None,
         "notice": None,
+        "focused": False,  # only a FocusGained event enables periodic refresh
         "seq": 0,
         "queue": [],
         "inflight": None,
@@ -137,13 +139,22 @@ def refresh(s):
 
 
 def on_tick(s):
-    if s["phase"] != "ready":
+    """Periodic refresh: only while ready and the window is focused (never hidden)."""
+    if s["phase"] != "ready" or not s["focused"]:
         return s, []
     return refresh(s)
 
 
 def on_focus(s):
+    s = copy.deepcopy(s)
+    s["focused"] = True
     return refresh(s)
+
+
+def on_blur(s):
+    s = copy.deepcopy(s)
+    s["focused"] = False
+    return s, []
 
 
 def _keep_selection_visible(s):

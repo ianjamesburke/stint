@@ -51,3 +51,27 @@ playground example="demo":
     @echo "  stint check --strict"
     @echo ""
     @echo "Mess around freely! Run 'just playground' again anytime to reset."
+
+# Plexi board (packages/plexi-stint): not part of the crate or its release gate.
+# Pick the Plexi CLI explicitly, e.g. `just plexi=plexi-pr-123 plexi-test`.
+plexi := "plexi"
+
+# Print how to install the matching Stint CLI and the Plexi board package.
+plexi-install-help:
+    @sed -e "s/<version>/$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)/g" -e "s/<plexi_min>/$(sed -n 's/^plexi_min = "\(.*\)"/\1/p' packages/plexi-stint/manifest.toml)/g" docs/PLEXI_BOARD.md
+
+# Run the board's own tests (app tests via Plexi, then real-stint process tests).
+plexi-test:
+    cargo build
+    {{plexi}} app test packages/plexi-stint
+
+# Validate and build the separate board package into packages/plexi-stint/dist/.
+plexi-package:
+    mkdir -p packages/plexi-stint/dist
+    {{plexi}} app check packages/plexi-stint
+    {{plexi}} app package packages/plexi-stint --out packages/plexi-stint/dist/plexi-stint-$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1).plexipkg
+
+# Prove the board stays out of the crate and the crate builds without Plexi or Python.
+plexi-crate-check:
+    @cargo package --list --allow-dirty | { ! grep -E '^(packages|plexi)' ; } && echo "ok: crate excludes packages/"
+    cargo build

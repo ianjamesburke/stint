@@ -33,6 +33,10 @@ esac
 echo "Bumping $current -> $new ($bump)..."
 
 sed -i '' "s/^version = \"$current\"/version = \"$new\"/" "$TREE/Cargo.toml"
+# Keep the Plexi board pinned to the CLI version (checked by packages/plexi-stint/tests).
+board="$TREE/packages/plexi-stint"
+sed -i '' "s/^version = \"$current\"/version = \"$new\"/" "$board/manifest.toml"
+sed -i '' "s/^EXPECTED_STINT = \"$current\"/EXPECTED_STINT = \"$new\"/" "$board/app/model.py"
 (cd "$TREE" && cargo generate-lockfile --quiet 2>/dev/null || cargo generate-lockfile)
 
 echo "Generating changelog..."
@@ -43,7 +47,7 @@ touch "$TREE/CHANGELOG.md"
     --tag "v$new" \
     --prepend CHANGELOG.md)
 
-git -C "$TREE" add Cargo.toml Cargo.lock CHANGELOG.md
+git -C "$TREE" add Cargo.toml Cargo.lock CHANGELOG.md packages/plexi-stint/manifest.toml packages/plexi-stint/app/model.py
 git -C "$TREE" commit -m "chore: release v$new"
 git -C "$TREE" tag -a "v$new" -m "v$new"
 

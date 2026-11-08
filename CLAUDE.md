@@ -23,6 +23,7 @@ Single crate with `[lib]` and `[[bin]]` targets. Library modules handle schema, 
 cargo build
 cargo test
 node --test packages/pi-stint/test/*.test.js
+just plexi-test   # Plexi board; needs a Plexi build with cli_operations
 just publish-check
 ```
 

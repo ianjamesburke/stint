@@ -36,6 +36,13 @@ stint update
 # same as: cargo install stint --locked --force
 ```
 
+## Plexi board
+
+An optional priority board for [Plexi](https://plexiapp.com), shipped as a separate
+package (never part of the crate). Run `just plexi-install-help` for the exact
+steps to install the matching CLI and board, or read
+[docs/PLEXI_BOARD.md](docs/PLEXI_BOARD.md).
+
 ## Release
 
 Release notes are generated with `git-cliff`.

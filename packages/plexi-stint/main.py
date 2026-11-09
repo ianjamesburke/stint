@@ -11,6 +11,8 @@ from plexi_sdk.events import (
     CliOperationResult,
     FocusGained,
     FocusLost,
+    PaneHidden,
+    PaneShown,
     KeyEvent,
     TimerFired,
     UiAction,
@@ -107,6 +109,12 @@ def update(event):
     elif isinstance(event, FocusGained):
         s2, reqs = model.on_focus(s)
         return [SetTimer(id=model.TIMER_REFRESH, delay_ms=model.REFRESH_MS, repeat=True), *_effects(s2, reqs)]
+    elif isinstance(event, PaneShown):
+        s2, reqs = model.on_shown(s)
+        return [SetTimer(id=model.TIMER_REFRESH, delay_ms=model.REFRESH_MS, repeat=True), *_effects(s2, reqs)]
+    elif isinstance(event, PaneHidden):
+        s2, reqs = model.on_hidden(s)
+        return [CancelTimer(id=model.TIMER_REFRESH), *_effects(s2, reqs)]
     elif isinstance(event, FocusLost):
         s2, reqs = model.on_blur(s)
         return [CancelTimer(id=model.TIMER_REFRESH), *_effects(s2, reqs)]

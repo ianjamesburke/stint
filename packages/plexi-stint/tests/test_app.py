@@ -165,3 +165,23 @@ def test_timer_sends_nothing_while_focus_is_unknown():
         boot(h)
         h._send({"type": "timer", "timer_id": str(model.TIMER_REFRESH)})
         assert ops(h.run(1)) == []
+
+
+def test_runtime_delivers_focus_and_visibility_to_the_board():
+    with AppHarness(str(APP)) as h:
+        boot(h)
+        h._send({"type": "focus_gained"})
+        got = ops(h.run(1))
+        assert [o["operation_id"] for o in got] == ["stint.list"]
+        result(h, got[0]["request_id"], model.OP_LIST, data=TASKS)
+        show = [o for o in ops(h.run(1)) if o["operation_id"] == "stint.show"]
+        if show:
+            result(h, show[0]["request_id"], model.OP_SHOW, data={"id": "0001", "body": "b"})
+        h.run(1)
+        h._send({"type": "pane_hidden"})
+        assert "cancel_timer" in json.dumps(h.run(1))
+        h._send({"type": "timer", "timer_id": str(model.TIMER_REFRESH)})
+        assert ops(h.run(1)) == []
+        h._send({"type": "pane_shown"})
+        cmds = h.run(1)
+        assert "set_timer" in json.dumps(cmds) and ops(cmds)[0]["operation_id"] == "stint.list"

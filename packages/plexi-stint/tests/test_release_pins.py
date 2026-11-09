@@ -16,7 +16,7 @@ def test_board_version_matches_the_stint_cli_version():
 
 
 def test_minimum_plexi_version_is_declared():
-    assert MANIFEST["requires"]["plexi_min"]
+    assert MANIFEST["requires"]["plexi_min"] == "0.4.4", "first Plexi with 1175 and 1180"
 
 
 def test_read_and_mutation_authority_are_separate_operations():

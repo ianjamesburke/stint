@@ -17,11 +17,6 @@ screen with this guidance.
 - The `stint` CLI at the matching version, installed where Plexi looks for
   programs (`~/.cargo/bin` is searched).
 
-> **Release blocker:** set `plexi_min` in `packages/plexi-stint/manifest.toml` to the
-> first Plexi release containing stint 1175 (expected 0.4.4) before tagging. It is
-> 0.4.3 only so the PR-channel walkthrough can install the board; the tagged 0.4.3
-> lacks approved CLI operations, so a plain 0.4.3 Plexi would pass the floor and then fail.
-
 ## Install
 
 1. Install the matching CLI (the version printed here, <version>, is the one this board is built for):
@@ -65,7 +60,7 @@ keeps their value and offers an explicit retry.
 
 ## Plexi too old
 
-A Plexi without approved CLI operations refuses the package before anything runs. Observed on
+A Plexi without approved CLI operations (before the `plexi_min` release) refuses the package before anything runs. Observed on
 a Plexi that predates them (0.4.2):
 
 ```

@@ -50,6 +50,7 @@ def new_state():
         "write_blocked": False,
         "edit": None,
         "notice": None,
+        "visible": True,  # until PaneHidden
         "focused": False,  # only a FocusGained event enables periodic refresh
         "seq": 0,
         "queue": [],
@@ -140,7 +141,7 @@ def refresh(s):
 
 def on_tick(s):
     """Periodic refresh: only while ready and the window is focused (never hidden)."""
-    if s["phase"] != "ready" or not s["focused"]:
+    if s["phase"] != "ready" or not s["focused"] or not s["visible"]:
         return s, []
     return refresh(s)
 
@@ -149,6 +150,18 @@ def on_focus(s):
     s = copy.deepcopy(s)
     s["focused"] = True
     return refresh(s)
+
+
+def on_shown(s):
+    s = copy.deepcopy(s)
+    s["visible"] = True
+    return refresh(s)
+
+
+def on_hidden(s):
+    s = copy.deepcopy(s)
+    s["visible"], s["focused"] = False, False
+    return s, []
 
 
 def on_blur(s):

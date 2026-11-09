@@ -328,3 +328,18 @@ def test_task_removed_elsewhere_gets_its_own_wording():
     b.reply(ok=False, code="timeout", error="x")
     b.drain({model.OP_LIST: dict(data=[dict(t) for t in TASKS[1:]]), model.OP_SHOW: dict(data={"body": ""})})
     assert "was removed elsewhere" in b.s["notice"]["text"]
+
+
+def test_hidden_pane_never_polls_and_return_refreshes():
+    b = Board().ready()
+    b.apply(model.on_focus(b.s))
+    b.drain({model.OP_LIST: dict(data=[dict(t) for t in TASKS]), model.OP_SHOW: dict(data={"body": ""})})
+    b.apply(model.on_hidden(b.s))
+    n = len(b.sent)
+    b.apply(model.on_tick(b.s))
+    assert len(b.sent) == n and not b.s["focused"]
+    b.apply(model.on_shown(b.s))
+    assert b.ops()[-1][0] == model.OP_LIST, "return to visible refreshes"
+    b.drain({model.OP_LIST: dict(data=[dict(t) for t in TASKS]), model.OP_SHOW: dict(data={"body": ""})})
+    b.apply(model.on_tick(b.s))
+    assert b.s["inflight"] is None, "shown alone does not imply focus"

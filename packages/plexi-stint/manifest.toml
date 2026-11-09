@@ -13,11 +13,10 @@ watch = false
 [app.capabilities]
 capabilities = ["cli.operations", "timer"]
 
-# RELEASE BLOCKER: 0.4.3 is tagged and lacks approved typed CLI operations. Set this to
-# the first Plexi release containing stint 1175 (expected 0.4.4) before tagging.
-# 0.4.3 only lets the PR-channel walkthrough install the board.
+# First Plexi release with approved typed CLI operations (stint 1175) and pane focus and
+# visibility events (stint 1180).
 [requires]
-plexi_min = "0.4.3"
+plexi_min = "0.4.4"
 
 [launch]
 

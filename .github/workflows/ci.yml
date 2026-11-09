@@ -48,5 +48,12 @@ jobs:
           STINT_BIN: ${{ github.workspace }}/target/debug/stint
         run: node --test packages/pi-stint/test/*.test.js
 
+      - name: Run Plexi board tests that need no Plexi
+        env:
+          STINT_BIN: ${{ github.workspace }}/target/debug/stint
+        run: |
+          pip install pytest
+          python -m pytest packages/plexi-stint/tests --ignore=packages/plexi-stint/tests/test_app.py -q
+
       - name: Check crate publishability
         run: just publish-check
